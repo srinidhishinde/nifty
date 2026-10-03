@@ -27,6 +27,7 @@ from strategy.buy_today_sell_tomorrow import run_buy_today_sell_tomorrow
 from prediction.nifty_315_340 import predict_315_340, evaluate_next_day_accuracy
 from news.global_news import fetch_global_news
 from marketdata.nifty_csv import normalize_nifty_csv
+from marketdata.option_chain_replay import replay_option_chain_csv
 
 
 # ============================================================
@@ -1354,6 +1355,26 @@ if option_csv is not None:
             )
     except Exception as exc:
         st.error(f"Option-chain snapshot import failed: {exc}")
+
+st.subheader("Historical Option-Chain Replay")
+st.caption("Replay requires timestamped option-chain snapshots. A single exported snapshot cannot be replayed because it has no time axis.")
+replay_file = st.file_uploader("Upload timestamped option-chain replay CSV", type=["csv"], key="option_replay_csv")
+if replay_file is not None:
+    try:
+        replay_df = pd.read_csv(replay_file)
+        snapshots = replay_option_chain_csv(replay_df)
+        st.success(f"Loaded {len(snapshots):,} timestamped option-chain snapshots.")
+        if snapshots:
+            st.dataframe(
+                pd.DataFrame({
+                    "Timestamp": [ts for ts, _ in snapshots],
+                    "Contracts": [len(cs) for _, cs in snapshots],
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+    except Exception as exc:
+        st.error(f"Option-chain replay failed: {exc}")
 
 st.divider()
 
