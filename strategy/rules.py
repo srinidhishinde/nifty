@@ -191,17 +191,32 @@ def rank_rule_performance(trades: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["rule", "trades", "wins", "win_rate_pct", "net_pnl", "roi_pct"])
 
     rows = []
-    for rule, group in trades.groupby("rule"):
+    for _, trade in trades.iterrows():
+        rule_names = trade.get("rules")
+        if not rule_names:
+            rule_names = str(trade.get("rule", "")).split("|")
+        if isinstance(rule_names, str):
+            rule_names = [rule_names]
+        for rule in rule_names:
+            if rule:
+                rows.append({
+                    "rule": rule,
+                    "pnl": float(trade.get("pnl", 0.0) or 0.0),
+                    "roi_pct": float(trade.get("roi_pct", 0.0) or 0.0),
+                })
+    if not rows:
+        return pd.DataFrame(columns=["rule", "trades", "wins", "win_rate_pct", "net_pnl", "roi_pct"])
+    expanded = pd.DataFrame(rows)
+    result = []
+    for rule, group in expanded.groupby("rule"):
         pnl = pd.to_numeric(group["pnl"], errors="coerce").fillna(0.0)
         wins = int((pnl > 0).sum())
-        rows.append(
-            {
-                "rule": rule,
-                "trades": len(group),
-                "wins": wins,
-                "win_rate_pct": round(wins / len(group) * 100, 2),
-                "net_pnl": round(float(pnl.sum()), 2),
-                "roi_pct": round(float(group["roi_pct"].sum()), 2) if "roi_pct" in group else 0.0,
-            }
-        )
-    return pd.DataFrame(rows).sort_values(["net_pnl", "win_rate_pct"], ascending=False).reset_index(drop=True)
+        result.append({
+            "rule": rule,
+            "trades": len(group),
+            "wins": wins,
+            "win_rate_pct": round(wins / len(group) * 100, 2),
+            "net_pnl": round(float(pnl.sum()), 2),
+            "roi_pct": round(float(group["roi_pct"].sum()), 2),
+        })
+    return pd.DataFrame(result).sort_values(["net_pnl", "win_rate_pct"], ascending=False).reset_index(drop=True)
