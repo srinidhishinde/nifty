@@ -18,6 +18,9 @@ from strategy.ce_pe_selector import (
     MarketContext,
 )
 from strategy.strike_selector import StrikeSelector
+from backtest.rule_engine import RuleBacktestEngine
+from features.technical.indicators import add_indicators
+from strategy.rules import StrategyConfig, evaluate_rules
 
 
 # ============================================================
@@ -821,21 +824,36 @@ authenticated = neo_status.connected
 live_contracts: list[OptionContract] = []
 
 if instrument == "NIFTY" and authenticated:
-    try:
-        provider = KotakNeoProvider(neo_broker.client)
-        live_contracts = provider.get_option_chain(
-            underlying="NIFTY",
-            exchange="nse_fo",
-            count=40,
-            enrich_quotes=True,
+    now = pd.Timestamp.now()
+    market_open = (
+        now.weekday() < 5
+        and now.time() >= pd.Timestamp("09:15").time()
+        and now.time() <= pd.Timestamp("15:30").time()
+    )
+    if not market_open:
+        st.info(
+            "NIFTY market is currently closed. Live option-chain polling is paused; "
+            "the research chain below is clearly labelled and is not live data."
         )
-        if not live_contracts:
-            st.error(
-                "Kotak Neo returned an empty NIFTY option chain. "
-                "No synthetic fallback is used."
+    else:
+        try:
+            provider = KotakNeoProvider(neo_broker.client)
+            live_contracts = provider.get_option_chain(
+                underlying="NIFTY",
+                exchange="nse_fo",
+                count=40,
+                enrich_quotes=True,
             )
-    except Exception as exc:
-        st.error(f"Live NIFTY option-chain request failed: {exc}")
+            if not live_contracts:
+                st.warning(
+                    "Kotak Neo returned no NIFTY option contracts. "
+                    "The research chain is shown separately."
+                )
+        except Exception as exc:
+            st.warning(
+                f"Live NIFTY option-chain unavailable: {exc}. "
+                "Showing clearly labelled research data instead."
+            )
 elif instrument != "NIFTY":
     st.info(
         "Live option-chain display is currently implemented for NIFTY. "
@@ -906,7 +924,12 @@ if live_contracts:
         for x in live_contracts
     ]
 else:
-    contracts = []
+    contracts = build_research_option_chain(
+        instrument=instrument,
+        spot=spot,
+        seed=int(seed),
+        strike_step=strike_step,
+    )
 
 chain_df = build_option_chain_dataframe(
     contracts=contracts,
@@ -1032,6 +1055,9 @@ def highlight_atm(
 
     return styles
 
+
+if not live_contracts:
+    st.caption("RESEARCH DATA — deterministic synthetic option chain; not a broker feed.")
 
 st.dataframe(
     display_df.style.apply(
@@ -1234,6 +1260,109 @@ st.plotly_chart(
     fig,
     use_container_width=True,
 )
+
+
+st.divider()
+
+
+# ============================================================
+# Backtest
+# ============================================================
+
+st.subheader("Rule Backtest")
+st.caption(
+    "Runs the same seven-rule backtest engine used by the automated tests. "
+    "Use uploaded historical data for meaningful validation. The demo dataset is synthetic."
+)
+
+uploaded = st.file_uploader(
+    "Historical OHLCV CSV (optional)",
+    type=["csv"],
+    help="Expected columns: timestamp, open, high, low, close, volume.",
+)
+run_demo = st.button("Run Demo Backtest", use_container_width=True)
+
+if uploaded is not None:
+    try:
+        bt_data = pd.read_csv(uploaded)
+        bt_source = "Uploaded historical CSV"
+    except Exception as exc:
+        bt_data = None
+        bt_source = None
+        st.error(f"Could not read backtest CSV: {exc}")
+elif run_demo:
+    rng = np.random.default_rng(int(seed))
+    bt_ts = pd.date_range(
+        end=pd.Timestamp.now().normalize() - pd.Timedelta(days=1),
+        periods=800,
+        freq="5min",
+    )
+    volatility = max(spot * 0.0008, 1.0)
+    base = spot + np.cumsum(rng.normal(0, volatility, len(bt_ts)))
+    bt_data = pd.DataFrame({
+        "timestamp": bt_ts,
+        "open": base,
+        "high": base + rng.uniform(0, volatility * 2, len(bt_ts)),
+        "low": base - rng.uniform(0, volatility * 2, len(bt_ts)),
+        "close": base + rng.normal(0, volatility * 0.6, len(bt_ts)),
+        "volume": rng.integers(10000, 100000, len(bt_ts)),
+    })
+    bt_source = "Synthetic demo data"
+else:
+    bt_data = None
+    bt_source = None
+
+if bt_data is not None:
+    required_bt = {"timestamp", "open", "high", "low", "close"}
+    missing_bt = required_bt - set(bt_data.columns)
+    if missing_bt:
+        st.error(f"Backtest data is missing columns: {sorted(missing_bt)}")
+    else:
+        try:
+            frame = add_indicators(bt_data.copy())
+            signals = ["WAIT"]
+            config = StrategyConfig()
+            for i in range(1, len(frame)):
+                rule_signals = evaluate_rules(frame.iloc[i], frame.iloc[i - 1], config)
+                buys = [s for s in rule_signals if s.direction == "BUY"]
+                sells = [s for s in rule_signals if s.direction == "SELL"]
+                if buys and not sells:
+                    signals.append("BUY")
+                elif sells and not buys:
+                    signals.append("SELL")
+                else:
+                    signals.append("WAIT")
+            frame["signal"] = signals
+
+            result = RuleBacktestEngine(
+                starting_capital=settings.starting_capital,
+                risk_per_trade=settings.max_loss_per_trade,
+                instrument=instrument,
+            ).run(frame, symbol=instrument)
+            metrics = result.metrics
+
+            st.info(f"Source: {bt_source} | Rows: {len(frame):,}")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Trades", metrics.total_trades)
+            m2.metric("Win Rate", f"{metrics.win_rate_pct:.1f}%")
+            m3.metric("Net P&L", f"Rs {metrics.net_pnl:,.0f}")
+            m4.metric("Return", f"{metrics.return_pct:.2f}%")
+
+            m5, m6, m7 = st.columns(3)
+            pf = "inf" if metrics.profit_factor == float("inf") else f"{metrics.profit_factor:.2f}"
+            m5.metric("Profit Factor", pf)
+            m6.metric("Max Drawdown", f"Rs {metrics.max_drawdown:,.0f}")
+            m7.metric("Avg Trade", f"Rs {metrics.average_trade:,.0f}")
+
+            if not result.rule_performance.empty:
+                st.markdown("#### Rule Performance")
+                st.dataframe(result.rule_performance, use_container_width=True, hide_index=True)
+
+            if not result.trades.empty:
+                st.markdown("#### Trades")
+                st.dataframe(result.trades, use_container_width=True, hide_index=True)
+        except Exception as exc:
+            st.error(f"Backtest failed: {exc}")
 
 
 st.divider()
