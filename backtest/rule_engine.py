@@ -74,7 +74,7 @@ class RuleBacktestEngine:
         evaluation_start: pd.Timestamp | None = None,
         evaluation_end: pd.Timestamp | None = None,
     ) -> RuleBacktestResult:
-        required = {"timestamp", "open", "high", "low", "close"}
+        required = {"timestamp", "open", "high", "low", "close", "volume"}
         missing = required - set(data.columns)
         if missing:
             raise ValueError(f"Missing columns: {sorted(missing)}")
@@ -84,6 +84,17 @@ class RuleBacktestEngine:
 
         frame = data.copy()
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="raise")
+        for column in ("open", "high", "low", "close", "volume"):
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        frame = frame.dropna(subset=["timestamp", "open", "high", "low", "close", "volume"])
+        invalid_ohlc = (
+            (frame["high"] < frame[["open", "close"]].max(axis=1))
+            | (frame["low"] > frame[["open", "close"]].min(axis=1))
+            | (frame[["open", "high", "low", "close"]] <= 0).any(axis=1)
+            | (frame["volume"] < 0)
+        )
+        if invalid_ohlc.any():
+            raise ValueError(f"Invalid OHLCV rows: {int(invalid_ohlc.sum())}")
         frame = frame.sort_values("timestamp").reset_index(drop=True)
         frame = add_indicators(frame)
 

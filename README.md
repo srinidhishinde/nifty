@@ -126,3 +126,20 @@ python -m streamlit run app/main.py
 ```
 
 Keep the project root as the current directory when launching Streamlit so imports such as `config`, `strategy`, `backtest` and `marketdata` resolve correctly.
+
+
+### Option-chain snapshot CSV
+
+The application also accepts the wide CE/PE option-chain export format containing fields such as:
+
+- Calls/Puts OI and change in OI
+- Calls/Puts volume
+- Calls/Puts IV
+- Calls/Puts delta, theta and vega
+- Calls/Puts built-up
+- Calls/Puts LTP change percentage
+- Strike
+
+This is analyzed as an **option-chain snapshot**, not converted into OHLCV candles. A snapshot does not contain candle open/high/low/close history, timestamps, or bid/ask spread history, so it cannot legitimately be used as the historical seven-rule candle backtest.
+
+Rules 1–5 and 7 need candle/context history; Rule 6 needs bid/ask and spread history. The UI therefore keeps snapshot analysis separate from historical backtesting rather than inventing missing data.
