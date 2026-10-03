@@ -5,7 +5,7 @@ import pandas as pd
 
 from prediction.ensemble_model import predict_latest
 from risk.risk_manager import size_position
-from strategy.rules import StrategyConfig, generate_signal
+from strategy.rules import StrategyConfig, generate_signal\nfrom features.technical.indicators import add_indicators
 
 @dataclass(frozen=True)
 class AISignal:
