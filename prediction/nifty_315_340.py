@@ -50,3 +50,38 @@ def predict_315_340(data: pd.DataFrame, global_news_score: float = 0.0) -> Nifty
     else:
         target = stop = close
     return NiftyPrediction(prediction, confidence, close, round(target,2), round(stop,2), global_news_score, "; ".join(reasons))
+
+def evaluate_next_day_accuracy(data: pd.DataFrame, global_news_score: float = 0.0) -> tuple[float, pd.DataFrame]:
+    """Evaluate the same transparent direction model on daily data.
+
+    This is a validation metric for the model logic, not an ML training claim.
+    """
+    required = {"timestamp", "high", "low", "close"}
+    missing = required - set(data.columns)
+    if missing:
+        raise ValueError(f"Missing columns: {sorted(missing)}")
+    frame = data.copy()
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
+    frame = frame.dropna(subset=["timestamp", "high", "low", "close"]).sort_values("timestamp").reset_index(drop=True)
+    enriched = add_indicators(frame) if "EMA20" not in frame.columns else frame
+    rows = []
+    for i in range(len(enriched) - 1):
+        row = enriched.iloc[i]
+        close = float(row["close"])
+        score = 50.0
+        if pd.notna(row.get("EMA20")) and pd.notna(row.get("EMA50")):
+            score += 18 if row["EMA20"] > row["EMA50"] else -18
+        if pd.notna(row.get("MACD")) and pd.notna(row.get("MACD_SIGNAL")):
+            score += 12 if row["MACD"] > row["MACD_SIGNAL"] else -12
+        score += max(-10.0, min(10.0, global_news_score * 10.0))
+        prediction = "UP" if score >= 55 else "DOWN" if score <= 45 else "FLAT"
+        next_close = float(enriched.iloc[i + 1]["close"])
+        actual = "UP" if next_close > close else "DOWN" if next_close < close else "FLAT"
+        rows.append({
+            "Date": row["timestamp"], "Prediction": prediction,
+            "Actual": actual, "Correct": prediction == actual,
+            "Confidence": round(min(95.0, max(50.0, abs(score - 50.0) + 50.0)), 2),
+        })
+    result = pd.DataFrame(rows)
+    accuracy = float(result["Correct"].mean() * 100) if not result.empty else 0.0
+    return round(accuracy, 2), result
