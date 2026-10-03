@@ -98,5 +98,8 @@ def evaluate_next_day_accuracy(data: pd.DataFrame, global_news_score: float = 0.
             "Confidence": round(min(95.0, max(50.0, abs(score - 50.0) + 50.0)), 2),
         })
     result = pd.DataFrame(rows)
-    accuracy = float(result["Correct"].mean() * 100) if not result.empty else 0.0
+    # Keep warm-up/abstention rows in the audit output, but do not count
+    # them as directional errors when calculating prediction accuracy.
+    evaluated = result[result["Prediction"].isin(["UP", "DOWN"])]
+    accuracy = float(evaluated["Correct"].mean() * 100) if not evaluated.empty else 0.0
     return round(accuracy, 2), result
