@@ -80,6 +80,14 @@ def evaluate_next_day_accuracy(data: pd.DataFrame, global_news_score: float = 0.
             score += 18 if row["EMA20"] > row["EMA50"] else -18
         if pd.notna(row.get("MACD")) and pd.notna(row.get("MACD_SIGNAL")):
             score += 12 if row["MACD"] > row["MACD_SIGNAL"] else -12
+        # During indicator warm-up, use only information available at the
+        # current bar rather than forcing a misleading FLAT prediction.
+        if score == 50.0 and i > 0:
+            prior_close = float(enriched.iloc[i - 1]["close"])
+            if close > prior_close:
+                score += 12
+            elif close < prior_close:
+                score -= 12
         score += max(-10.0, min(10.0, global_news_score * 10.0))
         prediction = "UP" if score >= 55 else "DOWN" if score <= 45 else "FLAT"
         next_close = float(enriched.iloc[i + 1]["close"])
