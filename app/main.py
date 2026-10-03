@@ -1358,6 +1358,59 @@ if option_csv is not None:
 st.divider()
 
 # ============================================================
+# Global news + BTST + NIFTY 3:15-3:40 prediction
+# ============================================================
+
+st.subheader("Global News")
+news_cols = st.columns(3)
+news_cols[0].metric("Global News Sentiment", f"{global_news_score:+.2f}")
+news_cols[1].metric("Latest Global Headline", news_snapshot.headline[:80])
+news_cols[2].metric("Headlines Used", len(news_snapshot.headlines))
+if news_snapshot.headlines:
+    st.dataframe(
+        pd.DataFrame({"Global News": list(news_snapshot.headlines)}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+st.subheader("Buy Today, Sell Tomorrow")
+st.caption("Separate next-session strategy: buy today's close and sell tomorrow, with the same default 1.5% stop-loss discipline.")
+btst_file = st.file_uploader("Upload daily NIFTY OHLC CSV", type=["csv"], key="btst_csv")
+if btst_file is not None:
+    try:
+        btst_data = normalize_nifty_csv(pd.read_csv(btst_file))
+        btst = run_buy_today_sell_tomorrow(btst_data)
+        bc = st.columns(4)
+        bc[0].metric("BTST Accuracy", f"{btst.accuracy_pct:.1f}%")
+        bc[1].metric("BTST Return", f"{btst.total_return_pct:.2f}%")
+        bc[2].metric("BTST Net P&L", f"Rs {btst.net_pnl:,.2f}")
+        bc[3].metric("Trades", len(btst.trades))
+        if not btst.trades.empty:
+            st.dataframe(btst.trades, use_container_width=True, hide_index=True)
+    except Exception as exc:
+        st.error(f"BTST analysis failed: {exc}")
+
+st.subheader("NIFTY Prediction — 3:15–3:40")
+st.caption("Requires intraday timestamped candles. Daily OHLC exports cannot produce this window and are therefore not converted into a false intraday prediction.")
+intraday_file = st.file_uploader("Upload NIFTY intraday CSV", type=["csv"], key="nifty_prediction_csv")
+if intraday_file is not None:
+    try:
+        intraday = pd.read_csv(intraday_file)
+        prediction = predict_315_340(intraday, global_news_score=global_news_score)
+        pc = st.columns(6)
+        pc[0].metric("Prediction", prediction.prediction)
+        pc[1].metric("Confidence", f"{prediction.confidence:.1f}%")
+        pc[2].metric("Reference", "N/A" if prediction.reference_price is None else f"{prediction.reference_price:.2f}")
+        pc[3].metric("Target", "N/A" if prediction.target is None else f"{prediction.target:.2f}")
+        pc[4].metric("Stop Loss", "N/A" if prediction.stop_loss is None else f"{prediction.stop_loss:.2f}")
+        pc[5].metric("Global News", f"{prediction.global_news_score:+.2f}")
+        st.write(prediction.reason)
+    except Exception as exc:
+        st.error(f"NIFTY prediction failed: {exc}")
+
+st.divider()
+
+# ============================================================
 # Backtest
 # ============================================================
 
