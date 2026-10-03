@@ -653,6 +653,9 @@ if spot is None and not neo_status.connected:
     }.get(instrument, 25000.0)
     spot = base_spot + spot_rng.uniform(-100, 100)
 
+if spot is None:
+    spot = 0.0
+
 
 # ============================================================
 # Risk summary
