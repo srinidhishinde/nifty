@@ -22,6 +22,13 @@ from backtest.rule_engine import RuleBacktestEngine
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
 from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
+from features.option_signal_engine import generate_option_chain_signal
+from strategy.buy_today_sell_tomorrow import run_buy_today_sell_tomorrow
+from prediction.nifty_315_340 import predict_315_340, evaluate_next_day_accuracy
+from prediction.nifty_model import walk_forward_predict
+from news.global_news import fetch_global_news
+from marketdata.nifty_csv import normalize_nifty_csv
+from marketdata.option_chain_replay import replay_option_chain_csv
 
 
 # ============================================================
@@ -634,6 +641,13 @@ st.sidebar.caption(
 
 
 # ============================================================
+# Global news
+# ============================================================
+
+news_snapshot = fetch_global_news()
+global_news_score = news_snapshot.sentiment
+
+# ============================================================
 # Research spot
 # ============================================================
 
@@ -936,6 +950,20 @@ chain_df = build_option_chain_dataframe(
     contracts=contracts,
     spot=spot,
 )
+
+chain_signal, chain_signal_rows = generate_option_chain_signal(
+    contracts,
+    spot=spot,
+    global_news_score=global_news_score,
+)
+st.markdown("#### Option-chain signal levels")
+signal_cols = st.columns(6)
+signal_cols[0].metric("Signal", chain_signal.direction)
+signal_cols[1].metric("Confidence", f"{chain_signal.confidence:.1f}%")
+signal_cols[2].metric("Entry", "Unavailable" if chain_signal.entry_price is None else f"Rs {chain_signal.entry_price:.2f}")
+signal_cols[3].metric("Stop Loss", "Unavailable" if chain_signal.stop_loss is None else f"Rs {chain_signal.stop_loss:.2f}")
+signal_cols[4].metric("Take Profit", "Unavailable" if chain_signal.take_profit is None else f"Rs {chain_signal.take_profit:.2f}")
+signal_cols[5].metric("Global News", f"{global_news_score:+.2f}")
 
 
 # ------------------------------------------------------------
@@ -1311,14 +1339,130 @@ if option_csv is not None:
                     "Score": analyze_option(contract).score,
                 })
             snapshot_df = pd.DataFrame(snapshot_rows).sort_values(["Strike", "Side"])
+            option_signal, signal_rows = generate_option_chain_signal(
+                snapshot_contracts,
+                spot=spot,
+                global_news_score=global_news_score,
+            )
+            snapshot_df = snapshot_df.merge(
+                signal_rows[
+                    ["Side", "Strike", "Signal", "Confidence", "Entry Price",
+                     "Stop Loss", "Take Profit", "Global News"]
+                ],
+                on=["Side", "Strike"],
+                how="left",
+            )
             st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
             st.dataframe(snapshot_df, use_container_width=True, hide_index=True)
+            st.markdown("#### Option-chain signal")
+            oc = st.columns(6)
+            oc[0].metric("Signal", option_signal.direction)
+            oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%")
+            oc[2].metric("Entry", "Unavailable" if option_signal.entry_price is None else f"Rs {option_signal.entry_price:.2f}")
+            oc[3].metric("Stop Loss", "Unavailable" if option_signal.stop_loss is None else f"Rs {option_signal.stop_loss:.2f}")
+            oc[4].metric("Take Profit", "Unavailable" if option_signal.take_profit is None else f"Rs {option_signal.take_profit:.2f}")
+            oc[5].metric("Global News", f"{global_news_score:+.2f}")
+            if option_signal.entry_price is None:
+                st.info("This snapshot contains LTP change %, not option LTP. Option entry/SL/TP are unavailable for the premium; underlying reference levels remain available.")
             st.info(
                 "Rules 1–5 and 7 require candle/context history. Rule 6 additionally requires bid/ask and spread history. "
                 "This snapshot has none of those fields, so it is not silently used as candle backtest input."
             )
     except Exception as exc:
         st.error(f"Option-chain snapshot import failed: {exc}")
+
+st.subheader("Historical Option-Chain Replay")
+st.caption("Replay requires timestamped option-chain snapshots. A single exported snapshot cannot be replayed because it has no time axis.")
+replay_file = st.file_uploader("Upload timestamped option-chain replay CSV", type=["csv"], key="option_replay_csv")
+if replay_file is not None:
+    try:
+        replay_df = pd.read_csv(replay_file)
+        snapshots = replay_option_chain_csv(replay_df)
+        st.success(f"Loaded {len(snapshots):,} timestamped option-chain snapshots.")
+        if snapshots:
+            st.dataframe(
+                pd.DataFrame({
+                    "Timestamp": [ts for ts, _ in snapshots],
+                    "Contracts": [len(cs) for _, cs in snapshots],
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+    except Exception as exc:
+        st.error(f"Option-chain replay failed: {exc}")
+
+st.divider()
+
+# ============================================================
+# Global news + BTST + NIFTY 3:15-3:40 prediction
+# ============================================================
+
+st.subheader("Global News")
+news_cols = st.columns(3)
+news_cols[0].metric("Global News Sentiment", f"{global_news_score:+.2f}")
+news_cols[1].metric("Latest Global Headline", news_snapshot.headline[:80])
+news_cols[2].metric("Headlines Used", len(news_snapshot.headlines))
+if news_snapshot.headlines:
+    st.dataframe(
+        pd.DataFrame({"Global News": list(news_snapshot.headlines)}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+st.subheader("Buy Today, Sell Tomorrow")
+st.caption("Separate next-session strategy: buy today's close and sell tomorrow, with the same default 1.5% stop-loss discipline.")
+btst_file = st.file_uploader("Upload daily NIFTY OHLC CSV", type=["csv"], key="btst_csv")
+if btst_file is not None:
+    try:
+        btst_data = normalize_nifty_csv(pd.read_csv(btst_file))
+        btst = run_buy_today_sell_tomorrow(btst_data)
+        model_accuracy, model_rows = evaluate_next_day_accuracy(
+            btst_data,
+            global_news_score=global_news_score,
+        )
+        walk_forward = walk_forward_predict(btst_data)
+        bc = st.columns(6)
+        bc[0].metric("BTST Accuracy", f"{btst.accuracy_pct:.1f}%")
+        bc[1].metric("BTST Return", f"{btst.total_return_pct:.2f}%")
+        bc[2].metric("BTST Net P&L", f"Rs {btst.net_pnl:,.2f}")
+        bc[3].metric("Trades", len(btst.trades))
+        bc[4].metric("Rule Model Accuracy", f"{model_accuracy:.1f}%")
+        bc[5].metric("Walk-Forward ML Accuracy", f"{walk_forward.accuracy_pct:.1f}%")
+        if not btst.trades.empty:
+            st.dataframe(btst.trades, use_container_width=True, hide_index=True)
+        st.markdown("#### Rule prediction accuracy")
+        st.dataframe(model_rows, use_container_width=True, hide_index=True)
+        st.markdown("#### Walk-forward ML prediction")
+        st.dataframe(walk_forward.predictions, use_container_width=True, hide_index=True)
+    except Exception as exc:
+        st.error(f"BTST analysis failed: {exc}")
+
+st.subheader("NIFTY Prediction — 3:15–3:40")
+st.caption("Requires intraday timestamped candles. Daily OHLC exports cannot produce this window and are therefore not converted into a false intraday prediction.")
+intraday_file = st.file_uploader("Upload NIFTY intraday CSV", type=["csv"], key="nifty_prediction_csv")
+if intraday_file is not None:
+    try:
+        intraday = pd.read_csv(intraday_file)
+        prediction = predict_315_340(intraday, global_news_score=global_news_score)
+        pc = st.columns(6)
+        pc[0].metric("Prediction", prediction.prediction)
+        pc[1].metric("Confidence", f"{prediction.confidence:.1f}%")
+        pc[2].metric("Reference", "N/A" if prediction.reference_price is None else f"{prediction.reference_price:.2f}")
+        pc[3].metric("Target", "N/A" if prediction.target is None else f"{prediction.target:.2f}")
+        pc[4].metric("Stop Loss", "N/A" if prediction.stop_loss is None else f"{prediction.stop_loss:.2f}")
+        pc[5].metric("Global News", f"{prediction.global_news_score:+.2f}")
+        prediction_table = pd.DataFrame([{
+            "Prediction": prediction.prediction,
+            "Confidence": prediction.confidence,
+            "Reference": prediction.reference_price,
+            "Target": prediction.target,
+            "Stop Loss": prediction.stop_loss,
+            "Global News": prediction.global_news_score,
+        }])
+        st.dataframe(prediction_table, use_container_width=True, hide_index=True)
+        st.write(prediction.reason)
+    except Exception as exc:
+        st.error(f"NIFTY prediction failed: {exc}")
 
 st.divider()
 
