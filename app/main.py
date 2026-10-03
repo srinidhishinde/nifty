@@ -1390,9 +1390,16 @@ if bt_data is not None:
     missing_bt = required_bt - set(bt_data.columns)
 
     if missing_bt:
-        st.error(
-            f"Backtest data is missing required columns: {sorted(missing_bt)}"
-        )
+        if is_option_chain_snapshot(bt_data.columns):
+            st.error(
+                "This CSV is an option-chain snapshot, not historical OHLCV candle data. "
+                "Use the 'Option-Chain Snapshot Import' section above for CE/PE analysis. "
+                "For the seven-rule backtest, upload timestamp, open, high, low, close and volume."
+            )
+        else:
+            st.error(
+                f"Backtest data is missing required columns: {sorted(missing_bt)}"
+            )
     else:
         try:
             bt_data = bt_data.copy()
