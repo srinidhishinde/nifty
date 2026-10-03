@@ -1323,8 +1323,31 @@ if option_csv is not None:
                     "Score": analyze_option(contract).score,
                 })
             snapshot_df = pd.DataFrame(snapshot_rows).sort_values(["Strike", "Side"])
+            option_signal, signal_rows = generate_option_chain_signal(
+                snapshot_contracts,
+                spot=spot,
+                global_news_score=global_news_score,
+            )
+            snapshot_df = snapshot_df.merge(
+                signal_rows[
+                    ["Side", "Strike", "Signal", "Confidence", "Entry Price",
+                     "Stop Loss", "Take Profit", "Global News"]
+                ],
+                on=["Side", "Strike"],
+                how="left",
+            )
             st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
             st.dataframe(snapshot_df, use_container_width=True, hide_index=True)
+            st.markdown("#### Option-chain signal")
+            oc = st.columns(6)
+            oc[0].metric("Signal", option_signal.direction)
+            oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%")
+            oc[2].metric("Entry", "Unavailable" if option_signal.entry_price is None else f"Rs {option_signal.entry_price:.2f}")
+            oc[3].metric("Stop Loss", "Unavailable" if option_signal.stop_loss is None else f"Rs {option_signal.stop_loss:.2f}")
+            oc[4].metric("Take Profit", "Unavailable" if option_signal.take_profit is None else f"Rs {option_signal.take_profit:.2f}")
+            oc[5].metric("Global News", f"{global_news_score:+.2f}")
+            if option_signal.entry_price is None:
+                st.info("This snapshot contains LTP change %, not option LTP. Option entry/SL/TP are unavailable for the premium; underlying reference levels remain available.")
             st.info(
                 "Rules 1–5 and 7 require candle/context history. Rule 6 additionally requires bid/ask and spread history. "
                 "This snapshot has none of those fields, so it is not silently used as candle backtest input."
