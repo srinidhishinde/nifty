@@ -89,7 +89,7 @@ def generate_signal(data:pd.DataFrame,config:StrategyConfig|None=None)->Strategy
     buys=[r for r in rules if r.direction=="BUY"]; sells=[r for r in rules if r.direction=="SELL"]
     atr=float(_v(row,("ATR",),0) or 0); total=sum(r.weight for r in rules); direction="BUY" if buys and not sells else "SELL" if sells and not buys else "WAIT"
     if direction=="WAIT":return StrategySignal(direction,tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,0,False)
-    directional=sum(r.weight for r in rules if r.direction==direction); confidence=min(97.0,50+50*directional/max(total,1e-9))
+    directional=sum(r.weight for r in rules if r.direction==direction); confidence=min(95.0,50+8*directional)
     atr_pct=float(_v(row,("ATR_PCT",),0) or 0)
     if atr_pct>c.max_atr_pct:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
     close=float(row["close"]); risk=max(close*c.stop_loss_pct,atr*c.atr_stop_multiple if atr>0 else 0); reward=max(close*c.min_target_pct,atr*c.target_atr_multiple if atr>0 else 0)
