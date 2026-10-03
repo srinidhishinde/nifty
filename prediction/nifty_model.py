@@ -63,6 +63,7 @@ def walk_forward_predict(data: pd.DataFrame, min_train: int = 20) -> WalkForward
             "Probability Up": round(probability * 100, 2),
             "Actual": actual,
             "Correct": prediction == actual,
+            "Global News": round(float(frame.iloc[i]["global_news"]), 3),
         })
     result = pd.DataFrame(rows)
     accuracy = float(result["Correct"].mean() * 100) if not result.empty else 0.0
