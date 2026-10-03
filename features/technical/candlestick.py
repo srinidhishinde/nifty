@@ -10,6 +10,7 @@ PATTERN_COLUMNS = (
     "three_black_crows", "bullish_marubozu", "bearish_marubozu",
 )
 
+
 def add_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
     required = {"open", "high", "low", "close"}
     missing = required - set(df.columns)
@@ -31,12 +32,40 @@ def add_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
     prev_bull, prev_bear = bullish.shift(1).fillna(False), bearish.shift(1).fillna(False)
     prev_body = body.shift(1)
     prev2_o, prev2_c = o.shift(2), c.shift(2)
+
     out["doji"] = (body <= rng * 0.10).astype(int)
     out["hammer"] = ((lower >= body_safe * 2) & (upper <= body * 0.75) & ((c - l) / rng.replace(0, np.nan) >= 0.60)).fillna(False).astype(int)
     out["inverted_hammer"] = ((upper >= body_safe * 2) & (lower <= body * 0.75) & ((c - l) / rng.replace(0, np.nan) >= 0.60) & bullish).fillna(False).astype(int)
     out["shooting_star"] = ((upper >= body_safe * 2) & (lower <= body * 0.75) & ((h - c) / rng.replace(0, np.nan) <= 0.35)).fillna(False).astype(int)
-    out["bullish_engulfing"] = (prev_bear & bullish & (o <= prev_c) & (c >= prev_o) & (body > prev_body)).astype(int)
-    out["bearish_engulfing"] = (prev_bull & bearish & (o >= prev_c) & (c <= prev_o) & (body > prev_body)).astype(int)
+
+    # Engulfing is evaluated using the candle body/range envelope. This also
+    # handles broker exports where the current candle opens inside the prior
+    # candle's body but its full high/low range engulfs the prior candle.
+    out["bullish_engulfing"] = (
+        prev_bear
+        & bullish
+        & (c >= prev_o)
+        & (o <= prev_c)
+        & (body > prev_body)
+    ).astype(int)
+    out["bearish_engulfing"] = (
+        prev_bull
+        & bearish
+        & (c <= prev_o)
+        & (o >= prev_c)
+        & (body > prev_body)
+    ).astype(int)
+
+    # Some feeds describe engulfing by the full candle range rather than body.
+    out.loc[
+        prev_bull & bearish & (l <= o.shift(1)) & (h >= c.shift(1)) & (body >= prev_body),
+        "bearish_engulfing",
+    ] = 1
+    out.loc[
+        prev_bear & bullish & (l <= c.shift(1)) & (h >= o.shift(1)) & (body >= prev_body),
+        "bullish_engulfing",
+    ] = 1
+
     out["bullish_harami"] = (prev_bear & bullish & (o >= prev_c) & (c <= prev_o) & (body < prev_body)).astype(int)
     out["bearish_harami"] = (prev_bull & bearish & (o <= prev_c) & (c >= prev_o) & (body < prev_body)).astype(int)
     middle_small = prev_body <= (h.shift(1) - l.shift(1)).replace(0, np.nan) * 0.35
@@ -50,6 +79,7 @@ def add_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
     out["three_black_crows"] = (bearish & bearish.shift(1).fillna(False) & bearish.shift(2).fillna(False) & (c < c.shift(1)) & (c.shift(1) < c.shift(2)) & (o < o.shift(1)) & (o > c.shift(1)) & (o.shift(1) > c.shift(2))).astype(int)
     out["bullish_marubozu"] = (bullish & body >= rng * 0.85).astype(int)
     out["bearish_marubozu"] = (bearish & body >= rng * 0.85).astype(int)
+
     weights = {
         "bullish_engulfing": 3, "bearish_engulfing": -3, "morning_star": 3, "evening_star": -3,
         "piercing_line": 2, "dark_cloud_cover": -2, "three_white_soldiers": 3,
