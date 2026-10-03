@@ -951,6 +951,20 @@ chain_df = build_option_chain_dataframe(
     spot=spot,
 )
 
+chain_signal, chain_signal_rows = generate_option_chain_signal(
+    contracts,
+    spot=spot,
+    global_news_score=global_news_score,
+)
+st.markdown("#### Option-chain signal levels")
+signal_cols = st.columns(6)
+signal_cols[0].metric("Signal", chain_signal.direction)
+signal_cols[1].metric("Confidence", f"{chain_signal.confidence:.1f}%")
+signal_cols[2].metric("Entry", "Unavailable" if chain_signal.entry_price is None else f"Rs {chain_signal.entry_price:.2f}")
+signal_cols[3].metric("Stop Loss", "Unavailable" if chain_signal.stop_loss is None else f"Rs {chain_signal.stop_loss:.2f}")
+signal_cols[4].metric("Take Profit", "Unavailable" if chain_signal.take_profit is None else f"Rs {chain_signal.take_profit:.2f}")
+signal_cols[5].metric("Global News", f"{global_news_score:+.2f}")
+
 
 # ------------------------------------------------------------
 # 2 ATM + 5 OTM selection
@@ -1437,6 +1451,15 @@ if intraday_file is not None:
         pc[3].metric("Target", "N/A" if prediction.target is None else f"{prediction.target:.2f}")
         pc[4].metric("Stop Loss", "N/A" if prediction.stop_loss is None else f"{prediction.stop_loss:.2f}")
         pc[5].metric("Global News", f"{prediction.global_news_score:+.2f}")
+        prediction_table = pd.DataFrame([{
+            "Prediction": prediction.prediction,
+            "Confidence": prediction.confidence,
+            "Reference": prediction.reference_price,
+            "Target": prediction.target,
+            "Stop Loss": prediction.stop_loss,
+            "Global News": prediction.global_news_score,
+        }])
+        st.dataframe(prediction_table, use_container_width=True, hide_index=True)
         st.write(prediction.reason)
     except Exception as exc:
         st.error(f"NIFTY prediction failed: {exc}")
