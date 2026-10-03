@@ -67,7 +67,13 @@ class RuleBacktestEngine:
         self.instrument = instrument.upper()
         self.config = config or StrategyConfig()
 
-    def run(\n        self,\n        data: pd.DataFrame,\n        symbol: str = "NIFTY",\n        evaluation_start: pd.Timestamp | None = None,\n        evaluation_end: pd.Timestamp | None = None,\n    ) -> RuleBacktestResult:
+    def run(
+        self,
+        data: pd.DataFrame,
+        symbol: str = "NIFTY",
+        evaluation_start: pd.Timestamp | None = None,
+        evaluation_end: pd.Timestamp | None = None,
+    ) -> RuleBacktestResult:
         required = {"timestamp", "open", "high", "low", "close"}
         missing = required - set(data.columns)
         if missing:
