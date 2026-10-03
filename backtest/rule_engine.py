@@ -153,7 +153,8 @@ class RuleBacktestEngine:
             entry = float(row["close"])
             stop = entry * (1 - self.config.stop_loss_pct) if direction == "BUY" else entry * (1 + self.config.stop_loss_pct)
             target = entry * (1 + self.config.target_roi_pct) if direction == "BUY" else entry * (1 - self.config.target_roi_pct)
-            risk_distance = abs(entry - stop)
+            atr = float(row.get("ATR", 0.0) or 0.0)
+            risk_distance = max(abs(entry - stop), atr * self.config.atr_risk_multiplier)
             if risk_distance <= 0:
                 continue
 
@@ -168,6 +169,7 @@ class RuleBacktestEngine:
                 "target": round(target, 4),
                 "quantity": quantity,
                 "capital_at_risk": capital_at_risk,
+                "atr": atr,
                 "rule": "|".join(s.rule for s in signals),
                 "rules": tuple(s.rule for s in signals),
             }
