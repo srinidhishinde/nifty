@@ -45,6 +45,13 @@ class KotakNeoProvider(MarketDataProvider):
             return "Kotak Neo returned an invalid response."
         if response.get("stat") == "Ok" or str(response.get("status", "")).lower() in {"ok", "success"}:
             return ""
+        # Current Neo market-data success responses may contain only a
+        # populated data payload (the option-chain docs show no stat field).
+        # Treat a non-empty data object as success rather than inventing an
+        # error for an otherwise valid response.
+        data = response.get("data")
+        if isinstance(data, dict) and data:
+            return ""
         if response.get("errMsg"):
             return str(response["errMsg"])
         errors = response.get("error")
