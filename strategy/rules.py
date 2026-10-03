@@ -54,6 +54,7 @@ class StrategyConfig:
     stop_loss_pct: float = 0.015
     target_roi_pct: float = 0.40
     min_rules_for_signal: int = 1
+    atr_risk_multiplier: float = 1.0
 
 
 def _value(row: pd.Series, *names: str, default: float | None = None) -> float | None:
