@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import pandas as pd
+
 from features.technical.indicators import add_indicators
+
 
 @dataclass(frozen=True)
 class NiftyPrediction:
@@ -14,12 +16,20 @@ class NiftyPrediction:
     global_news_score: float
     reason: str
 
+
+def _ensure_ohlc(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    if "open" not in out.columns:
+        out["open"] = pd.to_numeric(out["close"], errors="coerce")
+    return out
+
+
 def predict_315_340(data: pd.DataFrame, global_news_score: float = 0.0) -> NiftyPrediction:
     required = {"timestamp", "high", "low", "close"}
     missing = required - set(data.columns)
     if missing:
         raise ValueError(f"Missing columns: {sorted(missing)}")
-    frame = data.copy()
+    frame = _ensure_ohlc(data)
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
     frame = frame.dropna(subset=["timestamp", "high", "low", "close"]).sort_values("timestamp")
     times = frame["timestamp"].dt.time
@@ -49,18 +59,15 @@ def predict_315_340(data: pd.DataFrame, global_news_score: float = 0.0) -> Nifty
         target, stop = close * 0.985, close * 1.015
     else:
         target = stop = close
-    return NiftyPrediction(prediction, confidence, close, round(target,2), round(stop,2), global_news_score, "; ".join(reasons))
+    return NiftyPrediction(prediction, confidence, close, round(target, 2), round(stop, 2), global_news_score, "; ".join(reasons))
+
 
 def evaluate_next_day_accuracy(data: pd.DataFrame, global_news_score: float = 0.0) -> tuple[float, pd.DataFrame]:
-    """Evaluate the same transparent direction model on daily data.
-
-    This is a validation metric for the model logic, not an ML training claim.
-    """
     required = {"timestamp", "high", "low", "close"}
     missing = required - set(data.columns)
     if missing:
         raise ValueError(f"Missing columns: {sorted(missing)}")
-    frame = data.copy()
+    frame = _ensure_ohlc(data)
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
     frame = frame.dropna(subset=["timestamp", "high", "low", "close"]).sort_values("timestamp").reset_index(drop=True)
     enriched = add_indicators(frame) if "EMA20" not in frame.columns else frame
