@@ -21,6 +21,7 @@ from strategy.strike_selector import StrikeSelector
 from backtest.rule_engine import RuleBacktestEngine
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
+from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
 
 
 # ============================================================
@@ -1264,6 +1265,62 @@ st.plotly_chart(
 
 st.divider()
 
+
+# ============================================================
+# Option-chain CSV snapshot analysis
+# ============================================================
+
+st.subheader("Option-Chain Snapshot Import")
+st.caption(
+    "Your Calls/ Puts OI, IV, volume, delta, theta, vega and built-up export is an option-chain snapshot. "
+    "It is suitable for option-chain analysis, but it is not OHLCV candle history and cannot be used directly "
+    "for the seven-rule candle backtest."
+)
+
+option_csv = st.file_uploader(
+    "Upload option-chain snapshot CSV",
+    type=["csv"],
+    key="option_chain_csv",
+    help="Supports Strike plus Calls/ Puts OI, volume, IV, delta, theta, vega and built-up columns.",
+)
+
+if option_csv is not None:
+    try:
+        option_snapshot = pd.read_csv(option_csv)
+        if not is_option_chain_snapshot(option_snapshot.columns):
+            st.error(
+                "This file is not recognized as the supported option-chain snapshot format. "
+                "Expected a Strike column and Calls OI or Puts OI."
+            )
+        else:
+            snapshot_contracts = parse_option_chain_csv(option_snapshot)
+            snapshot_rows = []
+            for contract in snapshot_contracts:
+                snapshot_rows.append({
+                    "Side": contract.option_type,
+                    "Strike": contract.strike,
+                    "LTP Change %": contract.ltp_change_pct,
+                    "IV": contract.implied_volatility,
+                    "OI": contract.open_interest,
+                    "OI Change": contract.oi_change,
+                    "Volume": contract.volume,
+                    "Built Up": contract.built_up,
+                    "Delta": contract.delta,
+                    "Theta": contract.theta,
+                    "Vega": contract.vega,
+                    "Score": analyze_option(contract).score,
+                })
+            snapshot_df = pd.DataFrame(snapshot_rows).sort_values(["Strike", "Side"])
+            st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
+            st.dataframe(snapshot_df, use_container_width=True, hide_index=True)
+            st.info(
+                "Rules 1–5 and 7 require candle/context history. Rule 6 additionally requires bid/ask and spread history. "
+                "This snapshot has none of those fields, so it is not silently used as candle backtest input."
+            )
+    except Exception as exc:
+        st.error(f"Option-chain snapshot import failed: {exc}")
+
+st.divider()
 
 # ============================================================
 # Backtest
