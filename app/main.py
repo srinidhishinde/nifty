@@ -460,6 +460,14 @@ def build_option_chain_dataframe(
         list(rows.values())
     )
 
+    option_columns = [
+        "CE LTP", "CE Volume", "CE OI", "CE OI Chg", "CE IV", "CE Score",
+        "PE LTP", "PE Volume", "PE OI", "PE OI Chg", "PE IV", "PE Score",
+    ]
+    for column in option_columns:
+        if column not in dataframe:
+            dataframe[column] = np.nan
+
     dataframe[
         "Distance"
     ] = (
@@ -903,7 +911,7 @@ else:
 chain_df = build_option_chain_dataframe(
     contracts=contracts,
     spot=spot,
-) if contracts else pd.DataFrame(columns=["Strike"])
+)
 
 
 # ------------------------------------------------------------
@@ -1036,7 +1044,7 @@ st.dataframe(
 
 
 st.caption(
-    "ATM is the strike closest to the synthetic underlying price. "
+    "ATM is the strike closest to the displayed underlying price. "
     "2 ATM + 5 OTM is a research selection view, not an order instruction."
 )
 
@@ -1196,7 +1204,7 @@ dates = pd.date_range(
 )
 
 prices = (
-    base_spot
+    spot
     + np.cumsum(
         chart_rng.normal(
             0,
