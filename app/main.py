@@ -1432,13 +1432,22 @@ if bt_data is not None:
                         )
                     else:
                         try:
+                            evaluation_start = pd.Timestamp(start_date)
+                            evaluation_end = (
+                                pd.Timestamp(end_date)
+                                + pd.Timedelta(days=1)
+                                - pd.Timedelta(microseconds=1)
+                            )
+
                             result = RuleBacktestEngine(
                                 starting_capital=settings.starting_capital,
                                 risk_per_trade=settings.max_loss_per_trade,
                                 instrument=instrument,
                             ).run(
-                                selected,
+                                bt_data,
                                 symbol=instrument,
+                                evaluation_start=evaluation_start,
+                                evaluation_end=evaluation_end,
                             )
                             metrics = result.metrics
                             trades = result.trades.copy()
