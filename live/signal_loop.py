@@ -9,7 +9,7 @@ import pandas as pd
 
 from features.option_signal_engine import generate_option_chain_signal
 from news.global_news import fetch_global_news
-from strategy.rules import generate_signal
+from strategy.ai_signal import generate_ai_signal
 
 
 @dataclass
@@ -23,7 +23,7 @@ class LiveSignalLoop:
     fetch_candles: Callable[[], pd.DataFrame]
     fetch_options: Callable[[], list]
     spot_provider: Callable[[], float]
-    interval_seconds: int = 30
+    interval_seconds: int = 30\n    capital: float = 300000.0
     on_signal: Callable[[dict], None] | None = None
     running: bool = field(default=False, init=False)
 
@@ -31,7 +31,7 @@ class LiveSignalLoop:
         candles = self.fetch_candles()
         spot = float(self.spot_provider())
         news = fetch_global_news()
-        technical = generate_signal(candles)
+        ai = generate_ai_signal(candles, capital=self.capital, global_news_score=news.sentiment)
         option_signal, _ = generate_option_chain_signal(
             self.fetch_options(),
             spot=spot,

@@ -16,5 +16,5 @@ def test_live_loop_runs_one_cycle(monkeypatch):
     options = [OptionContract("CE","",25000,"CE",100,99,101,1000,2000,500,20)]
     loop = LiveSignalLoop(lambda: candles, lambda: options, lambda: 25000, interval_seconds=0)
     result = loop.run_once()
-    assert "option_confidence" in result
+    assert "option_confidence" in result\n    assert "ai_confidence" in result\n    assert "ai_abstain" in result\n    assert "position_quantity" in result
     assert "global_news" in result
