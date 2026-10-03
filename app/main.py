@@ -22,6 +22,11 @@ from backtest.rule_engine import RuleBacktestEngine
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
 from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
+from features.option_signal_engine import generate_option_chain_signal
+from strategy.buy_today_sell_tomorrow import run_buy_today_sell_tomorrow
+from prediction.nifty_315_340 import predict_315_340
+from news.global_news import fetch_global_news
+from marketdata.nifty_csv import normalize_nifty_csv
 
 
 # ============================================================
@@ -632,6 +637,13 @@ st.sidebar.caption(
     "Kotak Neo: " + ("CONNECTED" if neo_status.connected else "NOT CONNECTED")
 )
 
+
+# ============================================================
+# Global news
+# ============================================================
+
+news_snapshot = fetch_global_news()
+global_news_score = news_snapshot.sentiment
 
 # ============================================================
 # Research spot
