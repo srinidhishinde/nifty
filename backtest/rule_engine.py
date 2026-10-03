@@ -22,8 +22,6 @@ def _in_session(ts: pd.Timestamp, session: str) -> bool:
     if session == "NIFTY":
         return time(9, 15) <= current <= time(15, 30)
     if session == "MCX":
-        # MCX spans midnight in some products. This implementation treats
-        # 09:00-23:30 as the active session, matching the supplied pseudocode.
         return time(9, 0) <= current <= time(23, 30)
     return True
 
@@ -33,8 +31,6 @@ def _exit_for_bar(direction: str, entry: float, stop: float, target: float, high
         stop_hit = low <= stop
         target_hit = high >= target
         if stop_hit and target_hit:
-            # Conservative OHLC backtest assumption: stop is hit first when
-            # both levels are inside the same candle.
             return stop, "stop_loss"
         if stop_hit:
             return stop, "stop_loss"
@@ -53,7 +49,7 @@ def _exit_for_bar(direction: str, entry: float, stop: float, target: float, high
 
 
 class RuleBacktestEngine:
-    """Backtest the seven rules on OHLCV/market-context candles."""
+    """Backtest the configured rules using the same ATR-aware risk model as live signals."""
 
     def __init__(
         self,
@@ -136,7 +132,6 @@ class RuleBacktestEngine:
                     position = None
                     continue
 
-                # Force exit at the final in-session candle of each trading day.
                 next_ts = frame.iloc[i + 1]["timestamp"] if i + 1 < len(frame) else None
                 if next_ts is None or next_ts.date() != ts.date() or not _in_session(next_ts, self.instrument):
                     exit_price = float(row["close"])
@@ -157,8 +152,6 @@ class RuleBacktestEngine:
                     position = None
                 continue
 
-            # Indicator warm-up uses the full historical frame, but new
-            # entries must be restricted to the requested evaluation window.
             if evaluation_start is not None and ts < pd.Timestamp(evaluation_start):
                 continue
             if evaluation_end is not None and ts > pd.Timestamp(evaluation_end):
@@ -175,13 +168,20 @@ class RuleBacktestEngine:
 
             direction = "BUY" if buys else "SELL"
             entry = float(row["close"])
-            stop = entry * (1 - self.config.stop_loss_pct) if direction == "BUY" else entry * (1 + self.config.stop_loss_pct)
-            target = entry * (1 + self.config.target_roi_pct) if direction == "BUY" else entry * (1 - self.config.target_roi_pct)
             atr = float(row.get("ATR", 0.0) or 0.0)
-            risk_distance = max(abs(entry - stop), atr * self.config.atr_risk_multiplier)
-            if risk_distance <= 0:
+            risk_distance = max(
+                entry * self.config.stop_loss_pct,
+                atr * self.config.atr_stop_multiple if atr > 0 else 0.0,
+            )
+            reward_distance = max(
+                entry * self.config.min_target_pct,
+                atr * self.config.target_atr_multiple if atr > 0 else 0.0,
+            )
+            if risk_distance <= 0 or reward_distance <= 0:
                 continue
 
+            stop = entry - risk_distance if direction == "BUY" else entry + risk_distance
+            target = entry + reward_distance if direction == "BUY" else entry - reward_distance
             quantity = max(1, int(self.risk_per_trade / risk_distance))
             capital_at_risk = quantity * risk_distance
             position = {
