@@ -60,6 +60,35 @@ class KotakNeoProvider(MarketDataProvider):
             "Resolve the Neo instrument token before requesting a quote."
         )
 
+    def get_index_quote(self, index_name: str = "Nifty 50") -> Quote:
+        """Fetch the current NIFTY index quote using Neo's index-name identifier."""
+        response = self.client.quotes(
+            instrument_tokens=[{
+                "instrument_token": index_name,
+                "exchange_segment": "nse_cm",
+            }],
+            quote_type="all",
+        )
+        if isinstance(response, dict):
+            data = self._response_data(response)
+            response = data.get("quotes") or data.get("data") or []
+        if not isinstance(response, list) or not response:
+            raise RuntimeError("Kotak Neo returned no NIFTY index quote.")
+        row = response[0]
+        ltp = self._float(row.get("ltp"))
+        if ltp <= 0:
+            raise RuntimeError("Kotak Neo returned an invalid NIFTY index price.")
+        return Quote(
+            timestamp=datetime.now(),
+            symbol=index_name,
+            exchange="nse_cm",
+            ltp=ltp,
+            volume=self._float(row.get("last_volume") or row.get("volume")),
+            open_interest=self._float(row.get("open_int")),
+            bid=None,
+            ask=None,
+        )
+
     def get_option_chain(
         self,
         underlying: str,
