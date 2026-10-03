@@ -33,7 +33,7 @@ def _features(data: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def walk_forward_predict(data: pd.DataFrame, min_train: int = 30) -> WalkForwardResult:
+def walk_forward_predict(data: pd.DataFrame, min_train: int = 20) -> WalkForwardResult:
     required = {"timestamp", "close", "high", "low"}
     missing = required - set(data.columns)
     if missing:
