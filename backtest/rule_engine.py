@@ -7,6 +7,7 @@ import pandas as pd
 
 from backtest.metrics import calculate_metrics
 from features.technical.indicators import add_indicators
+from risk.risk_manager import size_position
 from strategy.rules import StrategyConfig, evaluate_rules, rank_rule_performance
 
 
@@ -28,40 +29,42 @@ def _in_session(ts: pd.Timestamp, session: str) -> bool:
 
 def _exit_for_bar(direction: str, entry: float, stop: float, target: float, high: float, low: float):
     if direction == "BUY":
-        stop_hit = low <= stop
-        target_hit = high >= target
-        if stop_hit and target_hit:
-            return stop, "stop_loss"
-        if stop_hit:
-            return stop, "stop_loss"
-        if target_hit:
-            return target, "take_profit"
+        stop_hit, target_hit = low <= stop, high >= target
     else:
-        stop_hit = high >= stop
-        target_hit = low <= target
-        if stop_hit and target_hit:
-            return stop, "stop_loss"
-        if stop_hit:
-            return stop, "stop_loss"
-        if target_hit:
-            return target, "take_profit"
+        stop_hit, target_hit = high >= stop, low <= target
+    if stop_hit:
+        return stop, "stop_loss"
+    if target_hit:
+        return target, "take_profit"
     return None, None
 
 
 class RuleBacktestEngine:
-    """Backtest the configured rules using the same ATR-aware risk model as live signals."""
+    """Conservative OHLC backtest using the same ATR-aware risk model as live signals."""
 
     def __init__(
         self,
         starting_capital: float = 300000.0,
-        risk_per_trade: float = 15000.0,
+        risk_per_trade: float = 3000.0,
         instrument: str = "NIFTY",
         config: StrategyConfig | None = None,
+        commission_pct: float = 0.0005,
+        slippage_pct: float = 0.0005,
+        daily_loss_limit_pct: float = 0.02,
     ):
         self.starting_capital = float(starting_capital)
         self.risk_per_trade = float(risk_per_trade)
         self.instrument = instrument.upper()
         self.config = config or StrategyConfig()
+        self.commission_pct = max(float(commission_pct), 0.0)
+        self.slippage_pct = max(float(slippage_pct), 0.0)
+        self.daily_loss_limit_pct = max(float(daily_loss_limit_pct), 0.0)
+
+    def _execution_price(self, price: float, direction: str, entry: bool) -> float:
+        adverse = self.slippage_pct if direction == "BUY" else -self.slippage_pct
+        if not entry:
+            adverse = -adverse
+        return price * (1.0 + adverse)
 
     def run(
         self,
@@ -91,63 +94,55 @@ class RuleBacktestEngine:
         )
         if invalid_ohlc.any():
             raise ValueError(f"Invalid OHLCV rows: {int(invalid_ohlc.sum())}")
-        frame = frame.sort_values("timestamp").reset_index(drop=True)
-        frame = add_indicators(frame)
+        frame = add_indicators(frame.sort_values("timestamp").reset_index(drop=True))
 
         trades: list[dict] = []
         position = None
+        equity = self.starting_capital
+        daily_pnl: dict[object, float] = {}
 
         for i in range(1, len(frame)):
-            row = frame.iloc[i]
-            previous = frame.iloc[i - 1]
+            row, previous = frame.iloc[i], frame.iloc[i - 1]
             ts = row["timestamp"]
-
             if not _in_session(ts, self.instrument):
                 continue
 
             if position is not None:
                 exit_price, reason = _exit_for_bar(
-                    position["direction"],
-                    position["entry"],
-                    position["stop_loss"],
-                    position["target"],
-                    float(row["high"]),
-                    float(row["low"]),
+                    position["direction"], position["entry"], position["stop_loss"],
+                    position["target"], float(row["high"]), float(row["low"])
                 )
+                if exit_price is None:
+                    next_ts = frame.iloc[i + 1]["timestamp"] if i + 1 < len(frame) else None
+                    if next_ts is None or next_ts.date() != ts.date() or not _in_session(next_ts, self.instrument):
+                        exit_price, reason = float(row["close"]), "market_close"
+
                 if exit_price is not None:
+                    raw_exit = float(exit_price)
+                    fill_exit = self._execution_price(raw_exit, position["direction"], entry=False)
                     signed_roi = (
-                        (exit_price - position["entry"]) / position["entry"]
+                        (fill_exit - position["entry"]) / position["entry"]
                         if position["direction"] == "BUY"
-                        else (position["entry"] - exit_price) / position["entry"]
+                        else (position["entry"] - fill_exit) / position["entry"]
                     )
-                    pnl = signed_roi * position["capital_at_risk"]
+                    gross_pnl = signed_roi * position["capital_at_risk"]
+                    costs = position["quantity"] * (
+                        position["entry"] * self.commission_pct
+                        + fill_exit * self.commission_pct
+                    )
+                    pnl = gross_pnl - costs
+                    day = ts.date()
+                    daily_pnl[day] = daily_pnl.get(day, 0.0) + pnl
+                    equity += pnl
                     trades.append({
                         **position,
                         "exit_time": ts,
-                        "exit_price": round(float(exit_price), 4),
+                        "exit_price": round(fill_exit, 4),
+                        "gross_pnl": round(float(gross_pnl), 2),
+                        "costs": round(float(costs), 2),
                         "pnl": round(float(pnl), 2),
                         "roi_pct": round(float(signed_roi * 100), 4),
                         "reason": reason,
-                    })
-                    position = None
-                    continue
-
-                next_ts = frame.iloc[i + 1]["timestamp"] if i + 1 < len(frame) else None
-                if next_ts is None or next_ts.date() != ts.date() or not _in_session(next_ts, self.instrument):
-                    exit_price = float(row["close"])
-                    signed_roi = (
-                        (exit_price - position["entry"]) / position["entry"]
-                        if position["direction"] == "BUY"
-                        else (position["entry"] - exit_price) / position["entry"]
-                    )
-                    pnl = signed_roi * position["capital_at_risk"]
-                    trades.append({
-                        **position,
-                        "exit_time": ts,
-                        "exit_price": round(exit_price, 4),
-                        "pnl": round(float(pnl), 2),
-                        "roi_pct": round(float(signed_roi * 100), 4),
-                        "reason": "market_close",
                     })
                     position = None
                 continue
@@ -156,44 +151,40 @@ class RuleBacktestEngine:
                 continue
             if evaluation_end is not None and ts > pd.Timestamp(evaluation_end):
                 continue
+            if self.daily_loss_limit_pct and daily_pnl.get(ts.date(), 0.0) <= -self.starting_capital * self.daily_loss_limit_pct:
+                continue
 
             signals = evaluate_rules(row, previous, self.config)
             if not signals:
                 continue
-
-            buys = [s for s in signals if s.direction == "BUY"]
-            sells = [s for s in signals if s.direction == "SELL"]
+            buys, sells = [s for s in signals if s.direction == "BUY"], [s for s in signals if s.direction == "SELL"]
             if buys and sells:
                 continue
-
             direction = "BUY" if buys else "SELL"
-            entry = float(row["close"])
+            raw_entry = float(row["close"])
+            entry = self._execution_price(raw_entry, direction, entry=True)
             atr = float(row.get("ATR", 0.0) or 0.0)
-            risk_distance = max(
-                entry * self.config.stop_loss_pct,
-                atr * self.config.atr_stop_multiple if atr > 0 else 0.0,
+            risk_fraction = self.risk_per_trade / self.starting_capital
+            risk = size_position(
+                entry, atr, direction, self.starting_capital,
+                risk_fraction=risk_fraction,
+                stop_pct=self.config.stop_loss_pct,
+                atr_multiple=self.config.atr_stop_multiple,
+                target_multiple=self.config.target_atr_multiple,
             )
-            reward_distance = max(
-                entry * self.config.min_target_pct,
-                atr * self.config.target_atr_multiple if atr > 0 else 0.0,
-            )
-            if risk_distance <= 0 or reward_distance <= 0:
+            if not risk.allowed:
                 continue
-
-            stop = entry - risk_distance if direction == "BUY" else entry + risk_distance
-            target = entry + reward_distance if direction == "BUY" else entry - reward_distance
-            quantity = max(1, int(self.risk_per_trade / risk_distance))
-            capital_at_risk = quantity * risk_distance
             position = {
                 "entry_time": ts,
                 "symbol": symbol,
                 "direction": direction,
-                "entry": round(entry, 4),
-                "stop_loss": round(stop, 4),
-                "target": round(target, 4),
-                "quantity": quantity,
-                "capital_at_risk": capital_at_risk,
+                "entry": risk.entry,
+                "stop_loss": risk.stop_loss,
+                "target": risk.take_profit,
+                "quantity": risk.quantity,
+                "capital_at_risk": risk.risk_amount,
                 "atr": atr,
+                "reward_risk": risk.reward_risk,
                 "rule": "|".join(s.rule for s in signals),
                 "rules": tuple(s.rule for s in signals),
             }
@@ -202,14 +193,10 @@ class RuleBacktestEngine:
         if trades_df.empty:
             trades_df = pd.DataFrame(columns=[
                 "entry_time", "exit_time", "symbol", "direction", "entry",
-                "exit_price", "quantity", "pnl", "roi_pct", "reason", "rule",
+                "exit_price", "quantity", "gross_pnl", "costs", "pnl", "roi_pct", "reason", "rule",
             ])
         metrics = calculate_metrics(
             trades_df.rename(columns={"entry": "entry_price"}) if "entry" in trades_df.columns else trades_df,
             self.starting_capital,
         )
-        return RuleBacktestResult(
-            trades=trades_df,
-            metrics=metrics,
-            rule_performance=rank_rule_performance(trades_df),
-        )
+        return RuleBacktestResult(trades_df, metrics, rank_rule_performance(trades_df))
