@@ -449,6 +449,13 @@ def build_option_chain_dataframe(
             f"{prefix} Score"
         ] = analysis.score
 
+    if not rows:
+        return pd.DataFrame(columns=[
+            "Strike", "CE LTP", "CE Volume", "CE OI", "CE OI Chg",
+            "CE IV", "CE Score", "PE LTP", "PE Volume", "PE OI",
+            "PE OI Chg", "PE IV", "PE Score", "Distance", "ATM",
+        ])
+
     dataframe = pd.DataFrame(
         list(rows.values())
     )
@@ -618,29 +625,33 @@ st.sidebar.caption(
 # Research spot
 # ============================================================
 
-spot_rng = random.Random(
-    f"spot:{instrument}:{seed}"
-)
+# Live underlying price when Kotak Neo is connected.
+# Research-mode synthetic spot is retained only when the broker is not connected.
+spot = None
+if neo_status.connected:
+    try:
+        provider = KotakNeoProvider(neo_broker.client)
+        if instrument == "NIFTY":
+            spot = provider.get_index_quote("Nifty 50").ltp
+        else:
+            st.info(
+                f"Live underlying quote integration for {instrument} is not wired yet; "
+                "no synthetic price is used for live mode."
+            )
+    except Exception as exc:
+        st.error(f"Live underlying quote request failed: {exc}")
 
-base_spot = {
-    "NIFTY": 25040.0,
-    "CRUDEOIL": 6500.0,
-    "NATURALGAS": 300.0,
-    "COPPER": 950.0,
-    "SILVER": 95000.0,
-    "GOLD": 125000.0,
-}.get(
-    instrument,
-    25000.0,
-)
-
-spot = (
-    base_spot
-    + spot_rng.uniform(
-        -100,
-        100,
-    )
-)
+if spot is None and not neo_status.connected:
+    spot_rng = random.Random(f"spot:{instrument}:{seed}")
+    base_spot = {
+        "NIFTY": 25040.0,
+        "CRUDEOIL": 6500.0,
+        "NATURALGAS": 300.0,
+        "COPPER": 950.0,
+        "SILVER": 95000.0,
+        "GOLD": 125000.0,
+    }.get(instrument, 25000.0)
+    spot = base_spot + spot_rng.uniform(-100, 100)
 
 
 # ============================================================
