@@ -1,0 +1,13 @@
+environment: PAPER
+
+live_trading_enabled: false
+
+timeframes:
+  - 5m
+  - 15m
+
+minimum_signal_score: 70
+
+minimum_ml_probability: 0.62
+
+max_trades_per_day: 15

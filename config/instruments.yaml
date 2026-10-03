@@ -1,0 +1,25 @@
+instruments:
+
+  NIFTY:
+    exchange: NSE
+    asset_type: INDEX
+
+  CRUDEOIL:
+    exchange: MCX
+    asset_type: FUTURE
+
+  NATURALGAS:
+    exchange: MCX
+    asset_type: FUTURE
+
+  COPPER:
+    exchange: MCX
+    asset_type: FUTURE
+
+  SILVER:
+    exchange: MCX
+    asset_type: FUTURE
+
+  GOLD:
+    exchange: MCX
+    asset_type: FUTURE
