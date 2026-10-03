@@ -43,11 +43,19 @@ def predict_315_340(data: pd.DataFrame, global_news_score: float = 0.0) -> Nifty
     ema20, ema50 = sample.get("EMA20"), sample.get("EMA50")
     macd, sig = sample.get("MACD"), sample.get("MACD_SIGNAL")
     if pd.notna(ema20) and pd.notna(ema50):
-        score += 18 if ema20 > ema50 else -18
-        reasons.append("EMA20 above EMA50" if ema20 > ema50 else "EMA20 below EMA50")
+        if ema20 > ema50:
+            score += 18
+            reasons.append("EMA20 above EMA50")
+        elif ema20 < ema50:
+            score -= 18
+            reasons.append("EMA20 below EMA50")
     if pd.notna(macd) and pd.notna(sig):
-        score += 12 if macd > sig else -12
-        reasons.append("MACD bullish" if macd > sig else "MACD bearish")
+        if macd > sig:
+            score += 12
+            reasons.append("MACD bullish")
+        elif macd < sig:
+            score -= 12
+            reasons.append("MACD bearish")
     score += max(-10.0, min(10.0, global_news_score * 10.0))
     if global_news_score:
         reasons.append("Global news included")
@@ -77,9 +85,15 @@ def evaluate_next_day_accuracy(data: pd.DataFrame, global_news_score: float = 0.
         close = float(row["close"])
         score = 50.0
         if pd.notna(row.get("EMA20")) and pd.notna(row.get("EMA50")):
-            score += 18 if row["EMA20"] > row["EMA50"] else -18
+            if row["EMA20"] > row["EMA50"]:
+                score += 18
+            elif row["EMA20"] < row["EMA50"]:
+                score -= 18
         if pd.notna(row.get("MACD")) and pd.notna(row.get("MACD_SIGNAL")):
-            score += 12 if row["MACD"] > row["MACD_SIGNAL"] else -12
+            if row["MACD"] > row["MACD_SIGNAL"]:
+                score += 12
+            elif row["MACD"] < row["MACD_SIGNAL"]:
+                score -= 12
         # During indicator warm-up, use only information available at the
         # current bar rather than forcing a misleading FLAT prediction.
         if score == 50.0 and i > 0:
