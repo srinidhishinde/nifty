@@ -1,13 +1,28 @@
 environment: PAPER
-
 live_trading_enabled: false
-
 timeframes:
   - 5m
   - 15m
-
 minimum_signal_score: 70
-
 minimum_ml_probability: 0.62
-
 max_trades_per_day: 15
+
+rules:
+  rsi_period: 14
+  rsi_oversold: 30
+  volume_ma_period: 20
+  macd_signal_period: 9
+  bollinger_period: 20
+  bollinger_std: 2.0
+  ema_fast: 20
+  ema_slow: 50
+  vwap_deviation_pct: 2.0
+  bid_ask_ratio_max: 0.5
+  spread_widening_factor: 1.25
+  sentiment_negative_threshold: -0.5
+
+risk:
+  stop_loss_pct: 0.015
+  target_roi_pct: 0.40
+  atr_risk_multiplier: 1.0
+  min_rules_for_signal: 1
