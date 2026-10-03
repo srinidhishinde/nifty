@@ -27,7 +27,6 @@ class FakeNeo:
                     "openInterest": {"current": 1800, "change": -50},
                 }],
             },
-            "stat": "Ok",
         }
 
     def quotes(self, **kwargs):
@@ -65,6 +64,17 @@ def test_kotak_option_chain_normalizes_current_response():
     assert chain[0].instrument_token.startswith("nse_fo|")
     assert all(x.ltp > 0 for x in chain)
     assert all(x.bid is not None and x.ask is not None for x in chain)
+
+
+def test_option_chain_success_payload_without_stat_is_accepted():
+    chain = KotakNeoProvider(FakeNeo()).get_option_chain(
+        underlying="NIFTY",
+        exchange="nse_fo",
+        count=40,
+        enrich_quotes=False,
+    )
+    assert len(chain) == 2
+    assert chain[0].ltp == 120.5
 
 
 def test_exchange_alias_is_normalized():
