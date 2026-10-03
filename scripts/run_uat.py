@@ -14,6 +14,38 @@ TEST_GROUPS = [
 ]
 
 
+def resolve_python() -> str:
+    """Resolve the repository-local Python interpreter.
+
+    UAT must not silently use an unrelated virtual environment that happens
+    to be activated in the parent shell.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+
+    if sys.platform == "win32":
+        candidates = [
+            repo_root / ".venv" / "Scripts" / "python.exe",
+            repo_root / "venv" / "Scripts" / "python.exe",
+        ]
+    else:
+        candidates = [
+            repo_root / ".venv" / "bin" / "python",
+            repo_root / "venv" / "bin" / "python",
+        ]
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    raise SystemExit(
+        "UAT environment not found. Create the repository-local virtual "
+        "environment first with: python -m venv .venv"
+    )
+
+
+PYTHON = resolve_python()
+
+
 def run_group(group: str) -> tuple[str, int, int]:
     """
     Returns:
@@ -32,13 +64,14 @@ def run_group(group: str) -> tuple[str, int, int]:
 
     result = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "pytest",
             group,
             "-v",
             "--tb=short",
         ],
+        cwd=Path(__file__).resolve().parents[1],
         capture_output=True,
         text=True,
     )
@@ -58,9 +91,7 @@ def run_group(group: str) -> tuple[str, int, int]:
     collected = 0
 
     for line in output.splitlines():
-
         if "collected" in line and "item" in line:
-
             try:
                 collected = int(
                     line.split("collected")[1]
@@ -74,21 +105,20 @@ def run_group(group: str) -> tuple[str, int, int]:
 
 
 def main():
-
     passed = []
     empty = []
     failed = []
 
-    for group in TEST_GROUPS:
+    print(f"UAT Python: {PYTHON}")
+    print(f"Python version: {subprocess.check_output([PYTHON, '--version'], text=True).strip()}")
 
+    for group in TEST_GROUPS:
         status, collected, _ = run_group(group)
 
         if status == "PASS":
             passed.append(group)
-
         elif status == "EMPTY":
             empty.append(group)
-
         else:
             failed.append(group)
 
@@ -111,7 +141,6 @@ def main():
     print()
 
     if failed:
-
         print("UAT STATUS: FAILED")
         print()
         print("Failed test suites:")
