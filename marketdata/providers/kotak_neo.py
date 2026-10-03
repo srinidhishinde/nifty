@@ -43,7 +43,7 @@ class KotakNeoProvider(MarketDataProvider):
     def _response_error(response: Any) -> str:
         if not isinstance(response, dict):
             return "Kotak Neo returned an invalid response."
-        if response.get("stat") == "Ok":
+        if response.get("stat") == "Ok" or str(response.get("status", "")).lower() in {"ok", "success"}:
             return ""
         if response.get("errMsg"):
             return str(response["errMsg"])
