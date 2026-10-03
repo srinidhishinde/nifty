@@ -1269,26 +1269,36 @@ st.divider()
 # Backtest
 # ============================================================
 
-st.subheader("Rule Backtest")
+st.subheader("Historical Rule Backtest")
 st.caption(
-    "Runs the same seven-rule backtest engine used by the automated tests. "
-    "Use uploaded historical data for meaningful validation. The demo dataset is synthetic."
+    "Use real historical OHLCV data to measure how the seven rules would have performed "
+    "on past candles. Synthetic demo data is for UI smoke-testing only and must not be "
+    "used to judge strategy accuracy."
 )
 
 uploaded = st.file_uploader(
-    "Historical OHLCV CSV (optional)",
+    "Upload historical OHLCV CSV",
     type=["csv"],
-    help="Expected columns: timestamp, open, high, low, close, volume.",
+    help=(
+        "Required columns: timestamp, open, high, low, close, volume. "
+        "For trustworthy results, include warm-up candles before the period you want to score."
+    ),
 )
-run_demo = st.button("Run Demo Backtest", use_container_width=True)
+
+run_demo = st.button(
+    "Run Synthetic Demo",
+    use_container_width=True,
+    help="UI/engine smoke test only. Do not treat synthetic results as evidence of profitability.",
+)
+
+bt_data = None
+bt_source = None
 
 if uploaded is not None:
     try:
         bt_data = pd.read_csv(uploaded)
-        bt_source = "Uploaded historical CSV"
+        bt_source = f"Uploaded historical CSV: {uploaded.name}"
     except Exception as exc:
-        bt_data = None
-        bt_source = None
         st.error(f"Could not read backtest CSV: {exc}")
 elif run_demo:
     rng = np.random.default_rng(int(seed))
@@ -1297,8 +1307,10 @@ elif run_demo:
         periods=800,
         freq="5min",
     )
-    volatility = max(spot * 0.0008, 1.0)
-    base = spot + np.cumsum(rng.normal(0, volatility, len(bt_ts)))
+    volatility = max(abs(float(spot)) * 0.0008, 1.0)
+    base = float(spot) + np.cumsum(
+        rng.normal(0, volatility, len(bt_ts))
+    )
     bt_data = pd.DataFrame({
         "timestamp": bt_ts,
         "open": base,
@@ -1308,61 +1320,305 @@ elif run_demo:
         "volume": rng.integers(10000, 100000, len(bt_ts)),
     })
     bt_source = "Synthetic demo data"
-else:
-    bt_data = None
-    bt_source = None
 
 if bt_data is not None:
-    required_bt = {"timestamp", "open", "high", "low", "close"}
+    required_bt = {
+        "timestamp",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    }
     missing_bt = required_bt - set(bt_data.columns)
+
     if missing_bt:
-        st.error(f"Backtest data is missing columns: {sorted(missing_bt)}")
+        st.error(
+            f"Backtest data is missing required columns: {sorted(missing_bt)}"
+        )
     else:
         try:
-            frame = add_indicators(bt_data.copy())
-            signals = ["WAIT"]
-            config = StrategyConfig()
-            for i in range(1, len(frame)):
-                rule_signals = evaluate_rules(frame.iloc[i], frame.iloc[i - 1], config)
-                buys = [s for s in rule_signals if s.direction == "BUY"]
-                sells = [s for s in rule_signals if s.direction == "SELL"]
-                if buys and not sells:
-                    signals.append("BUY")
-                elif sells and not buys:
-                    signals.append("SELL")
+            bt_data = bt_data.copy()
+            bt_data["timestamp"] = pd.to_datetime(
+                bt_data["timestamp"],
+                errors="coerce",
+            )
+
+            invalid_timestamps = int(bt_data["timestamp"].isna().sum())
+            if invalid_timestamps:
+                st.warning(
+                    f"Dropped {invalid_timestamps:,} rows with invalid timestamps."
+                )
+                bt_data = bt_data.dropna(subset=["timestamp"])
+
+            for column in [
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ]:
+                bt_data[column] = pd.to_numeric(
+                    bt_data[column],
+                    errors="coerce",
+                )
+
+            bt_data = bt_data.dropna(
+                subset=[
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+            )
+            bt_data = (
+                bt_data
+                .sort_values("timestamp")
+                .drop_duplicates("timestamp")
+                .reset_index(drop=True)
+            )
+
+            if bt_data.empty:
+                st.error("No valid historical candles remain after cleaning.")
+            else:
+                data_min = bt_data["timestamp"].min().date()
+                data_max = bt_data["timestamp"].max().date()
+
+                st.info(
+                    f"Source: {bt_source} | Available data: "
+                    f"{data_min} to {data_max} | Rows: {len(bt_data):,}"
+                )
+
+                date_range = st.date_input(
+                    "Backtest date range",
+                    value=(data_min, data_max),
+                    min_value=data_min,
+                    max_value=data_max,
+                    help=(
+                        "The selected dates are the scored period. "
+                        "Keep earlier warm-up candles in the CSV so EMA/RSI/MACD/VWAP "
+                        "have enough history."
+                    ),
+                )
+
+                if isinstance(date_range, tuple) and len(date_range) == 2:
+                    start_date, end_date = date_range
                 else:
-                    signals.append("WAIT")
-            frame["signal"] = signals
+                    start_date = data_min
+                    end_date = data_max
 
-            result = RuleBacktestEngine(
-                starting_capital=settings.starting_capital,
-                risk_per_trade=settings.max_loss_per_trade,
-                instrument=instrument,
-            ).run(frame, symbol=instrument)
-            metrics = result.metrics
+                selected = bt_data[
+                    (bt_data["timestamp"].dt.date >= start_date)
+                    & (bt_data["timestamp"].dt.date <= end_date)
+                ].copy()
 
-            st.info(f"Source: {bt_source} | Rows: {len(frame):,}")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Trades", metrics.total_trades)
-            m2.metric("Win Rate", f"{metrics.win_rate_pct:.1f}%")
-            m3.metric("Net P&L", f"Rs {metrics.net_pnl:,.0f}")
-            m4.metric("Return", f"{metrics.return_pct:.2f}%")
+                st.write(
+                    f"Selected period: **{start_date} → {end_date}** "
+                    f"({len(selected):,} candles)"
+                )
 
-            m5, m6, m7 = st.columns(3)
-            pf = "inf" if metrics.profit_factor == float("inf") else f"{metrics.profit_factor:.2f}"
-            m5.metric("Profit Factor", pf)
-            m6.metric("Max Drawdown", f"Rs {metrics.max_drawdown:,.0f}")
-            m7.metric("Avg Trade", f"Rs {metrics.average_trade:,.0f}")
+                run_historical = st.button(
+                    "Run Historical Backtest",
+                    type="primary",
+                    use_container_width=True,
+                )
 
-            if not result.rule_performance.empty:
-                st.markdown("#### Rule Performance")
-                st.dataframe(result.rule_performance, use_container_width=True, hide_index=True)
+                if run_historical:
+                    if len(selected) < 60:
+                        st.error(
+                            "At least 60 candles are recommended for a meaningful "
+                            "EMA(50)/indicator warm-up."
+                        )
+                    else:
+                        try:
+                            result = RuleBacktestEngine(
+                                starting_capital=settings.starting_capital,
+                                risk_per_trade=settings.max_loss_per_trade,
+                                instrument=instrument,
+                            ).run(
+                                selected,
+                                symbol=instrument,
+                            )
+                            metrics = result.metrics
+                            trades = result.trades.copy()
 
-            if not result.trades.empty:
-                st.markdown("#### Trades")
-                st.dataframe(result.trades, use_container_width=True, hide_index=True)
+                            st.success(
+                                "Historical backtest completed. "
+                                "These results are historical simulation results, not a guarantee of future performance."
+                            )
+
+                            total_trades = int(metrics.total_trades)
+                            wins = int(metrics.winning_trades)
+                            losses = int(metrics.losing_trades)
+
+                            top = st.columns(5)
+                            top[0].metric(
+                                "Closed Trades",
+                                total_trades,
+                            )
+                            top[1].metric(
+                                "Win Rate / Accuracy",
+                                f"{metrics.win_rate_pct:.1f}%",
+                            )
+                            top[2].metric(
+                                "Net P&L",
+                                f"Rs {metrics.net_pnl:,.0f}",
+                            )
+                            top[3].metric(
+                                "Return",
+                                f"{metrics.return_pct:.2f}%",
+                            )
+                            top[4].metric(
+                                "Profit Factor",
+                                (
+                                    "∞"
+                                    if metrics.profit_factor == float("inf")
+                                    else f"{metrics.profit_factor:.2f}"
+                                ),
+                            )
+
+                            detail = st.columns(5)
+                            detail[0].metric(
+                                "Wins",
+                                wins,
+                            )
+                            detail[1].metric(
+                                "Losses",
+                                losses,
+                            )
+                            detail[2].metric(
+                                "Avg Trade",
+                                f"Rs {metrics.average_trade:,.0f}",
+                            )
+                            detail[3].metric(
+                                "Max Drawdown",
+                                f"Rs {metrics.max_drawdown:,.0f}",
+                            )
+                            detail[4].metric(
+                                "Max DD %",
+                                f"{metrics.max_drawdown_pct:.2f}%",
+                            )
+
+                            if total_trades:
+                                buy_trades = trades[
+                                    trades["direction"] == "BUY"
+                                ]
+                                sell_trades = trades[
+                                    trades["direction"] == "SELL"
+                                ]
+
+                                buy_accuracy = (
+                                    (buy_trades["pnl"] > 0).mean() * 100
+                                    if not buy_trades.empty
+                                    else 0.0
+                                )
+                                sell_accuracy = (
+                                    (sell_trades["pnl"] > 0).mean() * 100
+                                    if not sell_trades.empty
+                                    else 0.0
+                                )
+
+                                st.markdown("#### Direction Accuracy")
+                                direction_cols = st.columns(2)
+                                direction_cols[0].metric(
+                                    "BUY Win Rate",
+                                    f"{buy_accuracy:.1f}%",
+                                    f"{len(buy_trades)} trades",
+                                )
+                                direction_cols[1].metric(
+                                    "SELL Win Rate",
+                                    f"{sell_accuracy:.1f}%",
+                                    f"{len(sell_trades)} trades",
+                                )
+
+                                if "exit_time" in trades.columns:
+                                    trades["entry_time"] = pd.to_datetime(
+                                        trades["entry_time"],
+                                        errors="coerce",
+                                    )
+                                    trades["exit_time"] = pd.to_datetime(
+                                        trades["exit_time"],
+                                        errors="coerce",
+                                    )
+
+                                if "pnl" in trades.columns:
+                                    trades["cumulative_pnl"] = (
+                                        pd.to_numeric(
+                                            trades["pnl"],
+                                            errors="coerce",
+                                        ).fillna(0.0).cumsum()
+                                    )
+
+                                st.markdown("#### Equity / P&L Curve")
+                                if not trades.empty and "exit_time" in trades.columns:
+                                    equity_chart = trades[
+                                        ["exit_time", "cumulative_pnl"]
+                                    ].dropna()
+                                    if not equity_chart.empty:
+                                        st.line_chart(
+                                            equity_chart.set_index("exit_time"),
+                                            y="cumulative_pnl",
+                                            width="stretch",
+                                            height=300,
+                                        )
+
+                            if not result.rule_performance.empty:
+                                st.markdown("#### Rule-by-Rule Accuracy")
+                                rule_view = result.rule_performance.copy()
+                                rule_view = rule_view.rename(
+                                    columns={
+                                        "win_rate_pct": "accuracy_pct",
+                                    }
+                                )
+                                st.dataframe(
+                                    rule_view,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+
+                            if not trades.empty:
+                                st.markdown("#### Historical Trades")
+                                trade_columns = [
+                                    column
+                                    for column in [
+                                        "entry_time",
+                                        "exit_time",
+                                        "direction",
+                                        "entry",
+                                        "exit_price",
+                                        "stop_loss",
+                                        "target",
+                                        "quantity",
+                                        "rule",
+                                        "pnl",
+                                        "roi_pct",
+                                        "reason",
+                                    ]
+                                    if column in trades.columns
+                                ]
+                                st.dataframe(
+                                    trades[trade_columns],
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+                            else:
+                                st.warning(
+                                    "No trades were generated in this period. "
+                                    "That is not the same as 0% accuracy."
+                                )
+
+                            st.caption(
+                                "Accuracy here means the percentage of closed simulated trades "
+                                "that ended profitable. It is not ML prediction accuracy. "
+                                "Use a sufficiently large, out-of-sample historical sample before "
+                                "drawing conclusions about strategy quality."
+                            )
+                        except Exception as exc:
+                            st.error(f"Historical backtest failed: {exc}")
+
         except Exception as exc:
-            st.error(f"Backtest failed: {exc}")
+            st.error(f"Backtest data preparation failed: {exc}")
 
 
 st.divider()
