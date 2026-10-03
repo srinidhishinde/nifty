@@ -6,11 +6,13 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from config.settings import settings
+from broker.kotak_neo import KotakNeoBroker
 from features.option_chain import (
     OptionAnalysis,
     OptionContract,
     analyze_option,
 )
+from marketdata.providers.kotak_neo import KotakNeoProvider
 from strategy.ce_pe_selector import (
     CEPESelector,
     MarketContext,
@@ -447,9 +449,24 @@ def build_option_chain_dataframe(
             f"{prefix} Score"
         ] = analysis.score
 
+    if not rows:
+        return pd.DataFrame(columns=[
+            "Strike", "CE LTP", "CE Volume", "CE OI", "CE OI Chg",
+            "CE IV", "CE Score", "PE LTP", "PE Volume", "PE OI",
+            "PE OI Chg", "PE IV", "PE Score", "Distance", "ATM",
+        ])
+
     dataframe = pd.DataFrame(
         list(rows.values())
     )
+
+    option_columns = [
+        "CE LTP", "CE Volume", "CE OI", "CE OI Chg", "CE IV", "CE Score",
+        "PE LTP", "PE Volume", "PE OI", "PE OI Chg", "PE IV", "PE Score",
+    ]
+    for column in option_columns:
+        if column not in dataframe:
+            dataframe[column] = np.nan
 
     dataframe[
         "Distance"
@@ -589,76 +606,63 @@ neo_connect = st.sidebar.button(
     use_container_width=True,
 )
 
-if login_clicked:
+if "neo_broker" not in st.session_state:
+    st.session_state["neo_broker"] = KotakNeoBroker()
 
-    if not totp.isdigit() or len(totp) != 6:
-        st.sidebar.error(
-            "Enter the current 6-digit TOTP."
-        )
+neo_broker = st.session_state["neo_broker"]
+
+if neo_connect:
+    if not neo_totp.isdigit() or len(neo_totp) != 6:
         st.session_state["neo_authenticated"] = False
-
+        st.sidebar.error("Enter the current 6-digit TOTP.")
     else:
-        try:
-            # Replace this with your actual Neo adapter.
-            session = neo_client.login(
-                consumer_key=settings.kotak_api_key,
-                mobile=settings.kotak_mobile_number,
-                ucc=settings.kotak_ucc,
-                mpin=settings.kotak_mpin,
-                totp=totp,
-            )
+        connection = neo_broker.authenticate(neo_totp)
+        st.session_state["neo_authenticated"] = connection.connected
+        if connection.connected:
+            st.sidebar.success(connection.message)
+        else:
+            st.sidebar.error(connection.message)
 
-            if not session.success:
-                st.session_state["neo_authenticated"] = False
-                st.session_state["neo_session"] = None
-                st.sidebar.error(
-                    "Kotak Neo authentication failed."
-                )
-
-            else:
-                st.session_state["neo_authenticated"] = True
-                st.session_state["neo_session"] = session
-                st.sidebar.success(
-                    "Kotak Neo authenticated."
-                )
-
-        except Exception as exc:
-
-            st.session_state["neo_authenticated"] = False
-            st.session_state["neo_session"] = None
-
-            st.sidebar.error(
-                f"Neo authentication failed: {exc}"
-            )
+neo_status = neo_broker.connection_status()
+st.sidebar.caption(
+    "Kotak Neo: " + ("CONNECTED" if neo_status.connected else "NOT CONNECTED")
+)
 
 
 # ============================================================
 # Research spot
 # ============================================================
 
-spot_rng = random.Random(
-    f"spot:{instrument}:{seed}"
-)
+# Live underlying price when Kotak Neo is connected.
+# Research-mode synthetic spot is retained only when the broker is not connected.
+spot = None
+if neo_status.connected:
+    try:
+        provider = KotakNeoProvider(neo_broker.client)
+        if instrument == "NIFTY":
+            spot = provider.get_index_quote("Nifty 50").ltp
+        else:
+            st.info(
+                f"Live underlying quote integration for {instrument} is not wired yet; "
+                "no synthetic price is used for live mode."
+            )
+    except Exception as exc:
+        st.error(f"Live underlying quote request failed: {exc}")
 
-base_spot = {
-    "NIFTY": 25040.0,
-    "CRUDEOIL": 6500.0,
-    "NATURALGAS": 300.0,
-    "COPPER": 950.0,
-    "SILVER": 95000.0,
-    "GOLD": 125000.0,
-}.get(
-    instrument,
-    25000.0,
-)
+if spot is None and not neo_status.connected:
+    spot_rng = random.Random(f"spot:{instrument}:{seed}")
+    base_spot = {
+        "NIFTY": 25040.0,
+        "CRUDEOIL": 6500.0,
+        "NATURALGAS": 300.0,
+        "COPPER": 950.0,
+        "SILVER": 95000.0,
+        "GOLD": 125000.0,
+    }.get(instrument, 25000.0)
+    spot = base_spot + spot_rng.uniform(-100, 100)
 
-spot = (
-    base_spot
-    + spot_rng.uniform(
-        -100,
-        100,
-    )
-)
+if spot is None:
+    spot = 0.0
 
 
 # ============================================================
@@ -813,54 +817,39 @@ st.divider()
 # Option chain
 # ============================================================
 
-authenticated = st.session_state.get(
-    "neo_authenticated",
-    False,
-)
+authenticated = neo_status.connected
+live_contracts: list[OptionContract] = []
 
-if not authenticated:
-
+if instrument == "NIFTY" and authenticated:
+    try:
+        provider = KotakNeoProvider(neo_broker.client)
+        live_contracts = provider.get_option_chain(
+            underlying="NIFTY",
+            exchange="nse_fo",
+            count=40,
+            enrich_quotes=True,
+        )
+        if not live_contracts:
+            st.error(
+                "Kotak Neo returned an empty NIFTY option chain. "
+                "No synthetic fallback is used."
+            )
+    except Exception as exc:
+        st.error(f"Live NIFTY option-chain request failed: {exc}")
+elif instrument != "NIFTY":
+    st.info(
+        "Live option-chain display is currently implemented for NIFTY. "
+        "MCX instruments use futures/spot market data rather than an option chain."
+    )
+else:
     st.warning(
-        "Kotak Neo is not authenticated. "
-        "Live option-chain data is unavailable."
+        "Kotak Neo is not connected. Connect with TOTP to load live option-chain data."
     )
 
-else:
-
-    try:
-
-        option_chain = neo_client.get_option_chain(
-            instrument=instrument,
-        )
-
-        if not option_chain:
-            st.error(
-                "Kotak Neo returned no option-chain data."
-            )
-
-        else:
-            st.dataframe(
-                option_chain,
-                use_container_width=True,
-            )
-
-    except Exception as exc:
-
-        st.session_state["neo_authenticated"] = False
-        st.session_state["neo_session"] = None
-
-        st.error(
-            f"Live option-chain request failed: {exc}"
-        )
-
-
-st.subheader(
-    "Option Chain"
-)
-
+st.subheader("Option Chain")
 st.caption(
-    "Research-mode synthetic option chain. "
-    "Live broker data is not being used yet."
+    "Live Kotak Neo data is shown when connected. "
+    "Synthetic data is never substituted for a failed live request."
 )
 
 chain_col1, chain_col2, chain_col3 = st.columns(3)
@@ -898,12 +887,26 @@ strike_step = get_strike_step(
     instrument
 )
 
-contracts = build_research_option_chain(
-    instrument=instrument,
-    spot=spot,
-    seed=int(seed),
-    strike_step=strike_step,
-)
+if live_contracts:
+    # Convert broker-native contracts into the UI's normalized analysis model.
+    contracts = [
+        OptionContract(
+            symbol=x.symbol,
+            expiry=x.expiry,
+            strike=x.strike,
+            option_type=x.option_type,
+            ltp=float(x.ltp or 0.0),
+            bid=float(x.bid or 0.0),
+            ask=float(x.ask or 0.0),
+            volume=float(x.volume or 0.0),
+            open_interest=float(x.open_interest or 0.0),
+            oi_change=float(x.oi_change or 0.0),
+            implied_volatility=0.0,
+        )
+        for x in live_contracts
+    ]
+else:
+    contracts = []
 
 chain_df = build_option_chain_dataframe(
     contracts=contracts,
@@ -1041,7 +1044,7 @@ st.dataframe(
 
 
 st.caption(
-    "ATM is the strike closest to the synthetic underlying price. "
+    "ATM is the strike closest to the displayed underlying price. "
     "2 ATM + 5 OTM is a research selection view, not an order instruction."
 )
 
@@ -1201,7 +1204,7 @@ dates = pd.date_range(
 )
 
 prices = (
-    base_spot
+    spot
     + np.cumsum(
         chart_rng.normal(
             0,
