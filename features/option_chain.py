@@ -28,6 +28,11 @@ class OptionContract:
     oi_change: float
 
     implied_volatility: float
+    built_up: str = ""
+    delta: float = 0.0
+    theta: float = 0.0
+    vega: float = 0.0
+    ltp_change_pct: float = 0.0
 
 
 @dataclass(frozen=True)
