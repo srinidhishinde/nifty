@@ -146,6 +146,13 @@ class RuleBacktestEngine:
                     position = None
                 continue
 
+            # Indicator warm-up uses the full historical frame, but new
+            # entries must be restricted to the requested evaluation window.
+            if evaluation_start is not None and ts < pd.Timestamp(evaluation_start):
+                continue
+            if evaluation_end is not None and ts > pd.Timestamp(evaluation_end):
+                continue
+
             signals = evaluate_rules(row, previous, self.config)
             if not signals:
                 continue
