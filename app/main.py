@@ -24,7 +24,7 @@ from strategy.rules import StrategyConfig, evaluate_rules
 from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
 from features.option_signal_engine import generate_option_chain_signal
 from strategy.buy_today_sell_tomorrow import run_buy_today_sell_tomorrow
-from prediction.nifty_315_340 import predict_315_340
+from prediction.nifty_315_340 import predict_315_340, evaluate_next_day_accuracy
 from news.global_news import fetch_global_news
 from marketdata.nifty_csv import normalize_nifty_csv
 
@@ -1380,13 +1380,20 @@ if btst_file is not None:
     try:
         btst_data = normalize_nifty_csv(pd.read_csv(btst_file))
         btst = run_buy_today_sell_tomorrow(btst_data)
-        bc = st.columns(4)
+        model_accuracy, model_rows = evaluate_next_day_accuracy(
+            btst_data,
+            global_news_score=global_news_score,
+        )
+        bc = st.columns(5)
         bc[0].metric("BTST Accuracy", f"{btst.accuracy_pct:.1f}%")
         bc[1].metric("BTST Return", f"{btst.total_return_pct:.2f}%")
         bc[2].metric("BTST Net P&L", f"Rs {btst.net_pnl:,.2f}")
         bc[3].metric("Trades", len(btst.trades))
+        bc[4].metric("Model Accuracy", f"{model_accuracy:.1f}%")
         if not btst.trades.empty:
             st.dataframe(btst.trades, use_container_width=True, hide_index=True)
+        st.markdown("#### Prediction accuracy")
+        st.dataframe(model_rows, use_container_width=True, hide_index=True)
     except Exception as exc:
         st.error(f"BTST analysis failed: {exc}")
 
