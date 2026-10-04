@@ -1030,6 +1030,25 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                 "ML is advisory only. A trade still requires the canonical rule, "
                 "data-quality, EV, risk, and execution gates."
             )
+            signal_journal.append_decision(
+                instrument=instrument,
+                timeframe=decision_timeframe,
+                source="KOTAK_NEO",
+                status=str(getattr(st.session_state.get("kotak_decision_snapshot"), "status", "UNKNOWN")),
+                direction=str(first.stronger_side),
+                confidence=max(float(first.final_ce), float(first.final_pe)),
+                reliability=max(float(first.final_ce), float(first.final_pe)),
+                regime=regime.name,
+                pcr=getattr(st.session_state.get("kotak_decision_snapshot"), "pcr_oi", None),
+                imbalance_ratio=(micro or {}).get("imbalance_ratio") if isinstance(micro, dict) else None,
+                aggressor=(micro or {}).get("aggressor", "") if isinstance(micro, dict) else "",
+                micro_weight=(micro or {}).get("micro_weight") if isinstance(micro, dict) else None,
+                threshold=(micro or {}).get("imbalance_trigger") if isinstance(micro, dict) else None,
+                ml_ce=float(first.ml_ce),
+                ml_pe=float(first.ml_pe),
+                rule_ce=float(first.rule_ce),
+                rule_pe=float(first.rule_pe),
+            )
         except Exception as exc:
             st.warning(f"Ensemble calculation unavailable: {exc}")
     else:
