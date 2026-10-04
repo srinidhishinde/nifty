@@ -46,6 +46,7 @@ class LiveSignalLoop:
         )
         result = {
             "timestamp": datetime.now(),
+            "signal_candle_time": candles.iloc[-1]["timestamp"] if not candles.empty else None,
             "technical_direction": ai.direction,
             "technical_stop_loss": ai.stop_loss,
             "technical_target": ai.take_profit,
@@ -60,7 +61,7 @@ class LiveSignalLoop:
             "option_take_profit": option_signal.take_profit,
             "global_news": news.sentiment,
         }
-        signal_key = (result["technical_direction"], ai.confidence, ai.stop_loss, ai.take_profit, str(result["timestamp"].date()))
+        signal_key = (result["signal_candle_time"], result["technical_direction"], ai.confidence, ai.stop_loss, ai.take_profit)
         if signal_key == self._last_signal_key:
             result["duplicate_signal"] = True
         else:
