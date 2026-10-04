@@ -734,9 +734,28 @@ canonical_signal = StrategySignal(
 if prediction_result is not None and prediction_result.status == "OK":
     try:
         prediction_frame = normalize_nifty_csv(prediction_result.data)
-        prediction_quality = assess_ohlcv(prediction_frame)
-        if prediction_quality.status == "GREEN" and len(prediction_frame) >= 60:
+        interval_minutes = {
+            "5m": 5,
+            "15m": 15,
+            "30m": 30,
+            "60m": 60,
+            "1d": 1440,
+        }.get(prediction_result.interval, 5)
+        prediction_quality = assess_ohlcv(
+            prediction_frame,
+            expected_minutes=interval_minutes,
+        )
+        # Yahoo intraday data naturally has overnight/weekend/session gaps.
+        # Those are not malformed candles, so only RED quality blocks prediction.
+        if prediction_quality.status != "RED" and len(prediction_frame) >= 60:
             prediction_frame = add_indicators(prediction_frame.copy())
+            if prediction_quality.status in {"ORANGE", "YELLOW"}:
+                st.warning(
+                    "Yahoo data quality is "
+                    f"{prediction_quality.status}: "
+                    + " | ".join(prediction_quality.reasons)
+                    + ". The latest completed candles are still usable for historical signal validation."
+                )
             canonical_signal = _generate_signal_from_enriched(
                 prediction_frame,
                 StrategyConfig(require_option_confirmation=False),
