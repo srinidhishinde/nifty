@@ -53,3 +53,7 @@ NSE currently lists the regular equity-derivatives session as 09:15–15:40. The
 NSE's NIFTY derivatives documentation states that an option contract's closing price uses the last-half-hour weighted average when traded in that period; this is why the final half-hour is treated as a research window, not as a special auction. citeturn0search10
 
 Contract metadata such as expiry and lot size must come from the applicable NSE contract information rather than hard-coded assumptions. citeturn0search0turn0search4
+
+
+### Canonical decision-path requirement
+Backtests must use the same `generate_signal()` decision gates as live evaluation, including evidence-group, confidence, volatility, signal-separation and reward/risk checks. Lower-level rule evaluation is for diagnostics only.
