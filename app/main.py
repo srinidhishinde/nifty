@@ -40,6 +40,9 @@ from marketdata.nifty_csv import normalize_nifty_csv
 from marketdata.option_chain_replay import replay_option_chain_csv
 from strategy.cross_market_trend import calculate_trend, TrendSnapshot, aggregate_context
 from marketdata.yahoo_finance import fetch_yahoo_ohlcv
+from marketdata.yahoo_window import fetch_yahoo_rolling_window
+from ml.engine import MLConfig, train as train_ml, predict as predict_ml
+from ensemble.signal import build_ensemble
 
 
 # ============================================================
@@ -697,7 +700,7 @@ prediction_interval = prediction_cols[0].selectbox(
     index=0, key="primary_prediction_interval"
 )
 prediction_days = prediction_cols[1].number_input(
-    "Historical days", min_value=5, max_value=59, value=30, step=5,
+    "Historical days", min_value=5, max_value=90, value=90, step=5,
     key="primary_prediction_days"
 )
 prediction_symbol = prediction_cols[2].text_input(
@@ -712,7 +715,7 @@ if prediction_pull:
     try:
         prediction_end = pd.Timestamp.now(tz="Asia/Kolkata").date()
         prediction_start = prediction_end - pd.Timedelta(days=int(prediction_days))
-        prediction_result = fetch_yahoo_ohlcv(
+        prediction_result = fetch_yahoo_rolling_window(
             prediction_start,
             prediction_end,
             symbol=prediction_symbol.strip() or "^NSEI",
