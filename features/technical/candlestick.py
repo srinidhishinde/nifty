@@ -25,11 +25,11 @@ def add_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
     body_safe = body.replace(0, np.nan)
     bullish, bearish = c > o, c < o
     prev_o, prev_c = o.shift(1), c.shift(1)
-    prev_bull = bullish.shift(1).fillna(False).astype(bool)
+    prev_bull = bullish.shift(1).astype("boolean").fillna(False).astype(bool)
     prev_bear = bearish.shift(1).fillna(False).astype(bool)
     prev_body = body.shift(1)
     prev2_o, prev2_c = o.shift(2), c.shift(2)
-    bull2 = bullish.shift(2).fillna(False).astype(bool)
+    bull2 = bullish.shift(2).astype("boolean").fillna(False).astype(bool)
     bear2 = bearish.shift(2).fillna(False).astype(bool)
 
     out["doji"] = (body <= rng * 0.10).fillna(False).astype(int)
