@@ -20,6 +20,9 @@ class BacktestMetrics:
     expectancy: float = 0.0
     average_win: float = 0.0
     average_loss: float = 0.0
+    sharpe: float = 0.0
+    sortino: float = 0.0
+    calmar: float = 0.0
 
 
 def calculate_max_drawdown(equity: pd.Series) -> tuple[float, float]:
@@ -41,6 +44,11 @@ def calculate_metrics(trades: pd.DataFrame, starting_capital: float) -> Backtest
     gross_profit, gross_loss = float(winners.sum()), float(abs(losers.sum()))
     equity = starting_capital + pnl.cumsum()
     mdd, mdd_pct = calculate_max_drawdown(equity)
+    trade_returns = pnl / float(starting_capital) if starting_capital else pnl * 0.0
+    sharpe = float(trade_returns.mean() / trade_returns.std(ddof=1) * math.sqrt(total)) if total > 1 and trade_returns.std(ddof=1) > 0 else 0.0
+    downside = trade_returns[trade_returns < 0]
+    sortino = float(trade_returns.mean() / downside.std(ddof=1) * math.sqrt(total)) if len(downside) > 1 and downside.std(ddof=1) > 0 else 0.0
+    calmar = float((pnl.sum() / starting_capital) / (mdd / starting_capital)) if starting_capital and mdd > 0 else 0.0
     return BacktestMetrics(
         total_trades=total,
         winning_trades=len(winners),
@@ -57,4 +65,7 @@ def calculate_metrics(trades: pd.DataFrame, starting_capital: float) -> Backtest
         expectancy=round(float(pnl.mean()),2),
         average_win=round(float(winners.mean()),2) if not winners.empty else 0.0,
         average_loss=round(float(losers.mean()),2) if not losers.empty else 0.0,
+        sharpe=round(sharpe,3),
+        sortino=round(sortino,3),
+        calmar=round(calmar,3),
     )
