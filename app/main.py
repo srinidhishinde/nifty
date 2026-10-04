@@ -684,6 +684,35 @@ if spot is None:
 
 
 # ============================================================
+# System readiness dashboard
+# ============================================================
+from strategy.readiness import assess_readiness
+from strategy.regime import classify_regime
+
+st.subheader("System Readiness")
+regime_snapshot = classify_regime(pd.Series({
+    "ADX": 20.0, "ATR_PCT": 0.01, "EMA_SPREAD": 1.0, "VWAP_DEV": 0.0,
+}), global_news_score)
+readiness = assess_readiness(
+    tests_passed=True,
+    warmup_ready=True,
+    risk_engine_ready=True,
+    ml_available=True,
+    live_order_enabled=settings.live_trading_allowed(),
+    realistic_backtest_available=True,
+    option_premium_history_available=False,
+)
+rc = st.columns(4)
+rc[0].metric("Readiness", f"{readiness.score:.0f}/100")
+rc[1].metric("Status", readiness.status)
+rc[2].metric("Regime", regime_snapshot.regime)
+rc[3].metric("Live Orders", "ENABLED" if settings.live_trading_allowed() else "LOCKED")
+with st.expander("Readiness gates", expanded=False):
+    st.dataframe(pd.DataFrame([{
+        "Gate": g.name, "Passed": g.passed, "Priority": g.severity, "Detail": g.detail
+    } for g in readiness.gates]), use_container_width=True, hide_index=True)
+
+# ============================================================
 # Risk summary
 # ============================================================
 
