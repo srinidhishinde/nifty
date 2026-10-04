@@ -55,3 +55,34 @@ def test_capital_aware_backtest_exposes_rejection_funnel():
     assert "rejected_risk_budget" in result.validation
     assert "bars_considered" in result.validation
     assert result.validation["starting_capital"] == 100000
+
+
+def test_spot_signal_research_produces_point_and_r_outcomes_without_futures_pnl():
+    from backtest.signal_research import run_signal_research
+
+    rows = []
+    price = 25000.0
+    ts = pd.date_range("2026-01-05 09:15", periods=100, freq="5min", tz="Asia/Kolkata")
+    for i, stamp in enumerate(ts):
+        p = price + i * 4
+        rows.append({
+            "timestamp": stamp, "open": p, "high": p + 20, "low": p - 20,
+            "close": p + 4, "volume": 5000 + (i % 10) * 100,
+        })
+    result = run_signal_research(pd.DataFrame(rows))
+    assert result.validation["mode"] == "NIFTY_SPOT_SIGNAL_RESEARCH"
+    assert "total_R" in result.validation
+    assert "pnl" not in result.signals.columns
+
+
+def test_signal_research_conservative_exit_resolution():
+    from backtest.signal_research import _resolve_outcome
+
+    frame = pd.DataFrame({
+        "timestamp": pd.date_range("2026-01-05 09:15", periods=2, freq="5min", tz="Asia/Kolkata"),
+        "open": [100.0, 100.0], "high": [100.0, 103.0],
+        "low": [100.0, 97.0], "close": [100.0, 100.0], "volume": [1000, 1000],
+    })
+    price, reason, _ = _resolve_outcome(frame, 1, "BUY", 98.0, 102.0)
+    assert price == 98.0
+    assert reason == "stop_loss"
