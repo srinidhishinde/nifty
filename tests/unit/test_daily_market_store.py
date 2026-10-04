@@ -24,3 +24,25 @@ def test_daily_store_rejects_missing_ohlcv(tmp_path):
         assert "Missing required OHLCV" in str(exc)
     else:
         raise AssertionError("Expected missing-column validation")
+
+
+def test_mcx_resolution_uses_scrip_master_and_never_hardcodes_token():
+    from marketdata.providers.kotak_neo import KotakNeoProvider
+
+    class FakeClient:
+        def search_scrip(self, **kwargs):
+            assert kwargs["exchange_segment"] == "mcx_fo"
+            assert kwargs["option_type"] == "FUT"
+            return [
+                {"pSymbol": 20, "pExchSeg": "mcx_fo", "pSymbolName": "CRUDEOIL",
+                 "pTrdSymbol": "CRUDEOIL26OCTFUT", "pOptionType": "XX",
+                 "pExpiryDate": "19OCT2026", "lLotSize": 100},
+                {"pSymbol": 10, "pExchSeg": "mcx_fo", "pSymbolName": "CRUDEOIL",
+                 "pTrdSymbol": "CRUDEOIL26NOVFUT", "pOptionType": "XX",
+                 "pExpiryDate": "19NOV2026", "lLotSize": 100},
+            ]
+
+    contract = KotakNeoProvider(FakeClient()).resolve_mcx_futures("CRUDEOIL")
+    assert contract["neosymbol"] == "mcx_fo|20"
+    assert contract["instrument_token"] == "20"
+    assert contract["trading_symbol"] == "CRUDEOIL26OCTFUT"
