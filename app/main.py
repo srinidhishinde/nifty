@@ -845,6 +845,19 @@ if prediction_frame is not None and prediction_source:
     ensemble_cols[2].metric("Rule Confidence", f"{canonical_signal.confidence:.1f}%")
     ensemble_cols[3].metric("Refresh", "5 min")
 
+    feature_presence = {
+        "Technical": ["EMA_SLOPE", "RSI", "ATR_PCT", "VWAP_DEV", "MACD_HIST", "VOLUME_RATIO"],
+        "Derivatives": ["PCR", "PCE", "OI_SHIFT", "DELTA_OI_SHIFT", "ATM_IV"],
+        "Sentiment": ["SENTIMENT", "SENTIMENT_CHANGE", "NEWS_COUNT"],
+    }
+    coverage_rows = []
+    for group, names in feature_presence.items():
+        present = sum(name in ml_input.columns and ml_input[name].notna().any() for name in names)
+        coverage_rows.append([group, f"{present}/{len(names)} available", "READY" if present else "UNAVAILABLE"])
+    with st.expander("Model input coverage", expanded=False):
+        st.dataframe(pd.DataFrame(coverage_rows, columns=["Feature group", "Coverage", "Status"]), use_container_width=True, hide_index=True)
+        st.caption("Unavailable option/sentiment features are excluded from training; the system never substitutes synthetic values.")
+
     st.markdown("### AI/ML Advisory")
     train_col, status_col = st.columns([1, 3])
     train_clicked = train_col.button("Train / Retrain ML", type="primary", width="stretch", key="final_ml_train")
