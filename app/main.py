@@ -39,6 +39,7 @@ from news.global_news import fetch_global_news
 from marketdata.nifty_csv import normalize_nifty_csv
 from marketdata.option_chain_replay import replay_option_chain_csv
 from strategy.cross_market_trend import calculate_trend, TrendSnapshot, aggregate_context
+from marketdata.yahoo_finance import fetch_yahoo_ohlcv
 
 
 # ============================================================
@@ -1724,6 +1725,131 @@ st.divider()
 # ============================================================
 # Backtest
 # ============================================================
+
+# ============================================================
+# Yahoo Finance backtest layer
+# ============================================================
+
+st.subheader("Yahoo Finance Backtest")
+st.caption(
+    "Independent NIFTY 50 spot/index validation using Yahoo Finance OHLCV. "
+    "This layer is separate from uploaded CSV and futures P&L backtests."
+)
+
+yahoo_cols = st.columns(5)
+yahoo_interval = yahoo_cols[0].selectbox(
+    "Yahoo interval", ["5m", "15m", "30m", "60m", "1d"],
+    index=0, key="yahoo_bt_interval"
+)
+yahoo_start = yahoo_cols[1].date_input(
+    "Start date",
+    value=pd.Timestamp.now(tz="Asia/Kolkata").date() - pd.Timedelta(days=30),
+    key="yahoo_bt_start"
+)
+yahoo_end = yahoo_cols[2].date_input(
+    "End date",
+    value=pd.Timestamp.now(tz="Asia/Kolkata").date(),
+    key="yahoo_bt_end"
+)
+yahoo_symbol = yahoo_cols[3].text_input(
+    "Yahoo symbol", value="^NSEI", key="yahoo_bt_symbol"
+)
+yahoo_run = yahoo_cols[4].button(
+    "Pull & Backtest", type="primary", width="stretch", key="yahoo_bt_run"
+)
+
+if yahoo_run:
+    yahoo_result = fetch_yahoo_ohlcv(
+        yahoo_start,
+        yahoo_end,
+        symbol=yahoo_symbol.strip() or "^NSEI",
+        interval=yahoo_interval,
+    )
+    st.session_state["yahoo_bt_result"] = yahoo_result
+
+yahoo_result = st.session_state.get("yahoo_bt_result")
+if yahoo_result is not None:
+    if yahoo_result.status == "OK":
+        st.success(
+            f"GREEN — {yahoo_result.message}"
+        )
+        yc = st.columns(6)
+        yc[0].metric("Source", "Yahoo Finance")
+        yc[1].metric("Symbol", yahoo_result.symbol)
+        yc[2].metric("Interval", yahoo_result.interval)
+        yc[3].metric("Candles", f"{len(yahoo_result.data):,}")
+        yc[4].metric("From", str(yahoo_result.provider_start))
+        yc[5].metric("To", str(yahoo_result.provider_end))
+
+        st.info(
+            "Yahoo ^NSEI is NIFTY 50 spot/index data. "
+            "This validates signal behavior, not futures/options profitability. "
+            "No synthetic option/OI/PCR inputs are created."
+        )
+
+        yahoo_data = yahoo_result.data
+        yahoo_quality = assess_ohlcv(yahoo_data)
+        if yahoo_quality.status != "GREEN":
+            st.warning(
+                f"Yahoo OHLCV quality gate: {yahoo_quality.status}. "
+                + " | ".join(yahoo_quality.reasons)
+            )
+        else:
+            st.success("Yahoo OHLCV passed the structural data-quality gate.")
+
+        st.dataframe(
+            yahoo_data.tail(25), width="stretch", hide_index=True
+        )
+
+        if len(yahoo_data) >= 60:
+            yahoo_research = run_signal_research(yahoo_data)
+            yv = yahoo_research.validation
+
+            st.markdown("#### Yahoo signal-validation funnel")
+            yf = st.columns(6)
+            yf[0].metric("Bars", f"{yv.get('bars_considered', 0):,}")
+            yf[1].metric("Rule triggers", f"{yv.get('rule_trigger_bars', 0):,}")
+            yf[2].metric("Qualified", f"{yv.get('qualified_signal_bars', 0):,}")
+            yf[3].metric("Conflicts", f"{yv.get('conflicting_signal_bars', 0):,}")
+            yf[4].metric("Signals", f"{yv.get('signals', 0):,}")
+            yf[5].metric("Trading days", f"{yv.get('trading_days', 0):,}")
+
+            ym = st.columns(5)
+            ym[0].metric("Win rate", f"{yv.get('win_rate_pct', 0.0):.1f}%")
+            ym[1].metric("Average R", f"{yv.get('average_R', 0.0):.3f}")
+            ym[2].metric("Total R", f"{yv.get('total_R', 0.0):.2f}")
+            ym[3].metric("Wins", f"{yv.get('wins', 0):,}")
+            ym[4].metric("Losses", f"{yv.get('losses', 0):,}")
+
+            if not yahoo_research.signals.empty:
+                st.dataframe(
+                    yahoo_research.signals,
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.warning(
+                    "No qualified Yahoo signals survived the existing gates."
+                )
+            st.caption(
+                "Spot/index signal research only — not executable futures P&L."
+            )
+        else:
+            st.warning(
+                "Fewer than 60 Yahoo candles were returned; indicator warm-up "
+                "blocks a misleading backtest."
+            )
+    else:
+        st.error(
+            f"Yahoo backtest unavailable: {yahoo_result.message}"
+        )
+        st.info(
+            "No synthetic fallback is used. Adjust the Yahoo interval/date range "
+            "or use the existing CSV backtest."
+        )
+
+st.divider()
+
 
 st.subheader("Historical Rule Backtest")
 st.caption(
