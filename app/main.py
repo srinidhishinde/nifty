@@ -21,7 +21,7 @@ from strategy.ce_pe_selector import (
 )
 from strategy.strike_selector import StrikeSelector
 from backtest.rule_engine import RuleBacktestEngine
-from backtest.capital_simulator import simulate_capital
+from backtest.capital_simulator import simulate_capital, rolling_capital_simulation
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
 from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
@@ -2000,8 +2000,76 @@ if bt_data is not None:
             st.error(f"Backtest data preparation failed: {exc}")
 
 
-st.divider()
+# ============================================================
+# 100-day capital lab
+# ============================================================
 
+st.divider()
+st.subheader("₹1 Lakh — 100-Day Capital Lab")
+st.caption(
+    "Historical scenario analysis. The simulator replays the strategy on real uploaded candles; "
+    "it does not predict or guarantee the next 100 days."
+)
+
+lab = st.columns(5)
+lab_capital = lab[0].number_input("Starting capital (₹)", 10000.0, 10000000.0, 100000.0, 10000.0, key="lab_capital")
+lab_days = lab[1].number_input("Window (days)", 20, 500, 100, 10, key="lab_days")
+lab_risk = lab[2].number_input("Risk / trade (%)", 0.1, 5.0, 1.0, 0.1, key="lab_risk")
+lab_daily = lab[3].number_input("Daily loss limit (%)", 0.5, 10.0, 2.0, 0.5, key="lab_daily")
+lab_step = lab[4].number_input("Rolling step (days)", 5, 100, 20, 5, key="lab_step")
+lab_compound = st.checkbox("Compound risk with equity", value=True, key="lab_compound")
+
+if bt_data is None:
+    st.info("Upload historical OHLCV data above to activate the Capital Lab.")
+else:
+    if st.button("Run ₹1 Lakh 100-Day Capital Lab", type="primary", use_container_width=True):
+        try:
+            single = simulate_capital(
+                bt_data, starting_capital=float(lab_capital), days=int(lab_days),
+                risk_pct_per_trade=float(lab_risk), daily_loss_pct=float(lab_daily),
+                compounding=lab_compound, instrument=instrument,
+            )
+            rolling = rolling_capital_simulation(
+                bt_data, starting_capital=float(lab_capital), window_days=int(lab_days),
+                step_days=int(lab_step), risk_pct_per_trade=float(lab_risk),
+                daily_loss_pct=float(lab_daily), compounding=lab_compound,
+                instrument=instrument,
+            )
+
+            st.markdown("### Latest 100-day scenario")
+            m = st.columns(6)
+            m[0].metric("Starting", f"₹{single.starting_capital:,.0f}")
+            m[1].metric("Ending", f"₹{single.ending_capital:,.0f}")
+            m[2].metric("P&L", f"₹{single.net_profit:,.0f}", f"{single.return_pct:+.2f}%")
+            m[3].metric("Win rate", f"{single.win_rate_pct:.1f}%")
+            m[4].metric("Max DD", f"₹{single.max_drawdown:,.0f}", f"{single.max_drawdown_pct:.2f}%")
+            m[5].metric("Trades", single.trades)
+            st.line_chart(single.equity_curve.set_index("date")[["equity"]], width="stretch", height=320)
+
+            st.markdown("### Rolling 100-day robustness")
+            r = st.columns(7)
+            r[0].metric("Windows", rolling.total_windows)
+            r[1].metric("Profitable", f"{rolling.profitable_window_pct:.1f}%")
+            r[2].metric("Median end", f"₹{rolling.median_ending_capital:,.0f}")
+            r[3].metric("Worst end", f"₹{rolling.worst_ending_capital:,.0f}")
+            r[4].metric("Best end", f"₹{rolling.best_ending_capital:,.0f}")
+            r[5].metric("Median return", f"{rolling.median_return_pct:+.2f}%")
+            r[6].metric("Worst DD", f"{rolling.worst_drawdown_pct:.2f}%")
+
+            st.line_chart(
+                rolling.windows.set_index("end_date")[["ending_capital"]],
+                width="stretch", height=300,
+            )
+            st.dataframe(rolling.windows, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Historical return range: {rolling.worst_return_pct:+.2f}% to "
+                f"{rolling.best_return_pct:+.2f}%. A robust strategy should be evaluated "
+                "across many market regimes, not just the latest window."
+            )
+        except Exception as exc:
+            st.error(f"Capital Lab failed: {exc}")
+
+st.divider()
 
 # ============================================================
 # Safety
