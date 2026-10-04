@@ -46,10 +46,12 @@ def size_position(
     stop_pct: float = 0.02,
     atr_multiple: float = 1.5,
     target_multiple: float = 2.0,
-    min_reward_risk: float = 1.5,
+    min_reward_risk: float = 1.8,
+    lot_size: int = 1,
+    point_value: float = 1.0,
 ) -> RiskDecision:
-    if entry <= 0 or capital <= 0:
-        return RiskDecision(False, 0, entry, entry, entry, 0, 0, "Invalid entry or capital")
+    if entry <= 0 or capital <= 0 or lot_size <= 0 or point_value <= 0:
+        return RiskDecision(False, 0, entry, entry, entry, 0, 0, "Invalid entry, capital or contract specification")
     if not 0 < risk_fraction <= 0.05:
         return RiskDecision(False, 0, entry, entry, entry, 0, 0, "Risk fraction must be between 0 and 5%")
     try:
@@ -60,10 +62,13 @@ def size_position(
         return RiskDecision(False, 0, entry, entry, entry, 0, 0, str(exc))
 
     risk_amount = capital * risk_fraction
-    qty_by_risk = math.floor(risk_amount / stop_distance) if stop_distance else 0
-    qty_by_capital = math.floor((capital * max_position_fraction) / entry)
-    qty = max(0, min(qty_by_risk, qty_by_capital))
-    allowed = qty > 0 and rr >= min_reward_risk
+    risk_per_lot = stop_distance * point_value * lot_size
+    qty_by_risk_lots = math.floor(risk_amount / risk_per_lot) if risk_per_lot else 0
+    capital_per_lot = entry * lot_size
+    qty_by_capital_lots = math.floor((capital * max_position_fraction) / capital_per_lot) if capital_per_lot else 0
+    lots = max(0, min(qty_by_risk_lots, qty_by_capital_lots))
+    qty = lots * lot_size
+    allowed = lots > 0 and rr >= min_reward_risk
     reason = "Risk and reward constraints satisfied" if allowed else "Position rejected by risk/reward or capital limits"
     return RiskDecision(
         allowed,
@@ -71,7 +76,7 @@ def size_position(
         round(entry, 4),
         round(stop, 4),
         round(target, 4),
-        round(qty * stop_distance, 2),
+        round(lots * risk_per_lot, 2),
         round(rr, 3),
         reason,
     )
