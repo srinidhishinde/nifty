@@ -47,6 +47,8 @@ from ensemble.signal import build_ensemble
 from marketdata.decision_source import load_kotak_decision_snapshot
 from assistant.chatbot import answer as chatbot_answer
 from alerts.recipient_store import WhatsAppRecipientStore
+from alerts.runtime_settings import WhatsAppSettingsStore
+from alerts.whatsapp import WhatsAppAlertService
 
 
 # ============================================================
@@ -686,9 +688,13 @@ st.sidebar.subheader("WhatsApp Alerts")
 st.sidebar.caption("Manage alert recipients here. Numbers are stored locally and do not require .env edits.")
 
 recipient_store = WhatsAppRecipientStore()
+whatsapp_runtime = WhatsAppSettingsStore()
+wa_service = WhatsAppAlertService(recipient_store)
 wa_recipients = recipient_store.load()
+wa_enabled = whatsapp_runtime.enabled() or bool(getattr(settings, "whatsapp_alerts_enabled", False))
 
 with st.sidebar.expander("Recipients", expanded=True):
+
     if wa_recipients:
         for recipient in wa_recipients:
             row = st.columns([4, 1])
@@ -716,8 +722,26 @@ with st.sidebar.expander("Recipients", expanded=True):
 
     if wa_recipients:
         st.caption(f"{len(wa_recipients)} recipient(s) saved locally.")
-    if not bool(getattr(settings, "whatsapp_alerts_enabled", False)):
-        st.warning("WhatsApp alerts are disabled. The recipient list is saved, but sending remains off until the WhatsApp integration is enabled.")
+
+    enable_whatsapp = st.toggle(
+        "Enable WhatsApp sending",
+        value=wa_enabled,
+        key="whatsapp_dashboard_enabled",
+        help="This controls alert sending from the dashboard. API credentials remain in .env.",
+    )
+    if enable_whatsapp != wa_enabled:
+        whatsapp_runtime.set_enabled(enable_whatsapp)
+        wa_enabled = enable_whatsapp
+        st.rerun()
+
+    if not wa_recipients:
+        st.warning("Add at least one recipient before sending alerts.")
+    elif not wa_service.token or not wa_service.phone_number_id:
+        st.warning("WhatsApp API credentials are missing. Add the Meta access token and phone number ID to .env once; recipients remain dashboard-managed.")
+    elif wa_enabled:
+        st.success("WhatsApp sending is enabled.")
+    else:
+        st.info("WhatsApp sending is disabled. Turn on the toggle above to enable alerts.")
 
 
 # ============================================================
