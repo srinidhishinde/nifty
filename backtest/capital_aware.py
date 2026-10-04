@@ -44,7 +44,7 @@ class CapitalAwareRuleBacktestEngine:
         self.margin_per_lot = float(margin_per_lot)
         self.slippage_points = float(slippage_points)
         self.brokerage_per_order = float(brokerage_per_order)
-        self.max_daily_loss = float(max_daily_loss) if max_daily_loss is not None else self.starting_capital * 0.03
+        self.max_daily_loss = float(max_daily_loss) if max_daily_loss is not None else self.starting_capital * 0.02
         self.max_trades_per_day = int(max_trades_per_day)
 
     def _fill(self, price: float, direction: str, entry: bool) -> float:
@@ -198,6 +198,9 @@ class CapitalAwareRuleBacktestEngine:
             reward_distance = max(entry * self.config.min_target_pct, float(row.get("ATR", 0) or 0) * self.config.target_atr_multiple)
             stop = entry - risk_distance if direction == "BUY" else entry + risk_distance
             target = entry + reward_distance if direction == "BUY" else entry - reward_distance
+            reward_risk = reward_distance / risk_distance if risk_distance > 0 else 0.0
+            if reward_risk < self.config.min_reward_risk:
+                continue
             lots, risk_per_lot = self._size(entry, stop, equity)
             if lots <= 0:
                 rejected_risk_budget += 1
@@ -239,5 +242,6 @@ class CapitalAwareRuleBacktestEngine:
             "risk_per_trade": self.risk_per_trade,
             "point_value": self.point_value,
             "min_stop_pct": self.config.stop_loss_pct,
+            "min_reward_risk": self.config.min_reward_risk,
         }
         return StrictBacktestResult(trades_df, metrics, rank_rule_performance(trades_df), equity_df, validation)
