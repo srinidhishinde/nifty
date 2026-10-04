@@ -33,23 +33,10 @@ def test_engine_records_validation():
 
 
 def test_same_bar_stop_and_target_uses_conservative_stop_first():
-    frame = pd.DataFrame({
-        "timestamp": pd.to_datetime([
-            "2026-01-05 09:15", "2026-01-05 09:20", "2026-01-05 09:25"
-        ]).tz_localize("Asia/Kolkata"),
-        "open": [100, 100, 100],
-        "high": [101, 103, 103],
-        "low": [99, 97, 99],
-        "close": [100, 102, 102],
-        "volume": [1000, 1000, 1000],
-    })
-    # The engine's exit ordering is stop before target whenever OHLC cannot
-    # establish which level was touched first. This is intentionally conservative.
-    result = CapitalAwareRuleBacktestEngine(
-        starting_capital=100000, risk_per_trade=1000, lot_size=1,
-        slippage_points=0, brokerage_per_order=0,
-    ).run(frame)
-    # The test primarily protects the contract: if a trade is closed on the
-    # ambiguous bar, its reason must not be optimistic take-profit sequencing.
-    if not result.trades.empty:
-        assert result.trades.iloc[0]["reason"] != "take_profit"
+    row = pd.Series({"high": 103.0, "low": 97.0})
+    position = {"direction": "BUY", "stop_loss": 98.0, "target": 102.0}
+
+    exit_price, reason = CapitalAwareRuleBacktestEngine._resolve_exit(row, position)
+
+    assert exit_price == 98.0
+    assert reason == "stop_loss"
