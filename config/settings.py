@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-6-luna", validation_alias="OPENAI_MODEL")
     neo_nifty_neosymbol: str = Field(default="", validation_alias="NEO_NIFTY_NEOSYMBOL")
+    whatsapp_alert_interval_minutes: int = Field(default=5, validation_alias="WHATSAPP_ALERT_INTERVAL_MINUTES")
+    whatsapp_duplicate_suppression_minutes: int = Field(default=15, validation_alias="WHATSAPP_DUPLICATE_SUPPRESSION_MINUTES")
+    market_data_root: str = Field(default="data/market", validation_alias="MARKET_DATA_ROOT")
+    capture_nifty_enabled: bool = Field(default=True, validation_alias="CAPTURE_NIFTY_ENABLED")
+    capture_mcx_enabled: bool = Field(default=True, validation_alias="CAPTURE_MCX_ENABLED")
+
     allow_order_submission: bool = Field(default=False, validation_alias="ALLOW_ORDER_SUBMISSION")
 
     def live_trading_allowed(self) -> bool:
