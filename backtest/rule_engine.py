@@ -166,7 +166,15 @@ class RuleBacktestEngine:
             if buys and sells:
                 continue
             direction = "BUY" if buys else "SELL"
-            raw_entry = float(row["close"])
+            # A close-based signal is only known after this candle closes.
+            # Fill on the next available bar, not on the signal candle itself.
+            if i + 1 >= len(frame):
+                continue
+            next_row = frame.iloc[i + 1]
+            next_ts = next_row["timestamp"]
+            if next_ts.date() != ts.date() or not _in_session(next_ts, self.instrument):
+                continue
+            raw_entry = float(next_row["open"])
             entry = self._execution_price(raw_entry, direction, entry=True)
             atr = float(row.get("ATR", 0.0) or 0.0)
             risk_fraction = self.risk_per_trade / self.starting_capital
