@@ -38,8 +38,10 @@ class StrategyConfig:
     min_rules_for_signal:int=2
     min_adx:float=18.0
     max_atr_pct:float=0.04
+    min_history_bars:int=50
 
 def _v(row,names,default=None):
+    if row is None:return default
     for n in names:
         if n in row.index and pd.notna(row[n]):
             try:return float(row[n])
@@ -57,21 +59,22 @@ def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyCon
     sentiment=_v(row,("sentiment","news_sentiment","Sentiment"),0); upper=_v(row,("BB_UPPER","UpperBand"))
     if upper is not None and close>upper and sentiment>0:out.append(RuleSignal("bollinger_breakout","BUY","Upper-band breakout with positive news",1.0))
     fast,slow=_v(row,("EMA20",)),_v(row,("EMA50",))
-    pf,ps=_v(previous,("EMA20",)) if previous is not None else None,_v(previous,("EMA50",)) if previous is not None else None
+    pf,ps=_v(previous,("EMA20",)),_v(previous,("EMA50",))
     if None not in (fast,slow,pf,ps) and pf<=ps and fast>slow:out.append(RuleSignal("ema_cross","BUY","EMA20 crossed above EMA50",1.3))
     vwap=_v(row,("VWAP",))
     if vwap and vwap>0:
         dev=(close-vwap)/vwap*100
         if dev<=-c.vwap_deviation_pct:out.append(RuleSignal("vwap_reversion","BUY","Price >2% below VWAP",1.0))
         elif dev>=c.vwap_deviation_pct:out.append(RuleSignal("vwap_reversion","SELL","Price >2% above VWAP",1.0))
-    bid,ask=_v(row,("bid","best_bid","Bid")),_v(row,("ask","best_ask","Ask")); spread=_v(row,("spread","Spread")); prev_spread=_v(previous,("spread","Spread")) if previous is not None else None
+    bid,ask=_v(row,("bid","best_bid","Bid")),_v(row,("ask","best_ask","Ask")); spread=_v(row,("spread","Spread")); prev_spread=_v(previous,("spread","Spread"))
     if bid is not None and ask and ask>0:
         current=spread if spread is not None else ask-bid
         if bid/ask<c.bid_ask_ratio_max and prev_spread and current>prev_spread*c.spread_widening_factor:out.append(RuleSignal("order_book_imbalance","SELL","Bid/ask imbalance with widening spread",1.3))
     if sentiment<c.sentiment_negative_threshold:out.append(RuleSignal("sentiment_negative","SELL","News sentiment below -0.5",1.3))
     adx=_v(row,("ADX",))
     if adx is not None and adx>=c.min_adx:
-        trend="BUY" if (_v(row,("EMA20",),close) or close)>=(_v(row,("EMA50",),close) or close) else "SELL"
+        fast_now=_v(row,("EMA20",close)); slow_now=_v(row,("EMA50",close))
+        trend="BUY" if fast_now>=slow_now else "SELL"
         out.append(RuleSignal("adx_trend_confirmation",trend,f"ADX {adx:.1f} confirms trend",0.8))
     k,d=_v(row,("STOCH_K",)),_v(row,("STOCH_D",))
     if k is not None and d is not None:
@@ -84,10 +87,15 @@ def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyCon
 
 def generate_signal(data:pd.DataFrame,config:StrategyConfig|None=None)->StrategySignal:
     c=config or StrategyConfig()
-    if data.empty:return StrategySignal("WAIT",(),(),0,0,0,0,False)
-    e=add_indicators(data); row=e.iloc[-1]; prev=e.iloc[-2] if len(e)>1 else None; rules=evaluate_rules(row,prev,c)
+    if len(data)<c.min_history_bars:
+        return StrategySignal("WAIT",(),("Indicator warm-up: insufficient history",),0,0,0,0,False)
+    e=add_indicators(data); row=e.iloc[-1]; prev=e.iloc[-2]
+    required=("RSI","EMA20","EMA50","MACD","MACD_SIGNAL","ATR","ATR_PCT","VWAP")
+    if any(pd.isna(row.get(name)) for name in required):
+        return StrategySignal("WAIT",(),("Indicator warm-up: required features unavailable",),0,0,float(_v(row,("ATR",),0) or 0),0,False)
+    rules=evaluate_rules(row,prev,c)
     buys=[r for r in rules if r.direction=="BUY"]; sells=[r for r in rules if r.direction=="SELL"]
-    atr=float(_v(row,("ATR",),0) or 0); total=sum(r.weight for r in rules); direction="BUY" if buys and not sells else "SELL" if sells and not buys else "WAIT"
+    atr=float(_v(row,("ATR",),0) or 0); direction="BUY" if buys and not sells else "SELL" if sells and not buys else "WAIT"
     if direction=="WAIT":return StrategySignal(direction,tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,0,False)
     directional=sum(r.weight for r in rules if r.direction==direction); confidence=min(95.0,50+8*directional)
     atr_pct=float(_v(row,("ATR_PCT",),0) or 0)
