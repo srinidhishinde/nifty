@@ -39,9 +39,11 @@ def assess_ohlcv(data: pd.DataFrame, expected_minutes: int = 5) -> DataQualityRe
     invalid_count = int(invalid.sum())
     negative_volume = int((frame["volume"].fillna(-1) < 0).sum())
     zero_volume = int((frame["volume"].fillna(0) == 0).sum())
-    deltas = frame["timestamp"].diff().dt.total_seconds().div(60).dropna()
-    gaps = deltas[deltas > expected_minutes * 1.5]
-    max_gap = float(deltas.max()) if not deltas.empty else 0.0
+    deltas = frame["timestamp"].diff().dt.total_seconds().div(60)
+    same_session = frame["timestamp"].dt.date.eq(frame["timestamp"].shift().dt.date)
+    session_deltas = deltas.where(same_session).dropna()
+    gaps = session_deltas[session_deltas > expected_minutes * 1.5]
+    max_gap = float(session_deltas.max()) if not session_deltas.empty else 0.0
     reasons: list[str] = []
     if duplicate_count:
         reasons.append(f"{duplicate_count} duplicate timestamps")
@@ -50,7 +52,7 @@ def assess_ohlcv(data: pd.DataFrame, expected_minutes: int = 5) -> DataQualityRe
     if negative_volume:
         reasons.append(f"{negative_volume} negative-volume rows")
     if len(gaps):
-        reasons.append(f"{len(gaps)} gaps exceed expected cadence")
+        reasons.append(f"{len(gaps)} intraday gaps exceed expected cadence")
     # Zero volume is a warning rather than an automatic failure because some
     # legitimate index-derived feeds can report zero volume.
     status = "GREEN"
