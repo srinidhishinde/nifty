@@ -41,21 +41,9 @@ class SessionContext:
 def policy_for(instrument: str, *, mcx_close: time = time(23, 30)) -> SessionPolicy:
     name = instrument.upper()
     if name == "NIFTY":
-        return SessionPolicy(
-            instrument=name,
-            exchange_open=time(9, 15),
-            exchange_close=time(15, 40),
-            entry_cutoff=time(15, 15),
-            strategy_exit_cutoff=time(15, 30),
-        )
+        return SessionPolicy(name, time(9, 15), time(15, 30), time(15, 15), time(15, 30))
     if name in {"MCX", "CRUDEOIL", "NATURALGAS", "COPPER", "SILVER", "GOLD"}:
-        return SessionPolicy(
-            instrument=name,
-            exchange_open=time(9, 0),
-            exchange_close=mcx_close,
-            entry_cutoff=time(23, 0),
-            strategy_exit_cutoff=mcx_close,
-        )
+        return SessionPolicy(name, time(9, 0), mcx_close, time(23, 0), mcx_close)
     raise ValueError(f"Unsupported instrument '{instrument}'")
 
 
@@ -63,15 +51,11 @@ def resolve_session(instrument: str, timestamp: datetime, *, mcx_close: time = t
     ts = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=IST)
     ts = ts.astimezone(IST)
     policy = policy_for(instrument, mcx_close=mcx_close)
-
     if ts.weekday() >= 5:
         return SessionContext(policy, ts, SessionState.CLOSED)
-
     current = ts.time()
     if current < policy.exchange_open or current > policy.exchange_close:
         return SessionContext(policy, ts, SessionState.CLOSED)
     if current >= policy.strategy_exit_cutoff:
         return SessionContext(policy, ts, SessionState.EXIT_ONLY)
-    if current <= policy.entry_cutoff:
-        return SessionContext(policy, ts, SessionState.ENTRY)
-    return SessionContext(policy, ts, SessionState.EXIT_ONLY)
+    return SessionContext(policy, ts, SessionState.ENTRY)
