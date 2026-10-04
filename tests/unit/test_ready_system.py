@@ -32,3 +32,26 @@ def test_minimum_reward_risk_is_enforced():
         slippage_points=0, brokerage_per_order=0,
     ).run(data)
     assert result.validation["starting_capital"] == 100000
+
+def test_capital_aware_backtest_exposes_rejection_funnel():
+    data = pd.DataFrame({
+        "timestamp": pd.date_range(
+            "2026-01-05 09:15", periods=80, freq="5min", tz="Asia/Kolkata"
+        ),
+        "open": [25000.0] * 80,
+        "high": [25010.0] * 80,
+        "low": [24990.0] * 80,
+        "close": [25000.0] * 80,
+        "volume": [1000.0] * 80,
+    })
+    result = CapitalAwareRuleBacktestEngine(
+        starting_capital=100000,
+        risk_per_trade=1000,
+        lot_size=65,
+        slippage_points=0,
+        brokerage_per_order=0,
+    ).run(data)
+    assert "qualified_signal_bars" in result.validation
+    assert "rejected_risk_budget" in result.validation
+    assert "bars_considered" in result.validation
+    assert result.validation["starting_capital"] == 100000
