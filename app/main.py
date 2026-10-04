@@ -46,6 +46,7 @@ from ml.engine import MLConfig, train as train_ml, predict as predict_ml
 from ensemble.signal import build_ensemble
 from marketdata.decision_source import load_kotak_decision_snapshot
 from assistant.chatbot import answer as chatbot_answer
+from alerts.whatsapp import WhatsAppAlertService, build_signal_message
 
 
 # ============================================================
@@ -572,6 +573,8 @@ st.markdown("""
 .radar-down { background:#45171d; color:#ff7785; }
 .radar-range { background:#403512; color:#ffd86b; }
 .radar-na { background:#263244; color:#b9c5d6; }
+.decision-buy { border:1px solid rgba(50,220,130,.45); background:linear-gradient(90deg,rgba(0,160,90,.22),rgba(0,90,60,.10)); color:#7dffb0; border-radius:14px; padding:14px 18px; margin:8px 0 14px; font-size:1.05rem; }
+.decision-wait { border:1px solid rgba(255,193,7,.45); background:linear-gradient(90deg,rgba(180,130,0,.20),rgba(100,75,0,.08)); color:#ffd86b; border-radius:14px; padding:14px 18px; margin:8px 0 14px; font-size:1.05rem; }
 .st-key-dashboard_chat { position: fixed; right: 24px; bottom: 24px; z-index: 9999; }
 .st-key-dashboard_chat button { border-radius: 999px; box-shadow: 0 10px 28px rgba(0,0,0,.35); }
 </style>
@@ -1015,6 +1018,28 @@ with chat_anchor[1]:
             st.rerun()
 
 # ============================================================
+
+# ============================================================
+# WhatsApp signal alerts
+# ============================================================
+with st.expander("WhatsApp signal alerts", expanded=False):
+    wa = WhatsAppAlertService()
+    st.caption("Multi-number Cloud API alerts. Disabled by default. Alerts never place orders and use the same ensemble output shown above.")
+    if wa.configured:
+        st.success(f"Configured for {len(wa.recipients)} recipient(s).")
+        send_alert = st.button("Send current 5m signal to WhatsApp", key="send_whatsapp_signal")
+        if send_alert:
+            if "ensemble_rows" in locals() and ensemble_rows:
+                body = build_signal_message(ensemble_rows[0], instrument=instrument)
+                results = wa.broadcast(body)
+                ok = sum(x.ok for x in results)
+                if ok == len(results): st.success(f"Signal sent to {ok} recipient(s).")
+                else: st.warning(f"WhatsApp delivery: {ok}/{len(results)} succeeded. See logs/whatsapp_signals.jsonl.")
+            else:
+                st.warning("No ensemble signal is currently available; nothing was sent.")
+    else:
+        st.info("Set WHATSAPP_ALERTS_ENABLED=true, WHATSAPP_API_TOKEN, WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_RECIPIENTS in .env, then restart Streamlit.")
+
 # Research spot
 # ============================================================
 
@@ -1602,16 +1627,43 @@ if not live_contracts:
 
 st.markdown("#### Option Chain — Trade Plan")
 st.caption("Entry / SL / TP and Max Gain are premium-based only when actual option LTP is available. Snapshot files containing only LTP-change % will show unavailable premium levels.")
+core_chain_columns = [c for c in ["Strike","CE LTP","CE OI","CE OI Chg","PE LTP","PE OI","PE OI Chg","CE Signal","PE Signal","ATM"] if c in display_df.columns]
+optional_chain_columns = [c for c in ["CE Volume","PE Volume","CE IV","PE IV","CE Score","PE Score","CE Confidence","PE Confidence","CE Entry","PE Entry","CE SL","PE SL","CE TP","PE TP","CE Max Gain %","PE Max Gain %","CE Max Loss %","PE Max Loss %"] if c in display_df.columns and c not in core_chain_columns]
+selected_extra_columns = st.multiselect(
+    "Additional option-chain columns",
+    optional_chain_columns,
+    default=[c for c in ["CE Volume","PE Volume","CE IV","PE IV","CE Score","PE Score"] if c in optional_chain_columns],
+    key="option_chain_extra_columns",
+    help="Default view stays compact. Select advanced volume, IV, scores, Greeks and trade-plan fields when needed.",
+)
+render_columns = core_chain_columns + [c for c in selected_extra_columns if c not in core_chain_columns]
+compact_df = display_df[render_columns].copy()
+
+def highlight_decision(row: pd.Series):
+    styles = [""] * len(row)
+    values = {str(row.get("CE Signal","")).upper(), str(row.get("PE Signal","")).upper()}
+    if "BUY" in values:
+        return ["background-color: rgba(0,180,100,.10); color: #76f2ad"] * len(row)
+    if "WAIT" in values:
+        return ["background-color: rgba(255,193,7,.08); color: #ffd86b"] * len(row)
+    return styles
+
 st.dataframe(
-    display_df.style.apply(
-        highlight_atm,
-        axis=1,
-    ),
+    compact_df.style.apply(highlight_atm, axis=1).apply(highlight_decision, axis=1),
     width="stretch",
     hide_index=True,
 )
 
 
+decision_label = str(chain_signal.direction).upper()
+decision_class = "decision-buy" if decision_label in {"BUY","CE","PE"} else "decision-wait"
+st.markdown(
+    f'<div class="{decision_class}"><strong>{decision_label}</strong> · Confidence {chain_signal.confidence:.1f}% · '
+    f'Entry {"₹"+format(chain_signal.entry_price, ".2f") if chain_signal.entry_price is not None else "—"} · '
+    f'SL {"₹"+format(chain_signal.stop_loss, ".2f") if chain_signal.stop_loss is not None else "—"} · '
+    f'Target {"₹"+format(chain_signal.take_profit, ".2f") if chain_signal.take_profit is not None else "—"}</div>',
+    unsafe_allow_html=True,
+)
 st.caption(
     "ATM is the strike closest to the displayed underlying price. "
     "2 ATM + 5 OTM is a research selection view, not an order instruction."
