@@ -3,6 +3,8 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+
+from strategy.market_specs import get_option_strike_step, round_to_strike
 import streamlit as st
 
 from config.settings import settings
@@ -19,6 +21,7 @@ from strategy.ce_pe_selector import (
 )
 from strategy.strike_selector import StrikeSelector
 from backtest.rule_engine import RuleBacktestEngine
+from backtest.capital_simulator import simulate_capital, rolling_capital_simulation
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
 from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
@@ -29,6 +32,7 @@ from prediction.nifty_model import walk_forward_predict
 from news.global_news import fetch_global_news
 from marketdata.nifty_csv import normalize_nifty_csv
 from marketdata.option_chain_replay import replay_option_chain_csv
+from strategy.cross_market_trend import calculate_trend, TrendSnapshot, aggregate_context
 
 
 # ============================================================
@@ -109,9 +113,23 @@ def build_research_signal(
         75.0,
     )
 
+    research_base = {
+        "NIFTY": 25040.0,
+        "BANKNIFTY": 58000.0,
+        "CRUDEOIL": 6500.0,
+        "NATURALGAS": 300.0,
+        "COPPER": 950.0,
+        "SILVER": 95000.0,
+        "GOLD": 125000.0,
+    }.get(instrument.upper(), 25040.0)
+    research_strike = round_to_strike(
+        research_base,
+        get_strike_step(instrument),
+    )
+
     ce = OptionAnalysis(
         option_type="CE",
-        strike=25000.0,
+        strike=research_strike,
         ltp=100.0,
         volume=10000.0,
         open_interest=20000.0,
@@ -134,7 +152,7 @@ def build_research_signal(
 
     pe = OptionAnalysis(
         option_type="PE",
-        strike=25000.0,
+        strike=research_strike,
         ltp=100.0,
         volume=10000.0,
         open_interest=20000.0,
@@ -208,9 +226,7 @@ def build_research_option_chain(
         f"{instrument}:{seed}:{spot}"
     )
 
-    atm_strike = round(
-        spot / strike_step
-    ) * strike_step
+    atm_strike = round_to_strike(spot, strike_step)
 
     strikes = [
         atm_strike
@@ -508,23 +524,9 @@ def build_option_chain_dataframe(
 # Strike configuration
 # ============================================================
 
-def get_strike_step(
-    instrument: str,
-) -> float:
-
-    if instrument == "NIFTY":
-        return 50.0
-
-    if instrument == "BANKNIFTY":
-        return 100.0
-
-    if instrument in {
-        "CRUDEOIL",
-        "NATURALGAS",
-    }:
-        return 10.0
-
-    return 100.0
+def get_strike_step(instrument: str) -> float:
+    """Compatibility wrapper around the centralized market specification."""
+    return get_option_strike_step(instrument)
 
 
 # ============================================================
@@ -536,6 +538,29 @@ st.set_page_config(
     page_icon="AI",
     layout="wide",
 )
+
+# Modern terminal styling: information-dense, high-contrast and status-oriented.
+st.markdown("""
+<style>
+[data-testid="stAppViewContainer"] { background: #07111f; }
+[data-testid="stHeader"] { background: rgba(7,17,31,0.85); }
+.block-container { padding-top: 1.2rem; max-width: 1500px; }
+[data-testid="stMetric"] {
+  background: linear-gradient(135deg, rgba(18,35,58,.96), rgba(10,22,38,.96));
+  border: 1px solid rgba(91,151,255,.22);
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+}
+.market-radar { border:1px solid rgba(91,151,255,.22); border-radius:16px; padding:14px; background:linear-gradient(135deg,#0c1b2f,#091525); }
+.radar-title { font-size:1.05rem; font-weight:700; margin-bottom:8px; }
+.radar-pill { display:inline-block; padding:7px 11px; margin:3px; border-radius:999px; font-weight:700; font-size:.82rem; }
+.radar-up { background:#063b2a; color:#54e39a; }
+.radar-down { background:#45171d; color:#ff7785; }
+.radar-range { background:#403512; color:#ffd86b; }
+.radar-na { background:#263244; color:#b9c5d6; }
+</style>
+""", unsafe_allow_html=True)
 
 st.title(
     "AI Derivatives Terminal"
@@ -682,6 +707,82 @@ if spot is None and not neo_status.connected:
 if spot is None:
     spot = 0.0
 
+
+# ============================================================
+# Cross-market trend radar
+# ============================================================
+def _research_trend_snapshot(name: str, seed_value: int) -> TrendSnapshot:
+    base = {"NIFTY": 25040.0, "CRUDE": 6500.0, "NATGAS": 300.0, "COPPER": 950.0}[name]
+    rng = np.random.default_rng(abs(hash((name, int(seed_value)))) % (2**32))
+    returns = rng.normal(0.0, base * 0.0008, 120)
+    close = base + np.cumsum(returns)
+    frame = pd.DataFrame({
+        "timestamp": pd.date_range(end=pd.Timestamp.now(), periods=120, freq="5min"),
+        "open": close,
+        "high": close + abs(rng.normal(0, base * 0.0003, 120)),
+        "low": close - abs(rng.normal(0, base * 0.0003, 120)),
+        "close": close,
+        "volume": rng.integers(1000, 10000, 120),
+    })
+    return calculate_trend(name, frame, is_live=False)
+
+
+st.subheader("Market Radar")
+st.caption("Directional context for NIFTY, Crude Oil, Natural Gas and Copper. Research cards are explicitly marked when a live feed is unavailable.")
+radar_names = ["NIFTY", "CRUDE", "NATGAS", "COPPER"]
+radar_cols = st.columns(4)
+radar_snapshots: dict[str, TrendSnapshot] = {}
+for name, col in zip(radar_names, radar_cols):
+    if name == "NIFTY" and neo_status.connected:
+        # Until historical intraday streaming is wired for every instrument, do not
+        # fabricate a live trend from the single index quote.
+        snap = TrendSnapshot(name, "LIVE_QUOTE_ONLY", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", pd.Timestamp.now(), 0, True, "Live quote available; completed-candle history is required for a genuine trend score.")
+    else:
+        snap = _research_trend_snapshot(name, int(seed))
+    radar_snapshots[name] = snap
+    if snap.direction in {"STRONG_UP", "UP"}:
+        cls = "radar-up"
+    elif snap.direction in {"STRONG_DOWN", "DOWN"}:
+        cls = "radar-down"
+    elif snap.direction == "RANGE":
+        cls = "radar-range"
+    else:
+        cls = "radar-na"
+    source = "LIVE" if snap.is_live else "RESEARCH"
+    col.markdown(f'<div class="market-radar"><div class="radar-title">{name}</div><span class="radar-pill {cls}">{snap.direction}</span><br><small>{source} · score {snap.score:.0f} · {snap.volatility}</small><br><small>{snap.reason}</small></div>', unsafe_allow_html=True)
+
+radar_context = aggregate_context(radar_snapshots)
+st.caption(f"Cross-market context score: {radar_context:+.1f}. This is a context filter, not a standalone trade signal.")
+
+# ============================================================
+# System readiness dashboard
+# ============================================================
+from strategy.readiness import assess_readiness
+from strategy.regime import classify_regime
+
+st.subheader("System Readiness")
+st.caption("Design-time gate dashboard. Automated test status must be confirmed by the repository-local UAT before merge.")
+regime_snapshot = classify_regime(pd.Series({
+    "ADX": 20.0, "ATR_PCT": 0.01, "EMA_SPREAD": 1.0, "VWAP_DEV": 0.0,
+}), global_news_score)
+readiness = assess_readiness(
+    tests_passed=False,
+    warmup_ready=True,
+    risk_engine_ready=True,
+    ml_available=True,
+    live_order_enabled=settings.live_trading_allowed(),
+    realistic_backtest_available=True,
+    option_premium_history_available=False,
+)
+rc = st.columns(4)
+rc[0].metric("Readiness", f"{readiness.score:.0f}/100")
+rc[1].metric("Status", readiness.status)
+rc[2].metric("Regime", regime_snapshot.regime)
+rc[3].metric("Live Orders", "ENABLED" if settings.live_trading_allowed() else "LOCKED")
+with st.expander("Readiness gates", expanded=False):
+    st.dataframe(pd.DataFrame([{
+        "Gate": g.name, "Passed": g.passed, "Priority": g.severity, "Detail": g.detail
+    } for g in readiness.gates]), use_container_width=True, hide_index=True)
 
 # ============================================================
 # Risk summary
@@ -1057,9 +1158,66 @@ else:
     ]
 
 
-display_df = chain_df[
-    visible_columns
-].copy()
+display_df = chain_df[visible_columns].copy()
+
+# Trade-plan columns: every visible option gets a concrete plan when an actual
+# option LTP exists; otherwise premium fields remain unavailable rather than
+# being fabricated from LTP-change percentages.
+# Normalize the option trade-plan schema before rendering.  Older signal
+# frames used Max Gain % / Max Loss %, while the current engine exposes
+# Target Gain % / Stop Risk %.  Missing premium-derived values must remain
+# unavailable rather than being fabricated.
+plan = chain_signal_rows.copy()
+for column in [
+    "Side", "Strike", "Signal", "Confidence",
+    "Entry Price", "Stop Loss", "Take Profit",
+]:
+    if column not in plan.columns:
+        plan[column] = np.nan
+
+if "Target Gain %" not in plan.columns:
+    plan["Target Gain %"] = np.nan
+if "Stop Risk %" not in plan.columns:
+    plan["Stop Risk %"] = np.nan
+
+plan["Target Gain %"] = pd.to_numeric(plan["Target Gain %"], errors="coerce")
+plan["Stop Risk %"] = pd.to_numeric(plan["Stop Risk %"], errors="coerce")
+
+# Backward-compatible display aliases for any downstream UI/test code that
+# still expects the previous names.
+plan["Max Gain %"] = plan["Target Gain %"]
+plan["Max Loss %"] = plan["Stop Risk %"]
+display_df = display_df.merge(plan, on=["Side", "Strike"], how="left") if "Side" in display_df.columns else display_df
+ce_plan = plan[plan["Side"]=="CE"].rename(columns={
+    "Signal":"CE Signal","Confidence":"CE Confidence","Entry Price":"CE Entry",
+    "Stop Loss":"CE SL","Take Profit":"CE TP","Max Gain %":"CE Max Gain %",
+    "Max Loss %":"CE Max Loss %"
+}).drop(columns=["Side"])
+pe_plan = plan[plan["Side"]=="PE"].rename(columns={
+    "Signal":"PE Signal","Confidence":"PE Confidence","Entry Price":"PE Entry",
+    "Stop Loss":"PE SL","Take Profit":"PE TP","Max Gain %":"PE Max Gain %",
+    "Max Loss %":"PE Max Loss %"
+}).drop(columns=["Side"])
+
+# Attach the trade plan to every view, including CE-only and PE-only views.
+# Premium levels remain blank when actual option LTP is unavailable.
+display_df = display_df.drop(
+    columns=[
+        c for c in [
+            "Signal","Confidence","Entry Price","Stop Loss",
+            "Take Profit","Max Gain %","Max Loss %",
+        ] if c in display_df.columns
+    ],
+    errors="ignore",
+)
+if chain_side == "CE":
+    display_df = display_df.merge(ce_plan, on="Strike", how="left")
+elif chain_side == "PE":
+    display_df = display_df.merge(pe_plan, on="Strike", how="left")
+else:
+    display_df = display_df.merge(ce_plan, on="Strike", how="left").merge(
+        pe_plan, on="Strike", how="left"
+    )
 
 
 # ------------------------------------------------------------
@@ -1088,6 +1246,8 @@ def highlight_atm(
 if not live_contracts:
     st.caption("RESEARCH DATA — deterministic synthetic option chain; not a broker feed.")
 
+st.markdown("#### Option Chain — Trade Plan")
+st.caption("Entry / SL / TP and Max Gain are premium-based only when actual option LTP is available. Snapshot files containing only LTP-change % will show unavailable premium levels.")
 st.dataframe(
     display_df.style.apply(
         highlight_atm,
@@ -1347,7 +1507,7 @@ if option_csv is not None:
             snapshot_df = snapshot_df.merge(
                 signal_rows[
                     ["Side", "Strike", "Signal", "Confidence", "Entry Price",
-                     "Stop Loss", "Take Profit", "Global News"]
+                     "Stop Loss", "Take Profit", "Target Gain %", "Stop Risk %", "Global News"]
                 ],
                 on=["Side", "Strike"],
                 how="left",
@@ -1355,13 +1515,15 @@ if option_csv is not None:
             st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
             st.dataframe(snapshot_df, use_container_width=True, hide_index=True)
             st.markdown("#### Option-chain signal")
-            oc = st.columns(6)
+            oc = st.columns(8)
             oc[0].metric("Signal", option_signal.direction)
             oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%")
             oc[2].metric("Entry", "Unavailable" if option_signal.entry_price is None else f"Rs {option_signal.entry_price:.2f}")
             oc[3].metric("Stop Loss", "Unavailable" if option_signal.stop_loss is None else f"Rs {option_signal.stop_loss:.2f}")
             oc[4].metric("Take Profit", "Unavailable" if option_signal.take_profit is None else f"Rs {option_signal.take_profit:.2f}")
-            oc[5].metric("Global News", f"{global_news_score:+.2f}")
+            oc[5].metric("Target Gain", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Target Gain %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
+            oc[6].metric("Stop Risk", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Stop Risk %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
+            oc[7].metric("Global News", f"{global_news_score:+.2f}")
             if option_signal.entry_price is None:
                 st.info("This snapshot contains LTP change %, not option LTP. Option entry/SL/TP are unavailable for the premium; underlying reference levels remain available.")
             st.info(
@@ -1838,8 +2000,76 @@ if bt_data is not None:
             st.error(f"Backtest data preparation failed: {exc}")
 
 
-st.divider()
+# ============================================================
+# 100-day capital lab
+# ============================================================
 
+st.divider()
+st.subheader("₹1 Lakh — 100-Day Capital Lab")
+st.caption(
+    "Historical scenario analysis. The simulator replays the strategy on real uploaded candles; "
+    "it does not predict or guarantee the next 100 days."
+)
+
+lab = st.columns(5)
+lab_capital = lab[0].number_input("Starting capital (₹)", 10000.0, 10000000.0, 100000.0, 10000.0, key="lab_capital")
+lab_days = lab[1].number_input("Window (days)", 20, 500, 100, 10, key="lab_days")
+lab_risk = lab[2].number_input("Risk / trade (%)", 0.1, 5.0, 1.0, 0.1, key="lab_risk")
+lab_daily = lab[3].number_input("Daily loss limit (%)", 0.5, 10.0, 2.0, 0.5, key="lab_daily")
+lab_step = lab[4].number_input("Rolling step (days)", 5, 100, 20, 5, key="lab_step")
+lab_compound = st.checkbox("Compound risk with equity", value=True, key="lab_compound")
+
+if bt_data is None:
+    st.info("Upload historical OHLCV data above to activate the Capital Lab.")
+else:
+    if st.button("Run ₹1 Lakh 100-Day Capital Lab", type="primary", use_container_width=True):
+        try:
+            single = simulate_capital(
+                bt_data, starting_capital=float(lab_capital), days=int(lab_days),
+                risk_pct_per_trade=float(lab_risk), daily_loss_pct=float(lab_daily),
+                compounding=lab_compound, instrument=instrument,
+            )
+            rolling = rolling_capital_simulation(
+                bt_data, starting_capital=float(lab_capital), window_days=int(lab_days),
+                step_days=int(lab_step), risk_pct_per_trade=float(lab_risk),
+                daily_loss_pct=float(lab_daily), compounding=lab_compound,
+                instrument=instrument,
+            )
+
+            st.markdown("### Latest 100-day scenario")
+            m = st.columns(6)
+            m[0].metric("Starting", f"₹{single.starting_capital:,.0f}")
+            m[1].metric("Ending", f"₹{single.ending_capital:,.0f}")
+            m[2].metric("P&L", f"₹{single.net_profit:,.0f}", f"{single.return_pct:+.2f}%")
+            m[3].metric("Win rate", f"{single.win_rate_pct:.1f}%")
+            m[4].metric("Max DD", f"₹{single.max_drawdown:,.0f}", f"{single.max_drawdown_pct:.2f}%")
+            m[5].metric("Trades", single.trades)
+            st.line_chart(single.equity_curve.set_index("date")[["equity"]], width="stretch", height=320)
+
+            st.markdown("### Rolling 100-day robustness")
+            r = st.columns(7)
+            r[0].metric("Windows", rolling.total_windows)
+            r[1].metric("Profitable", f"{rolling.profitable_window_pct:.1f}%")
+            r[2].metric("Median end", f"₹{rolling.median_ending_capital:,.0f}")
+            r[3].metric("Worst end", f"₹{rolling.worst_ending_capital:,.0f}")
+            r[4].metric("Best end", f"₹{rolling.best_ending_capital:,.0f}")
+            r[5].metric("Median return", f"{rolling.median_return_pct:+.2f}%")
+            r[6].metric("Worst DD", f"{rolling.worst_drawdown_pct:.2f}%")
+
+            st.line_chart(
+                rolling.windows.set_index("end_date")[["ending_capital"]],
+                width="stretch", height=300,
+            )
+            st.dataframe(rolling.windows, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Historical return range: {rolling.worst_return_pct:+.2f}% to "
+                f"{rolling.best_return_pct:+.2f}%. A robust strategy should be evaluated "
+                "across many market regimes, not just the latest window."
+            )
+        except Exception as exc:
+            st.error(f"Capital Lab failed: {exc}")
+
+st.divider()
 
 # ============================================================
 # Safety
