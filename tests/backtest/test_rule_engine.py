@@ -10,7 +10,8 @@ def test_rule_backtest_hits_take_profit():
                        "close":closes,"volume":[1000.0]*79+[2000.0],"sentiment":[0.0]*80})
     result=RuleBacktestEngine().run(data)
     assert not result.trades.empty
-    assert set(result.trades["reason"]).issubset({"stop_loss", "take_profit", "market_close"})\n    assert result.metrics.total_trades == len(result.trades)
+    assert set(result.trades["reason"]).issubset({"stop_loss", "take_profit", "market_close"})
+    assert result.metrics.total_trades == len(result.trades)
 
 def test_rule_backtest_uses_warmup_but_scores_only_evaluation_window():
     timestamps=pd.date_range("2026-01-05 09:15",periods=80,freq="5min")
