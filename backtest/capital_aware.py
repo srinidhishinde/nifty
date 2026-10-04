@@ -59,6 +59,27 @@ class CapitalAwareRuleBacktestEngine:
         by_margin = int(equity // self.margin_per_lot) if self.margin_per_lot > 0 else by_risk
         return min(by_risk, by_margin), risk_per_lot
 
+    @staticmethod
+    def _resolve_exit(row: pd.Series, position: dict) -> tuple[float | None, str | None]:
+        """Resolve an OHLC bar conservatively when stop and target are both touched.
+
+        OHLC data does not reveal the intrabar path. If both protective levels
+        are touched on the same bar, stop-loss wins so the backtest cannot
+        manufacture an optimistic fill sequence.
+        """
+        direction = position["direction"]
+        if direction == "BUY":
+            stop_hit = float(row.low) <= float(position["stop_loss"])
+            target_hit = float(row.high) >= float(position["target"])
+        else:
+            stop_hit = float(row.high) >= float(position["stop_loss"])
+            target_hit = float(row.low) <= float(position["target"])
+        if stop_hit:
+            return float(position["stop_loss"]), "stop_loss"
+        if target_hit:
+            return float(position["target"]), "take_profit"
+        return None, None
+
     def run(self, data: pd.DataFrame, symbol: str = "NIFTY",
             evaluation_start: pd.Timestamp | None = None,
             evaluation_end: pd.Timestamp | None = None) -> StrictBacktestResult:
@@ -113,20 +134,12 @@ class CapitalAwareRuleBacktestEngine:
             daily_pnl.setdefault(day, 0.0); daily_trades.setdefault(day, 0)
 
             if position is not None:
-                direction = position["direction"]
-                if direction == "BUY":
-                    stop_hit, target_hit = row.low <= position["stop_loss"], row.high >= position["target"]
-                else:
-                    stop_hit, target_hit = row.high >= position["stop_loss"], row.low <= position["target"]
                 next_day = i + 1 >= len(frame) or frame.iloc[i+1].timestamp.date() != day
-                exit_price, reason = None, None
-                if stop_hit:
-                    exit_price, reason = position["stop_loss"], "stop_loss"
-                elif target_hit:
-                    exit_price, reason = position["target"], "take_profit"
-                elif next_day:
-                    exit_price, reason = row.close, "market_close"
+                exit_price, reason = self._resolve_exit(row, position)
+                if exit_price is None and next_day:
+                    exit_price, reason = float(row.close), "market_close"
                 if exit_price is not None:
+                    direction = position["direction"]
                     filled_exit = self._fill(float(exit_price), direction, False)
                     signed_points = filled_exit - position["entry_price"] if direction == "BUY" else position["entry_price"] - filled_exit
                     gross = signed_points * self.point_value * position["quantity"]
