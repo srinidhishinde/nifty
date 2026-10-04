@@ -59,9 +59,12 @@ def simulate_capital(
         raise ValueError(f"Need at least {days} trading days; received {available_days}")
 
     selected_dates = sorted(frame["timestamp"].dt.date.unique())[-days:]
-    selected = frame[frame["timestamp"].dt.date.isin(selected_dates)].copy()
+    evaluation_start = pd.Timestamp(selected_dates[0])
+    evaluation_end = pd.Timestamp(selected_dates[-1]) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
     risk_cash = starting_capital * risk_pct_per_trade / 100.0
 
+    # Keep the full history in the engine so EMA/RSI/MACD/ATR/VWAP have
+    # warm-up data. Only the final N trading days are scored.
     raw = RuleBacktestEngine(
         starting_capital=starting_capital,
         risk_per_trade=risk_cash,
@@ -69,7 +72,11 @@ def simulate_capital(
         commission_pct=commission_pct,
         slippage_pct=slippage_pct,
         daily_loss_limit_pct=daily_loss_pct / 100.0,
-    ).run(selected)
+    ).run(
+        frame,
+        evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end,
+    )
 
     trades = raw.trades.copy()
     if trades.empty:
