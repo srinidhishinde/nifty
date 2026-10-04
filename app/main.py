@@ -46,6 +46,7 @@ from ml.engine import MLConfig, train as train_ml, predict as predict_ml
 from ensemble.signal import build_ensemble
 from marketdata.decision_source import load_kotak_decision_snapshot
 from assistant.chatbot import answer as chatbot_answer
+from alerts.recipient_store import WhatsAppRecipientStore
 
 
 # ============================================================
@@ -678,6 +679,45 @@ neo_status = neo_broker.connection_status()
 st.sidebar.caption(
     "Kotak Neo: " + ("CONNECTED" if neo_status.connected else "NOT CONNECTED")
 )
+
+
+st.sidebar.divider()
+st.sidebar.subheader("WhatsApp Alerts")
+st.sidebar.caption("Manage alert recipients here. Numbers are stored locally and do not require .env edits.")
+
+recipient_store = WhatsAppRecipientStore()
+wa_recipients = recipient_store.load()
+
+with st.sidebar.expander("Recipients", expanded=True):
+    if wa_recipients:
+        for recipient in wa_recipients:
+            row = st.columns([4, 1])
+            row[0].caption(f"+{recipient}")
+            if row[1].button("Remove", key=f"wa_remove_{recipient}"):
+                recipient_store.remove(recipient)
+                st.rerun()
+    else:
+        st.info("No recipients configured.")
+
+    with st.form("whatsapp_recipient_form", clear_on_submit=True):
+        new_recipient = st.text_input(
+            "Add mobile number",
+            placeholder="+91 9876543210",
+            help="Use international format. Spaces, brackets and a leading + are accepted.",
+        )
+        add_recipient = st.form_submit_button("Add recipient", width="stretch")
+        if add_recipient:
+            try:
+                saved = recipient_store.add(new_recipient)
+                st.success(f"Recipient +{recipient_store.normalize(new_recipient)} added.")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
+    if wa_recipients:
+        st.caption(f"{len(wa_recipients)} recipient(s) saved locally.")
+    if not bool(getattr(settings, "whatsapp_alerts_enabled", False)):
+        st.warning("WhatsApp alerts are disabled. The recipient list is saved, but sending remains off until the WhatsApp integration is enabled.")
 
 
 # ============================================================
