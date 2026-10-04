@@ -49,6 +49,7 @@ from assistant.chatbot import answer as chatbot_answer
 from alerts.recipient_store import WhatsAppRecipientStore
 from alerts.runtime_settings import WhatsAppSettingsStore
 from alerts.whatsapp import WhatsAppAlertService
+from analytics.signal_journal import SignalJournal
 
 
 # ============================================================
@@ -756,6 +757,8 @@ global_news_score = news_snapshot.sentiment
 # ============================================================
 
 st.subheader("Decision Data")
+signal_journal = SignalJournal()
+
 st.caption(
     "KOTAK NEO is the primary production/paper decision source. "
     "Yahoo Finance is kept below as an independent historical research/validation source only. "
