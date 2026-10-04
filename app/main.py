@@ -934,10 +934,41 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
 
     if ml_predictions:
         try:
+            micro = None
+            micro_required = {"bid_size", "ask_size"}
+            if micro_required.issubset(set(ml_input.columns)):
+                from features.microstructure import microstructure_features, AdaptiveMicroWeight
+                latest = ml_input.iloc[-1]
+                depth = (
+                    pd.to_numeric(ml_input["bid_size"], errors="coerce").fillna(0)
+                    + pd.to_numeric(ml_input["ask_size"], errors="coerce").fillna(0)
+                ) * pd.to_numeric(ml_input["close"], errors="coerce").fillna(0)
+                last_week = depth.tail(min(len(depth), 7 * 78))
+                liquidity_threshold = float(last_week.quantile(0.95)) if len(last_week) >= 20 else float("inf")
+                tick_atr_14 = pd.to_numeric(ml_input.get("ATR_TICK_14", pd.Series(dtype=float)), errors="coerce")
+                tick_atr_20 = pd.to_numeric(ml_input.get("ATR_TICK_20", pd.Series(dtype=float)), errors="coerce")
+                if not tick_atr_14.empty and not tick_atr_20.empty and tick_atr_14.notna().any() and tick_atr_20.notna().any():
+                    volatility_band = float(tick_atr_14.iloc[-1] / max(float(tick_atr_20.iloc[-1]), 1e-9))
+                    ticks = ml_input.get("LAST_TRADE_PRICE", pd.Series(dtype=float)).dropna().tail(50).tolist()
+                    micro = microstructure_features(
+                        bid_volume=float(latest.get("bid_size", 0) or 0),
+                        ask_volume=float(latest.get("ask_size", 0) or 0),
+                        liquidity_threshold=liquidity_threshold,
+                        imbalance_history=ml_input.get("IMBALANCE_RATIO", pd.Series(dtype=float)).dropna().tail(20).tolist(),
+                        last_trade_price=float(latest.get("LAST_TRADE_PRICE", latest.get("close", 0)) or 0),
+                        last_trade_direction=latest.get("LAST_TRADE_DIRECTION"),
+                        best_bid=float(latest.get("best_bid", 0) or 0),
+                        best_ask=float(latest.get("best_ask", 0) or 0),
+                        last_ticks=ticks,
+                        spread_width=float(latest.get("spread", 0) or 0),
+                        volatility_band=volatility_band,
+                    )
+                    micro["micro_weight"] = AdaptiveMicroWeight().update(volatility_band)
             regime, ensemble_rows = build_ensemble(
                 ml_input,
                 ml_predictions,
                 StrategyConfig(require_option_confirmation=True),
+                micro=micro,
             )
             rcols = st.columns(4)
             rcols[0].metric("Market Regime", regime.name)
