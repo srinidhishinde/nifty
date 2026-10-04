@@ -644,7 +644,7 @@ neo_totp = st.sidebar.text_input(
 
 neo_connect = st.sidebar.button(
     "Connect to Kotak Neo",
-    use_container_width=True,
+    width="stretch",
 )
 
 if "neo_broker" not in st.session_state:
@@ -787,7 +787,7 @@ rc[3].metric("Live Orders", "ENABLED" if settings.live_trading_allowed() else "L
 with st.expander("Readiness gates", expanded=False):
     st.dataframe(pd.DataFrame([{
         "Gate": g.name, "Passed": g.passed, "Priority": g.severity, "Detail": g.detail
-    } for g in readiness.gates]), use_container_width=True, hide_index=True)
+    } for g in readiness.gates]), width="stretch", hide_index=True)
 
 # ============================================================
 # Risk summary
@@ -1258,7 +1258,7 @@ st.dataframe(
         highlight_atm,
         axis=1,
     ),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -1452,7 +1452,7 @@ fig.update_layout(
 
 st.plotly_chart(
     fig,
-    use_container_width=True,
+    width="stretch",
 )
 
 
@@ -1519,7 +1519,7 @@ if option_csv is not None:
                 on=["Side","Strike"], how="left"
             )
             st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
-            st.dataframe(snapshot_df, use_container_width=True, hide_index=True)
+            st.dataframe(snapshot_df, width="stretch", hide_index=True)
             oc = st.columns(8)
             oc[0].metric("Signal", option_signal.direction)
             oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%")
@@ -1551,7 +1551,7 @@ if replay_file is not None:
                     "Timestamp": [ts for ts, _ in snapshots],
                     "Contracts": [len(cs) for _, cs in snapshots],
                 }),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
     except Exception as exc:
@@ -1571,7 +1571,7 @@ news_cols[2].metric("Headlines Used", len(news_snapshot.headlines))
 if news_snapshot.headlines:
     st.dataframe(
         pd.DataFrame({"Global News": list(news_snapshot.headlines)}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1595,11 +1595,11 @@ if btst_file is not None:
         bc[4].metric("Rule Model Accuracy", f"{model_accuracy:.1f}%")
         bc[5].metric("Walk-Forward ML Accuracy", f"{walk_forward.accuracy_pct:.1f}%")
         if not btst.trades.empty:
-            st.dataframe(btst.trades, use_container_width=True, hide_index=True)
+            st.dataframe(btst.trades, width="stretch", hide_index=True)
         st.markdown("#### Rule prediction accuracy")
-        st.dataframe(model_rows, use_container_width=True, hide_index=True)
+        st.dataframe(model_rows, width="stretch", hide_index=True)
         st.markdown("#### Walk-forward ML prediction")
-        st.dataframe(walk_forward.predictions, use_container_width=True, hide_index=True)
+        st.dataframe(walk_forward.predictions, width="stretch", hide_index=True)
     except Exception as exc:
         st.error(f"BTST analysis failed: {exc}")
 
@@ -1625,7 +1625,7 @@ if intraday_file is not None:
             "Stop Loss": prediction.stop_loss,
             "Global News": prediction.global_news_score,
         }])
-        st.dataframe(prediction_table, use_container_width=True, hide_index=True)
+        st.dataframe(prediction_table, width="stretch", hide_index=True)
         st.write(prediction.reason)
     except Exception as exc:
         st.error(f"NIFTY prediction failed: {exc}")
@@ -1667,7 +1667,7 @@ with workspace_tabs[0]:
             else:
                 st.warning("NO TRADE: the engine is intentionally allowed to abstain.")
             if not closing_table.empty:
-                st.dataframe(closing_table.head(15), use_container_width=True, hide_index=True)
+                st.dataframe(closing_table.head(15), width="stretch", hide_index=True)
         except Exception as exc:
             st.error(f"Closing-session analysis failed: {exc}")
     else:
@@ -1692,7 +1692,7 @@ with workspace_tabs[1]:
             bc[5].metric("Target", "—" if btst_signal.target is None else f"₹{btst_signal.target:.2f}")
             st.warning("BTST is not guaranteed: overnight gap, IV change and next-session liquidity can invalidate the setup.")
             if not btst_table.empty:
-                st.dataframe(btst_table.head(20), use_container_width=True, hide_index=True)
+                st.dataframe(btst_table.head(20), width="stretch", hide_index=True)
         except Exception as exc:
             st.error(f"BTST option analysis failed: {exc}")
     else:
@@ -1742,7 +1742,7 @@ uploaded = st.file_uploader(
 
 run_demo = st.button(
     "Run Synthetic Demo",
-    use_container_width=True,
+    width="stretch",
     help="UI/engine smoke test only. Do not treat synthetic results as evidence of profitability.",
 )
 
@@ -1787,17 +1787,15 @@ if bt_data is not None:
             st.error(f"Backtest data schema validation failed: {schema_error}")
         bt_data = None
 
-    if bt_data is not None:
-        if is_option_chain_snapshot(bt_data.columns):
-            st.error(
-                "This CSV is an option-chain snapshot, not historical OHLCV candle data. "
-                "Use the 'Option-Chain Snapshot Import' section above for CE/PE analysis. "
-                "For the seven-rule backtest, upload timestamp, open, high, low, close and volume."
-            )
-        else:
-            st.error(
-                f"Backtest data is missing required columns: {sorted(missing_bt)}"
-            )
+    if bt_data is None:
+        pass
+    elif is_option_chain_snapshot(bt_data.columns):
+        st.error(
+            "This CSV is an option-chain snapshot, not historical OHLCV candle data. "
+            "Use the 'Option-Chain Snapshot Import' section above for CE/PE analysis. "
+            "For the seven-rule backtest, upload timestamp, open, high, low, close and volume."
+        )
+        bt_data = None
     else:
         try:
             bt_data = bt_data.copy()
@@ -1883,7 +1881,7 @@ if bt_data is not None:
                 run_historical = st.button(
                     "Run Historical Backtest",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
                 if run_historical:
@@ -2051,7 +2049,7 @@ if bt_data is not None:
                                 )
                                 st.dataframe(
                                     rule_view,
-                                    use_container_width=True,
+                                    width="stretch",
                                     hide_index=True,
                                 )
 
@@ -2077,7 +2075,7 @@ if bt_data is not None:
                                 ]
                                 st.dataframe(
                                     trades[trade_columns],
-                                    use_container_width=True,
+                                    width="stretch",
                                     hide_index=True,
                                 )
                             else:
