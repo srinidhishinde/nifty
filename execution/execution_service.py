@@ -30,7 +30,11 @@ class ExecutionService:
         trades_today: int,
         account_equity: float | None = None,
     ) -> ExecutionResult:
-        equity = float(account_equity if account_equity is not None else settings.starting_capital)
+        # Equity must be supplied explicitly by the caller. This prevents a
+        # hidden .env/default capital value from changing execution sizing.
+        if account_equity is None:
+            return ExecutionResult(False, True, None, 0, "Account equity is required")
+        equity = float(account_equity)
         if equity <= 0:
             return ExecutionResult(False, True, None, 0, "Account equity is required")
 
