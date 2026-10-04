@@ -79,5 +79,6 @@ def answer(user_message: str, history: list[dict[str, str]] | None = None,
         model=settings.openai_model,
         instructions=SYSTEM_INSTRUCTIONS,
         input=messages,
+        tools=[{"type": "web_search"}],
     )
     return response.output_text.strip()
