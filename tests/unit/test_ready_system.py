@@ -7,7 +7,7 @@ from strategy.rules import StrategyConfig, evaluate_rules
 def test_symmetric_momentum_rules_emit_bearish_signals():
     row = pd.Series({
         "close": 100.0, "volume": 2000.0, "VOLUME_MA20": 1000.0,
-        "RSI": 75.0, "MACD": -1.0, "MACD_SIGNAL": -0.5,
+        "RSI": 65.0, "MACD": -1.0, "MACD_SIGNAL": -0.5,
         "EMA20": 98.0, "EMA50": 100.0, "VWAP": 100.0,
         "ADX": 25.0, "STOCH_K": 85.0, "STOCH_D": 90.0,
         "candlestick_score": -2.0,
