@@ -1417,7 +1417,7 @@ if option_csv is not None:
             snapshot_df = snapshot_df.merge(
                 signal_rows[
                     ["Side", "Strike", "Signal", "Confidence", "Entry Price",
-                     "Stop Loss", "Take Profit", "Global News"]
+                     "Stop Loss", "Take Profit", "Target Gain %", "Stop Risk %", "Global News"]
                 ],
                 on=["Side", "Strike"],
                 how="left",
@@ -1425,13 +1425,15 @@ if option_csv is not None:
             st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
             st.dataframe(snapshot_df, use_container_width=True, hide_index=True)
             st.markdown("#### Option-chain signal")
-            oc = st.columns(6)
+            oc = st.columns(8)
             oc[0].metric("Signal", option_signal.direction)
             oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%")
             oc[2].metric("Entry", "Unavailable" if option_signal.entry_price is None else f"Rs {option_signal.entry_price:.2f}")
             oc[3].metric("Stop Loss", "Unavailable" if option_signal.stop_loss is None else f"Rs {option_signal.stop_loss:.2f}")
             oc[4].metric("Take Profit", "Unavailable" if option_signal.take_profit is None else f"Rs {option_signal.take_profit:.2f}")
-            oc[5].metric("Global News", f"{global_news_score:+.2f}")
+            oc[5].metric("Target Gain", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Target Gain %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
+            oc[6].metric("Stop Risk", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Stop Risk %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
+            oc[7].metric("Global News", f"{global_news_score:+.2f}")
             if option_signal.entry_price is None:
                 st.info("This snapshot contains LTP change %, not option LTP. Option entry/SL/TP are unavailable for the premium; underlying reference levels remain available.")
             st.info(
