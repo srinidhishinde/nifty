@@ -23,3 +23,10 @@ def test_round_to_strike_uses_nearest_valid_increment():
     assert round_to_strike(6526.0, 50.0) == 6550.0
     assert round_to_strike(302.0, 5.0) == 300.0
     assert round_to_strike(304.0, 5.0) == 305.0
+
+
+def test_futures_contract_spec_requires_margin_and_positive_values():
+    from strategy.market_specs import FuturesContractSpec, validate_futures_contract_spec
+    validate_futures_contract_spec(FuturesContractSpec("NIFTY", 65, 1.0, 0.05, 100000.0))
+    with pytest.raises(ValueError):
+        validate_futures_contract_spec(FuturesContractSpec("NIFTY", 65, 1.0, 0.05, 0.0))
