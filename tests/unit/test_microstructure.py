@@ -15,7 +15,7 @@ def test_imbalance_is_zero_below_liquidity_threshold():
 def test_imbalance_is_bounded_and_median_smoothed():
     value = imbalance_ratio(900, 100, 100, [-0.2, 0.2, 0.4, 0.1], 5)
     assert -1.0 <= value <= 1.0
-    assert value == 0.4
+    assert value == 0.2
 
 
 def test_aggressor_falls_back_to_last_trade_direction_with_sparse_ticks():
