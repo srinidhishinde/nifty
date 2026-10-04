@@ -1057,9 +1057,47 @@ else:
     ]
 
 
-display_df = chain_df[
-    visible_columns
-].copy()
+display_df = chain_df[visible_columns].copy()
+
+# Trade-plan columns: every visible option gets a concrete plan when an actual
+# option LTP exists; otherwise premium fields remain unavailable rather than
+# being fabricated from LTP-change percentages.
+plan = chain_signal_rows[[
+    "Side", "Strike", "Signal", "Confidence", "Entry Price", "Stop Loss", "Take Profit", "Max Gain %", "Max Loss %"
+]].copy()
+plan["Max Gain %"] = pd.to_numeric(plan["Max Gain %"], errors="coerce")
+plan["Max Loss %"] = pd.to_numeric(plan["Max Loss %"], errors="coerce")
+display_df = display_df.merge(plan, on=["Side", "Strike"], how="left") if "Side" in display_df.columns else display_df
+ce_plan = plan[plan["Side"]=="CE"].rename(columns={
+    "Signal":"CE Signal","Confidence":"CE Confidence","Entry Price":"CE Entry",
+    "Stop Loss":"CE SL","Take Profit":"CE TP","Max Gain %":"CE Max Gain %",
+    "Max Loss %":"CE Max Loss %"
+}).drop(columns=["Side"])
+pe_plan = plan[plan["Side"]=="PE"].rename(columns={
+    "Signal":"PE Signal","Confidence":"PE Confidence","Entry Price":"PE Entry",
+    "Stop Loss":"PE SL","Take Profit":"PE TP","Max Gain %":"PE Max Gain %",
+    "Max Loss %":"PE Max Loss %"
+}).drop(columns=["Side"])
+
+# Attach the trade plan to every view, including CE-only and PE-only views.
+# Premium levels remain blank when actual option LTP is unavailable.
+display_df = display_df.drop(
+    columns=[
+        c for c in [
+            "Signal","Confidence","Entry Price","Stop Loss",
+            "Take Profit","Max Gain %","Max Loss %",
+        ] if c in display_df.columns
+    ],
+    errors="ignore",
+)
+if chain_side == "CE":
+    display_df = display_df.merge(ce_plan, on="Strike", how="left")
+elif chain_side == "PE":
+    display_df = display_df.merge(pe_plan, on="Strike", how="left")
+else:
+    display_df = display_df.merge(ce_plan, on="Strike", how="left").merge(
+        pe_plan, on="Strike", how="left"
+    )
 
 
 # ------------------------------------------------------------
@@ -1088,6 +1126,8 @@ def highlight_atm(
 if not live_contracts:
     st.caption("RESEARCH DATA — deterministic synthetic option chain; not a broker feed.")
 
+st.markdown("#### Option Chain — Trade Plan")
+st.caption("Entry / SL / TP and Max Gain are premium-based only when actual option LTP is available. Snapshot files containing only LTP-change % will show unavailable premium levels.")
 st.dataframe(
     display_df.style.apply(
         highlight_atm,
