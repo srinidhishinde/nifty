@@ -125,10 +125,24 @@ class CapitalAwareRuleBacktestEngine:
         daily_pnl: dict = {}
         daily_trades: dict = {}
 
+        # Research diagnostics: distinguish "no signal" from "signal rejected".
+        bars_considered = 0
+        rule_trigger_bars = 0
+        conflicting_signal_bars = 0
+        qualified_signal_bars = 0
+        rejected_no_next_bar = 0
+        rejected_risk_budget = 0
+        rejected_daily_limit = 0
+        rejected_trade_limit = 0
+
         for i in range(1, len(frame)):
             row, prev = frame.iloc[i], frame.iloc[i-1]
             ts = row.timestamp
-            if self.instrument == "NIFTY" and not (ts.timetz().replace(tzinfo=None) >= pd.Timestamp("09:15").time() and ts.timetz().replace(tzinfo=None) <= pd.Timestamp("15:40").time()):
+            session_start = pd.Timestamp("09:15").time()
+            session_end = pd.Timestamp("15:40").time()
+            if self.instrument == "NIFTY" and ts.timetz().replace(tzinfo=None) < session_start:
+                continue
+            if self.instrument == "NIFTY" and ts.timetz().replace(tzinfo=None) > session_end:
                 continue
             day = ts.date()
             daily_pnl.setdefault(day, 0.0); daily_trades.setdefault(day, 0)
@@ -136,7 +150,7 @@ class CapitalAwareRuleBacktestEngine:
             if position is not None:
                 next_day = i + 1 >= len(frame) or frame.iloc[i+1].timestamp.date() != day
                 exit_price, reason = self._resolve_exit(row, position)
-                if exit_price is None and next_day:
+                if exit_price is None and (next_day or (self.instrument == "NIFTY" and ts.timetz().replace(tzinfo=None) >= session_end)):
                     exit_price, reason = float(row.close), "market_close"
                 if exit_price is not None:
                     direction = position["direction"]
@@ -151,14 +165,33 @@ class CapitalAwareRuleBacktestEngine:
                     position = None
                 continue
 
-            if ts < start or ts > end or daily_pnl[day] <= -self.max_daily_loss or daily_trades[day] >= self.max_trades_per_day:
+            if ts < start or ts > end:
                 continue
+
+            bars_considered += 1
+            if daily_pnl[day] <= -self.max_daily_loss:
+                rejected_daily_limit += 1
+                continue
+            if daily_trades[day] >= self.max_trades_per_day:
+                rejected_trade_limit += 1
+                continue
+
             signals = evaluate_rules(row, prev, self.config)
             buys = [s for s in signals if s.direction == "BUY"]; sells = [s for s in signals if s.direction == "SELL"]
-            if not signals or (buys and sells):
+            if not signals:
+                continue
+            rule_trigger_bars += 1
+            if buys and sells:
+                conflicting_signal_bars += 1
                 continue
             direction = "BUY" if buys else "SELL"
+            directional_weight = sum(s.weight for s in signals if s.direction == direction)
+            confidence = min(95.0, 50.0 + 8.0 * directional_weight)
+            if len(signals) < self.config.min_rules_for_signal or confidence < self.config.min_confidence:
+                continue
+            qualified_signal_bars += 1
             if i + 1 >= len(frame) or frame.iloc[i+1].timestamp.date() != day:
+                rejected_no_next_bar += 1
                 continue
             entry = self._fill(float(frame.iloc[i+1].open), direction, True)
             risk_distance = max(entry * self.config.stop_loss_pct, float(row.get("ATR", 0) or 0) * self.config.atr_stop_multiple)
@@ -167,6 +200,7 @@ class CapitalAwareRuleBacktestEngine:
             target = entry + reward_distance if direction == "BUY" else entry - reward_distance
             lots, risk_per_lot = self._size(entry, stop, equity)
             if lots <= 0:
+                rejected_risk_budget += 1
                 continue
             qty = lots * self.lot_size
             daily_trades[day] += 1
@@ -181,9 +215,29 @@ class CapitalAwareRuleBacktestEngine:
             trades_df = pd.DataFrame(columns=["entry_time","signal_time","exit_time","symbol","direction","entry_price","exit_price","lots","quantity","gross_pnl","costs","pnl","reason","rule"])
         metrics = calculate_metrics(trades_df, self.starting_capital)
         equity_df = pd.DataFrame(equity_rows)
-        validation = {"status":"PASS","rows":len(frame),"evaluation_start":str(start),"evaluation_end":str(end),
-                      "trading_days":int(frame.timestamp.dt.date.nunique()),"zero_volume_rows":int((frame.volume==0).sum()),
-                      "starting_capital":self.starting_capital,"final_equity":round(equity,2),
-                      "net_pnl":round(equity-self.starting_capital,2),"lot_size":self.lot_size,
-                      "slippage_points":self.slippage_points,"brokerage_per_order":self.brokerage_per_order}
+        validation = {
+            "status": "PASS",
+            "rows": len(frame),
+            "evaluation_start": str(start),
+            "evaluation_end": str(end),
+            "trading_days": int(frame.timestamp.dt.date.nunique()),
+            "zero_volume_rows": int((frame.volume == 0).sum()),
+            "starting_capital": self.starting_capital,
+            "final_equity": round(equity, 2),
+            "net_pnl": round(equity - self.starting_capital, 2),
+            "lot_size": self.lot_size,
+            "slippage_points": self.slippage_points,
+            "brokerage_per_order": self.brokerage_per_order,
+            "bars_considered": bars_considered,
+            "rule_trigger_bars": rule_trigger_bars,
+            "conflicting_signal_bars": conflicting_signal_bars,
+            "qualified_signal_bars": qualified_signal_bars,
+            "rejected_no_next_bar": rejected_no_next_bar,
+            "rejected_risk_budget": rejected_risk_budget,
+            "rejected_daily_limit": rejected_daily_limit,
+            "rejected_trade_limit": rejected_trade_limit,
+            "risk_per_trade": self.risk_per_trade,
+            "point_value": self.point_value,
+            "min_stop_pct": self.config.stop_loss_pct,
+        }
         return StrictBacktestResult(trades_df, metrics, rank_rule_performance(trades_df), equity_df, validation)

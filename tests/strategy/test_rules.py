@@ -2,8 +2,9 @@ import pandas as pd
 from strategy.rules import StrategyConfig, evaluate_rules, generate_signal
 
 def test_rsi_rule_requires_volume_confirmation():
-    row=pd.Series({"close":100.0,"RSI":25.0,"volume":200.0,"VOLUME_MA20":100.0})
-    assert any(s.rule=="rsi_oversold_buy" and s.direction=="BUY" for s in evaluate_rules(row))
+    previous=pd.Series({"close":99.0,"RSI":25.0})
+    row=pd.Series({"close":100.0,"RSI":35.0,"volume":200.0,"VOLUME_MA20":100.0,"VOLUME_RATIO":2.0})
+    assert any(s.rule=="rsi_oversold_buy" and s.direction=="BUY" for s in evaluate_rules(row, previous))
 
 def test_vwap_reversion_direction():
     below=pd.Series({"close":97.0,"VWAP":100.0}); above=pd.Series({"close":103.0,"VWAP":100.0})

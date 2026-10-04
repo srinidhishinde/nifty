@@ -42,8 +42,14 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     low = pd.to_numeric(result["low"], errors="coerce")
     volume = pd.to_numeric(result["volume"], errors="coerce") if "volume" in result else pd.Series(0.0, index=result.index)
 
+    # Fast/slow trend stack from the research specification. Keep EMA20/50
+    # for backward compatibility with existing reports/tests.
+    result["EMA9"] = close.ewm(span=9, adjust=False).mean()
+    result["EMA21"] = close.ewm(span=21, adjust=False).mean()
     result["EMA20"] = close.ewm(span=20, adjust=False).mean()
     result["EMA50"] = close.ewm(span=50, adjust=False).mean()
+    result["SMA50"] = close.rolling(50, min_periods=50).mean()
+    result["SMA200"] = close.rolling(200, min_periods=200).mean()
     result["EMA200"] = close.ewm(span=200, adjust=False).mean()
     result["RSI"] = _rsi(close, 14)
 
@@ -74,8 +80,21 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     prev_close = close.shift(1)
     true_range = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
     result["ATR"] = true_range.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    result["ATR5"] = true_range.ewm(alpha=1 / 5, adjust=False, min_periods=5).mean()
     result["ATR_PCT"] = result["ATR"] / close.replace(0, np.nan)
-    result["ADX"] = _adx(high, low, close, 14)
+    # Directional components are retained so ADX cannot be misused as a
+    # standalone BUY/SELL signal.
+    adx_period = 14
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    plus_atr = plus_dm.ewm(alpha=1 / adx_period, adjust=False, min_periods=adx_period).mean()
+    minus_atr = minus_dm.ewm(alpha=1 / adx_period, adjust=False, min_periods=adx_period).mean()
+    atr_for_di = true_range.ewm(alpha=1 / adx_period, adjust=False, min_periods=adx_period).mean()
+    result["DI_PLUS"] = 100 * plus_atr / atr_for_di.replace(0, np.nan)
+    result["DI_MINUS"] = 100 * minus_atr / atr_for_di.replace(0, np.nan)
+    result["ADX"] = _adx(high, low, close, adx_period)
 
     lowest = low.rolling(14, min_periods=14).min()
     highest = high.rolling(14, min_periods=14).max()
@@ -84,6 +103,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     result["ROC"] = close.pct_change(10) * 100
     result["OBV"] = (np.sign(close.diff()).fillna(0) * volume).cumsum()
     result["VWAP_DEV"] = (close - result["VWAP"]) / result["VWAP"].replace(0, np.nan)
-    result["EMA_SPREAD"] = (result["EMA20"] - result["EMA50"]) / close.replace(0, np.nan)
+    result["EMA_SPREAD"] = (result["EMA9"] - result["EMA21"]) / close.replace(0, np.nan)
+    result["TREND_SPREAD"] = (result["SMA50"] - result["SMA200"]) / close.replace(0, np.nan)
     result["BB_POS"] = (close - result["BB_MIDDLE"]) / (result["BB_UPPER"] - result["BB_LOWER"]).replace(0, np.nan)
     return result

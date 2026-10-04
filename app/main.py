@@ -20,10 +20,14 @@ from strategy.ce_pe_selector import (
     MarketContext,
 )
 from strategy.strike_selector import StrikeSelector
-from backtest.rule_engine import RuleBacktestEngine
+from backtest.capital_aware import CapitalAwareRuleBacktestEngine
+from backtest.signal_research import run_signal_research
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
-from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
+from marketdata.option_chain_csv import (
+    is_option_chain_snapshot, parse_option_chain_csv,
+    is_nse_option_chain_export, parse_nse_option_chain_export,
+)
 from features.option_signal_engine import generate_option_chain_signal
 from strategy.buy_today_sell_tomorrow import run_buy_today_sell_tomorrow
 from strategy.btst_option_selector import rank_btst_options
@@ -641,7 +645,7 @@ neo_totp = st.sidebar.text_input(
 
 neo_connect = st.sidebar.button(
     "Connect to Kotak Neo",
-    use_container_width=True,
+    width="stretch",
 )
 
 if "neo_broker" not in st.session_state:
@@ -784,7 +788,7 @@ rc[3].metric("Live Orders", "ENABLED" if settings.live_trading_allowed() else "L
 with st.expander("Readiness gates", expanded=False):
     st.dataframe(pd.DataFrame([{
         "Gate": g.name, "Passed": g.passed, "Priority": g.severity, "Detail": g.detail
-    } for g in readiness.gates]), use_container_width=True, hide_index=True)
+    } for g in readiness.gates]), width="stretch", hide_index=True)
 
 # ============================================================
 # Risk summary
@@ -1255,7 +1259,7 @@ st.dataframe(
         highlight_atm,
         axis=1,
     ),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -1449,7 +1453,7 @@ fig.update_layout(
 
 st.plotly_chart(
     fig,
-    use_container_width=True,
+    width="stretch",
 )
 
 
@@ -1471,25 +1475,32 @@ option_csv = st.file_uploader(
     "Upload option-chain snapshot CSV",
     type=["csv"],
     key="option_chain_csv",
-    help="Supports Strike plus Calls/ Puts OI, volume, IV, delta, theta, vega and built-up columns.",
+    help="Supports structured snapshots and NSE two-row option-chain exports.",
 )
 
 if option_csv is not None:
     try:
         option_snapshot = pd.read_csv(option_csv)
-        if not is_option_chain_snapshot(option_snapshot.columns):
-            st.error(
-                "This file is not recognized as the supported option-chain snapshot format. "
-                "Expected a Strike column and Calls OI or Puts OI."
-            )
-        else:
+        if is_nse_option_chain_export(option_snapshot):
+            snapshot_contracts = parse_nse_option_chain_export(option_snapshot)
+            st.success(f"NSE option-chain export detected: {len(snapshot_contracts):,} real CE/PE contracts.")
+        elif is_option_chain_snapshot(option_snapshot.columns):
             snapshot_contracts = parse_option_chain_csv(option_snapshot)
+        else:
+            st.error("Unsupported option-chain format. Expected a structured snapshot or NSE two-row export.")
+            snapshot_contracts = []
+
+        if snapshot_contracts:
             snapshot_rows = []
             for contract in snapshot_contracts:
                 snapshot_rows.append({
                     "Side": contract.option_type,
                     "Strike": contract.strike,
+                    "LTP": contract.ltp,
                     "LTP Change %": contract.ltp_change_pct,
+                    "Bid": contract.bid,
+                    "Ask": contract.ask,
+                    "Spread": max(0.0, contract.ask - contract.bid),
                     "IV": contract.implied_volatility,
                     "OI": contract.open_interest,
                     "OI Change": contract.oi_change,
@@ -1502,36 +1513,28 @@ if option_csv is not None:
                 })
             snapshot_df = pd.DataFrame(snapshot_rows).sort_values(["Strike", "Side"])
             option_signal, signal_rows = generate_option_chain_signal(
-                snapshot_contracts,
-                spot=spot,
-                global_news_score=global_news_score,
+                snapshot_contracts, spot=spot, global_news_score=global_news_score
             )
             snapshot_df = snapshot_df.merge(
-                signal_rows[
-                    ["Side", "Strike", "Signal", "Confidence", "Entry Price",
-                     "Stop Loss", "Take Profit", "Target Gain %", "Stop Risk %", "Global News"]
-                ],
-                on=["Side", "Strike"],
-                how="left",
+                signal_rows[["Side","Strike","Signal","Confidence","Entry Price","Stop Loss","Take Profit","Target Gain %","Stop Risk %","Global News"]],
+                on=["Side","Strike"], how="left"
             )
             st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
-            st.dataframe(snapshot_df, use_container_width=True, hide_index=True)
-            st.markdown("#### Option-chain signal")
+            st.dataframe(snapshot_df, width="stretch", hide_index=True)
             oc = st.columns(8)
             oc[0].metric("Signal", option_signal.direction)
             oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%")
             oc[2].metric("Entry", "Unavailable" if option_signal.entry_price is None else f"Rs {option_signal.entry_price:.2f}")
             oc[3].metric("Stop Loss", "Unavailable" if option_signal.stop_loss is None else f"Rs {option_signal.stop_loss:.2f}")
             oc[4].metric("Take Profit", "Unavailable" if option_signal.take_profit is None else f"Rs {option_signal.take_profit:.2f}")
-            oc[5].metric("Target Gain", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Target Gain %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
-            oc[6].metric("Stop Risk", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Stop Risk %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
+            oc[5].metric("Target Gain", "N/A")
+            oc[6].metric("Stop Risk", "N/A")
             oc[7].metric("Global News", f"{global_news_score:+.2f}")
-            if option_signal.entry_price is None:
-                st.info("This snapshot contains LTP change %, not option LTP. Option entry/SL/TP are unavailable for the premium; underlying reference levels remain available.")
-            st.info(
-                "Rules 1–5 and 7 require candle/context history. Rule 6 additionally requires bid/ask and spread history. "
-                "This snapshot has none of those fields, so it is not silently used as candle backtest input."
-            )
+            if all(contract.ltp <= 0 for contract in snapshot_contracts):
+                st.info("No usable option LTP is present. Premium entry/SL/TP are unavailable.")
+            elif all(contract.bid <= 0 or contract.ask <= 0 for contract in snapshot_contracts):
+                st.info("Option LTP is available, but bid/ask quality is incomplete; execution-quality checks remain unavailable.")
+            st.info("A single option-chain snapshot is context only. It is never used as OHLCV backtest input.")
     except Exception as exc:
         st.error(f"Option-chain snapshot import failed: {exc}")
 
@@ -1549,7 +1552,7 @@ if replay_file is not None:
                     "Timestamp": [ts for ts, _ in snapshots],
                     "Contracts": [len(cs) for _, cs in snapshots],
                 }),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
     except Exception as exc:
@@ -1569,7 +1572,7 @@ news_cols[2].metric("Headlines Used", len(news_snapshot.headlines))
 if news_snapshot.headlines:
     st.dataframe(
         pd.DataFrame({"Global News": list(news_snapshot.headlines)}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1593,11 +1596,11 @@ if btst_file is not None:
         bc[4].metric("Rule Model Accuracy", f"{model_accuracy:.1f}%")
         bc[5].metric("Walk-Forward ML Accuracy", f"{walk_forward.accuracy_pct:.1f}%")
         if not btst.trades.empty:
-            st.dataframe(btst.trades, use_container_width=True, hide_index=True)
+            st.dataframe(btst.trades, width="stretch", hide_index=True)
         st.markdown("#### Rule prediction accuracy")
-        st.dataframe(model_rows, use_container_width=True, hide_index=True)
+        st.dataframe(model_rows, width="stretch", hide_index=True)
         st.markdown("#### Walk-forward ML prediction")
-        st.dataframe(walk_forward.predictions, use_container_width=True, hide_index=True)
+        st.dataframe(walk_forward.predictions, width="stretch", hide_index=True)
     except Exception as exc:
         st.error(f"BTST analysis failed: {exc}")
 
@@ -1623,7 +1626,7 @@ if intraday_file is not None:
             "Stop Loss": prediction.stop_loss,
             "Global News": prediction.global_news_score,
         }])
-        st.dataframe(prediction_table, use_container_width=True, hide_index=True)
+        st.dataframe(prediction_table, width="stretch", hide_index=True)
         st.write(prediction.reason)
     except Exception as exc:
         st.error(f"NIFTY prediction failed: {exc}")
@@ -1665,7 +1668,7 @@ with workspace_tabs[0]:
             else:
                 st.warning("NO TRADE: the engine is intentionally allowed to abstain.")
             if not closing_table.empty:
-                st.dataframe(closing_table.head(15), use_container_width=True, hide_index=True)
+                st.dataframe(closing_table.head(15), width="stretch", hide_index=True)
         except Exception as exc:
             st.error(f"Closing-session analysis failed: {exc}")
     else:
@@ -1690,7 +1693,7 @@ with workspace_tabs[1]:
             bc[5].metric("Target", "—" if btst_signal.target is None else f"₹{btst_signal.target:.2f}")
             st.warning("BTST is not guaranteed: overnight gap, IV change and next-session liquidity can invalidate the setup.")
             if not btst_table.empty:
-                st.dataframe(btst_table.head(20), use_container_width=True, hide_index=True)
+                st.dataframe(btst_table.head(20), width="stretch", hide_index=True)
         except Exception as exc:
             st.error(f"BTST option analysis failed: {exc}")
     else:
@@ -1724,6 +1727,16 @@ st.divider()
 
 st.subheader("Historical Rule Backtest")
 st.caption(
+    "Choose the role of the uploaded data explicitly. Spot/index OHLCV validates signal quality; "
+    "contract-specific futures OHLCV is required for executable ₹1 lakh P&L."
+)
+backtest_mode = st.radio(
+    "Backtest data role",
+    ["NIFTY Spot / Index — Signal Research", "NIFTY Futures — Executable ₹1 lakh P&L"],
+    horizontal=True,
+    key="backtest_data_role",
+)
+st.caption(
     "Use real historical OHLCV data to measure how the seven rules would have performed "
     "on past candles. Synthetic demo data is for UI smoke-testing only and must not be "
     "used to judge strategy accuracy."
@@ -1740,7 +1753,7 @@ uploaded = st.file_uploader(
 
 run_demo = st.button(
     "Run Synthetic Demo",
-    use_container_width=True,
+    width="stretch",
     help="UI/engine smoke test only. Do not treat synthetic results as evidence of profitability.",
 )
 
@@ -1775,27 +1788,25 @@ elif run_demo:
     bt_source = "Synthetic demo data"
 
 if bt_data is not None:
-    required_bt = {
-        "timestamp",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-    }
-    missing_bt = required_bt - set(bt_data.columns)
-
-    if missing_bt:
-        if is_option_chain_snapshot(bt_data.columns):
-            st.error(
-                "This CSV is an option-chain snapshot, not historical OHLCV candle data. "
-                "Use the 'Option-Chain Snapshot Import' section above for CE/PE analysis. "
-                "For the seven-rule backtest, upload timestamp, open, high, low, close and volume."
-            )
+    try:
+        bt_data = normalize_nifty_csv(bt_data)
+    except ValueError as schema_error:
+        missing_bt = {"timestamp", "open", "high", "low", "close", "volume"} - set(bt_data.columns)
+        if missing_bt:
+            st.error(f"Backtest data is missing/invalid required OHLCV fields: {sorted(missing_bt)}")
         else:
-            st.error(
-                f"Backtest data is missing required columns: {sorted(missing_bt)}"
-            )
+            st.error(f"Backtest data schema validation failed: {schema_error}")
+        bt_data = None
+
+    if bt_data is None:
+        pass
+    elif is_option_chain_snapshot(bt_data.columns):
+        st.error(
+            "This CSV is an option-chain snapshot, not historical OHLCV candle data. "
+            "Use the 'Option-Chain Snapshot Import' section above for CE/PE analysis. "
+            "For the seven-rule backtest, upload timestamp, open, high, low, close and volume."
+        )
+        bt_data = None
     else:
         try:
             bt_data = bt_data.copy()
@@ -1881,7 +1892,7 @@ if bt_data is not None:
                 run_historical = st.button(
                     "Run Historical Backtest",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
                 if run_historical:
@@ -1899,190 +1910,108 @@ if bt_data is not None:
                                 - pd.Timedelta(microseconds=1)
                             )
 
-                            result = RuleBacktestEngine(
-                                starting_capital=settings.starting_capital,
-                                risk_per_trade=settings.max_loss_per_trade,
-                                instrument=instrument,
-                            ).run(
-                                bt_data,
-                                symbol=instrument,
-                                evaluation_start=evaluation_start,
-                                evaluation_end=evaluation_end,
-                            )
-                            metrics = result.metrics
-                            trades = result.trades.copy()
+                            is_probably_spot = backtest_mode.startswith("NIFTY Spot")
 
-                            st.success(
-                                "Historical backtest completed. "
-                                "These results are historical simulation results, not a guarantee of future performance."
-                            )
-
-                            total_trades = int(metrics.total_trades)
-                            wins = int(metrics.winning_trades)
-                            losses = int(metrics.losing_trades)
-
-                            top = st.columns(5)
-                            top[0].metric(
-                                "Closed Trades",
-                                total_trades,
-                            )
-                            top[1].metric(
-                                "Win Rate / Accuracy",
-                                f"{metrics.win_rate_pct:.1f}%",
-                            )
-                            top[2].metric(
-                                "Net P&L",
-                                f"Rs {metrics.net_pnl:,.0f}",
-                            )
-                            top[3].metric(
-                                "Return",
-                                f"{metrics.return_pct:.2f}%",
-                            )
-                            top[4].metric(
-                                "Profit Factor",
-                                (
-                                    "∞"
-                                    if metrics.profit_factor == float("inf")
-                                    else f"{metrics.profit_factor:.2f}"
-                                ),
-                            )
-
-                            detail = st.columns(5)
-                            detail[0].metric(
-                                "Wins",
-                                wins,
-                            )
-                            detail[1].metric(
-                                "Losses",
-                                losses,
-                            )
-                            detail[2].metric(
-                                "Avg Trade",
-                                f"Rs {metrics.average_trade:,.0f}",
-                            )
-                            detail[3].metric(
-                                "Max Drawdown",
-                                f"Rs {metrics.max_drawdown:,.0f}",
-                            )
-                            detail[4].metric(
-                                "Max DD %",
-                                f"{metrics.max_drawdown_pct:.2f}%",
-                            )
-
-                            if total_trades:
-                                buy_trades = trades[
-                                    trades["direction"] == "BUY"
-                                ]
-                                sell_trades = trades[
-                                    trades["direction"] == "SELL"
-                                ]
-
-                                buy_accuracy = (
-                                    (buy_trades["pnl"] > 0).mean() * 100
-                                    if not buy_trades.empty
-                                    else 0.0
+                            if is_probably_spot:
+                                research = run_signal_research(
+                                    bt_data,
+                                    evaluation_start=evaluation_start,
+                                    evaluation_end=evaluation_end,
                                 )
-                                sell_accuracy = (
-                                    (sell_trades["pnl"] > 0).mean() * 100
-                                    if not sell_trades.empty
-                                    else 0.0
+                                rv = research.validation
+                                st.info(
+                                    "SIGNAL RESEARCH MODE: this CSV is treated as NIFTY spot/index OHLCV. "
+                                    "Signals and outcomes are measured in index points/R, not futures rupees. "
+                                    "Upload contract-specific NIFTY futures OHLCV for executable ₹1 lakh P&L."
                                 )
-
-                                st.markdown("#### Direction Accuracy")
-                                direction_cols = st.columns(2)
-                                direction_cols[0].metric(
-                                    "BUY Win Rate",
-                                    f"{buy_accuracy:.1f}%",
-                                    f"{len(buy_trades)} trades",
-                                )
-                                direction_cols[1].metric(
-                                    "SELL Win Rate",
-                                    f"{sell_accuracy:.1f}%",
-                                    f"{len(sell_trades)} trades",
-                                )
-
-                                if "exit_time" in trades.columns:
-                                    trades["entry_time"] = pd.to_datetime(
-                                        trades["entry_time"],
-                                        errors="coerce",
-                                    )
-                                    trades["exit_time"] = pd.to_datetime(
-                                        trades["exit_time"],
-                                        errors="coerce",
-                                    )
-
-                                if "pnl" in trades.columns:
-                                    trades["cumulative_pnl"] = (
-                                        pd.to_numeric(
-                                            trades["pnl"],
-                                            errors="coerce",
-                                        ).fillna(0.0).cumsum()
-                                    )
-
-                                st.markdown("#### Equity / P&L Curve")
-                                if not trades.empty and "exit_time" in trades.columns:
-                                    equity_chart = trades[
-                                        ["exit_time", "cumulative_pnl"]
-                                    ].dropna()
-                                    if not equity_chart.empty:
-                                        st.line_chart(
-                                            equity_chart.set_index("exit_time"),
-                                            y="cumulative_pnl",
-                                            width="stretch",
-                                            height=300,
-                                        )
-
-                            if not result.rule_performance.empty:
-                                st.markdown("#### Rule-by-Rule Accuracy")
-                                rule_view = result.rule_performance.copy()
-                                rule_view = rule_view.rename(
-                                    columns={
-                                        "win_rate_pct": "accuracy_pct",
-                                    }
-                                )
-                                st.dataframe(
-                                    rule_view,
-                                    use_container_width=True,
-                                    hide_index=True,
-                                )
-
-                            if not trades.empty:
-                                st.markdown("#### Historical Trades")
-                                trade_columns = [
-                                    column
-                                    for column in [
-                                        "entry_time",
-                                        "exit_time",
-                                        "direction",
-                                        "entry",
-                                        "exit_price",
-                                        "stop_loss",
-                                        "target",
-                                        "quantity",
-                                        "rule",
-                                        "pnl",
-                                        "roi_pct",
-                                        "reason",
-                                    ]
-                                    if column in trades.columns
-                                ]
-                                st.dataframe(
-                                    trades[trade_columns],
-                                    use_container_width=True,
-                                    hide_index=True,
+                                st.markdown("#### Signal research funnel")
+                                rf = st.columns(6)
+                                rf[0].metric("Bars", f"{rv.get('bars_considered', 0):,}")
+                                rf[1].metric("Rule-trigger bars", f"{rv.get('rule_trigger_bars', 0):,}")
+                                rf[2].metric("Qualified signals", f"{rv.get('qualified_signal_bars', 0):,}")
+                                rf[3].metric("Conflicts", f"{rv.get('conflicting_signal_bars', 0):,}")
+                                rf[4].metric("Evaluated signals", f"{rv.get('signals', 0):,}")
+                                rf[5].metric("Trading days", f"{rv.get('trading_days', 0):,}")
+                                sm = st.columns(5)
+                                sm[0].metric("Signal Win Rate", f"{rv.get('win_rate_pct', 0.0):.1f}%")
+                                sm[1].metric("Average R", f"{rv.get('average_R', 0.0):.3f}")
+                                sm[2].metric("Total R", f"{rv.get('total_R', 0.0):.2f}")
+                                sm[3].metric("Wins", f"{rv.get('wins', 0):,}")
+                                sm[4].metric("Losses", f"{rv.get('losses', 0):,}")
+                                if not research.signals.empty:
+                                    st.markdown("#### Qualified signal outcomes")
+                                    st.dataframe(research.signals, width="stretch", hide_index=True)
+                                else:
+                                    st.warning("No qualified signals survived the confirmation, volatility and timing gates.")
+                                st.warning(
+                                    "This is NOT a futures profitability result. Futures P&L requires historical "
+                                    "futures candles plus the correct contract/expiry lot specification."
                                 )
                             else:
-                                st.warning(
-                                    "No trades were generated in this period. "
-                                    "That is not the same as 0% accuracy."
+                                result = CapitalAwareRuleBacktestEngine(
+                                    starting_capital=settings.starting_capital,
+                                    risk_per_trade=settings.max_loss_per_trade,
+                                    instrument=instrument,
+                                    lot_size=65 if instrument == "NIFTY" else 1,
+                                    point_value=1.0,
+                                    slippage_points=0.25,
+                                    brokerage_per_order=10.0,
+                                    max_daily_loss=settings.max_daily_loss,
+                                    max_trades_per_day=settings.max_trades_per_day,
+                                ).run(
+                                    bt_data, symbol=instrument,
+                                    evaluation_start=evaluation_start, evaluation_end=evaluation_end,
                                 )
+                                metrics = result.metrics
+                                trades = result.trades.copy()
+                                validation = result.validation
+                                trading_days = int(validation.get("trading_days", 0))
+                                qualified_signals = int(validation.get("qualified_signal_bars", 0))
+                                rejected_risk = int(validation.get("rejected_risk_budget", 0))
+                                if trading_days < 100:
+                                    st.warning("INSUFFICIENT EVIDENCE: fewer than 100 trading days are available.")
+                                elif len(trades) < 30:
+                                    if qualified_signals and rejected_risk == qualified_signals:
+                                        st.warning("NO EXECUTABLE TRADES: qualified signals were found, but every candidate exceeded the configured per-trade risk budget. The risk model was NOT loosened.")
+                                    elif qualified_signals == 0:
+                                        st.warning("NO QUALIFIED SIGNALS: no candidate survived the configured confirmation gates.")
+                                    else:
+                                        st.warning("INSUFFICIENT TRADE EVIDENCE: the dataset has enough history, but fewer than 30 closed trades were produced.")
+                                else:
+                                    st.success("Historical futures backtest completed. Results are historical simulation results, not a guarantee of future performance.")
+                                st.markdown("#### Backtest diagnostic funnel")
+                                funnel = st.columns(6)
+                                funnel[0].metric("Bars", f"{validation.get('bars_considered', 0):,}")
+                                funnel[1].metric("Rule-trigger bars", f"{validation.get('rule_trigger_bars', 0):,}")
+                                funnel[2].metric("Qualified signals", f"{qualified_signals:,}")
+                                funnel[3].metric("Risk rejected", f"{rejected_risk:,}")
+                                funnel[4].metric("Closed trades", f"{len(trades):,}")
+                                funnel[5].metric("Trading days", f"{trading_days:,}")
+                                total_trades = int(metrics.total_trades)
+                                wins = int(metrics.winning_trades)
+                                losses = int(metrics.losing_trades)
+                                top = st.columns(5)
+                                top[0].metric("Closed Trades", total_trades)
+                                top[1].metric("Win Rate", f"{metrics.win_rate_pct:.1f}%")
+                                top[2].metric("Net P&L", f"Rs {metrics.net_pnl:,.0f}")
+                                top[3].metric("Return", f"{metrics.return_pct:.2f}%")
+                                top[4].metric("Profit Factor", "∞" if metrics.profit_factor == float("inf") else f"{metrics.profit_factor:.2f}")
+                                detail = st.columns(5)
+                                detail[0].metric("Wins", wins)
+                                detail[1].metric("Losses", losses)
+                                detail[2].metric("Avg Trade", f"Rs {metrics.average_trade:,.0f}")
+                                detail[3].metric("Max Drawdown", f"Rs {metrics.max_drawdown:,.0f}")
+                                detail[4].metric("Max DD %", f"{metrics.max_drawdown_pct:.2f}%")
+                                if not result.rule_performance.empty:
+                                    st.markdown("#### Rule-by-Rule Accuracy")
+                                    st.dataframe(result.rule_performance.rename(columns={"win_rate_pct":"accuracy_pct"}), width="stretch", hide_index=True)
+                                if not trades.empty:
+                                    st.markdown("#### Historical Futures Trades")
+                                    cols=[x for x in ["entry_time","exit_time","direction","entry_price","exit_price","stop_loss","target","quantity","rule","pnl","reason"] if x in trades.columns]
+                                    st.dataframe(trades[cols], width="stretch", hide_index=True)
+                                else:
+                                    st.warning("No executable futures trades were closed in this period. That is not the same as 0% accuracy.")
 
-                            st.caption(
-                                "Accuracy here means the percentage of closed simulated trades "
-                                "that ended profitable. It is not ML prediction accuracy. "
-                                "Use a sufficiently large, out-of-sample historical sample before "
-                                "drawing conclusions about strategy quality."
-                            )
                         except Exception as exc:
                             st.error(f"Historical backtest failed: {exc}")
 
