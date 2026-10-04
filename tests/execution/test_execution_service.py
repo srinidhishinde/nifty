@@ -1,4 +1,5 @@
 from execution.execution_service import ExecutionService
+from config.settings import settings
 
 TEST_EQUITY = 100_000.0
 
@@ -26,7 +27,10 @@ def test_daily_loss_limit_is_rejected():
 
 
 def test_trade_limit_is_rejected():
-    result = ExecutionService().execute("NIFTY", "BUY", 100.0, 90.0, 50, 0.0, 5, TEST_EQUITY)
+    result = ExecutionService().execute(
+        "NIFTY", "BUY", 100.0, 90.0, 50, 0.0,
+        settings.max_trades_per_day, TEST_EQUITY
+    )
     assert result.accepted is False
     assert result.order_id is None
     assert "trade limit" in result.reason.lower()
