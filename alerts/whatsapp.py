@@ -64,7 +64,8 @@ class WhatsAppAlertService:
     @property
     def configured(self) -> bool:
         return bool(
-            self.token
+            settings.whatsapp_alerts_enabled
+            and self.token
             and self.phone_number_id
             and self.recipients
         )
