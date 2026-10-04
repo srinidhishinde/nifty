@@ -27,16 +27,19 @@ class CapitalAwareRuleBacktestEngine:
     The engine is deliberately intraday and includes execution costs.
     """
 
-    def __init__(self, starting_capital: float = 100_000.0, risk_per_trade: float = 1_000.0,
+    def __init__(self, starting_capital: float, risk_fraction: float = 0.01,
                  instrument: str = "NIFTY", config: StrategyConfig | None = None,
                  lot_size: int = 65, point_value: float = 1.0,
                  margin_per_lot: float = 0.0, slippage_points: float = 0.25,
-                 brokerage_per_order: float = 10.0, max_daily_loss: float | None = None,
+                 brokerage_per_order: float = 10.0, max_daily_loss_fraction: float = 0.02,
                  max_trades_per_day: int = 5):
-        if starting_capital <= 0 or risk_per_trade <= 0 or lot_size <= 0 or point_value <= 0:
-            raise ValueError("capital, risk, lot_size and point_value must be positive")
+        if starting_capital <= 0 or risk_fraction <= 0 or risk_fraction >= 1 or lot_size <= 0 or point_value <= 0:
+            raise ValueError("capital, risk_fraction, lot_size and point_value must be positive; risk_fraction must be < 1")
+        if max_daily_loss_fraction <= 0 or max_daily_loss_fraction >= 1:
+            raise ValueError("max_daily_loss_fraction must be between 0 and 1")
         self.starting_capital = float(starting_capital)
-        self.risk_per_trade = float(risk_per_trade)
+        self.risk_fraction = float(risk_fraction)
+        self.max_daily_loss_fraction = float(max_daily_loss_fraction)
         self.instrument = instrument.upper()
         self.config = config or StrategyConfig()
         self.lot_size = int(lot_size)
@@ -44,7 +47,6 @@ class CapitalAwareRuleBacktestEngine:
         self.margin_per_lot = float(margin_per_lot)
         self.slippage_points = float(slippage_points)
         self.brokerage_per_order = float(brokerage_per_order)
-        self.max_daily_loss = float(max_daily_loss) if max_daily_loss is not None else self.starting_capital * 0.02
         self.max_trades_per_day = int(max_trades_per_day)
 
     def _fill(self, price: float, direction: str, entry: bool) -> float:
@@ -55,7 +57,8 @@ class CapitalAwareRuleBacktestEngine:
         risk_per_lot = abs(entry - stop) * self.point_value * self.lot_size
         if risk_per_lot <= 0:
             return 0, 0.0
-        by_risk = int(self.risk_per_trade // risk_per_lot)
+        risk_budget = equity * self.risk_fraction
+        by_risk = int(risk_budget // risk_per_lot)
         by_margin = int(equity // self.margin_per_lot) if self.margin_per_lot > 0 else by_risk
         return min(by_risk, by_margin), risk_per_lot
 
@@ -169,7 +172,7 @@ class CapitalAwareRuleBacktestEngine:
                 continue
 
             bars_considered += 1
-            if daily_pnl[day] <= -self.max_daily_loss:
+            if daily_pnl[day] <= -(equity * self.max_daily_loss_fraction):
                 rejected_daily_limit += 1
                 continue
             if daily_trades[day] >= self.max_trades_per_day:
@@ -210,7 +213,7 @@ class CapitalAwareRuleBacktestEngine:
             position = {"entry_time":frame.iloc[i+1].timestamp,"signal_time":ts,"symbol":symbol,"direction":direction,
                         "entry_price":round(entry,4),"stop_loss":round(stop,4),"target":round(target,4),
                         "lots":lots,"quantity":qty,"risk_per_lot":round(risk_per_lot,2),
-                        "risk_budget":round(self.risk_per_trade,2),"rule":"|".join(s.rule for s in signals),
+                        "risk_budget":round(equity * self.risk_fraction,2),"rule":"|".join(s.rule for s in signals),
                         "rules":tuple(s.rule for s in signals)}
 
         trades_df = pd.DataFrame(trades)
@@ -239,7 +242,8 @@ class CapitalAwareRuleBacktestEngine:
             "rejected_risk_budget": rejected_risk_budget,
             "rejected_daily_limit": rejected_daily_limit,
             "rejected_trade_limit": rejected_trade_limit,
-            "risk_per_trade": self.risk_per_trade,
+            "risk_fraction": self.risk_fraction,
+            "max_daily_loss_fraction": self.max_daily_loss_fraction,
             "point_value": self.point_value,
             "min_stop_pct": self.config.stop_loss_pct,
             "min_reward_risk": self.config.min_reward_risk,
