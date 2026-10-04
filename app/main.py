@@ -3,6 +3,8 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+
+from strategy.market_specs import get_option_strike_step, round_to_strike
 import streamlit as st
 
 from config.settings import settings
@@ -209,9 +211,7 @@ def build_research_option_chain(
         f"{instrument}:{seed}:{spot}"
     )
 
-    atm_strike = round(
-        spot / strike_step
-    ) * strike_step
+    atm_strike = round_to_strike(spot, strike_step)
 
     strikes = [
         atm_strike
@@ -509,23 +509,9 @@ def build_option_chain_dataframe(
 # Strike configuration
 # ============================================================
 
-def get_strike_step(
-    instrument: str,
-) -> float:
-
-    if instrument == "NIFTY":
-        return 50.0
-
-    if instrument == "BANKNIFTY":
-        return 100.0
-
-    if instrument in {
-        "CRUDEOIL",
-        "NATURALGAS",
-    }:
-        return 10.0
-
-    return 100.0
+def get_strike_step(instrument: str) -> float:
+    """Compatibility wrapper around the centralized market specification."""
+    return get_option_strike_step(instrument)
 
 
 # ============================================================
