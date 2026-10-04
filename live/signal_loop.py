@@ -20,10 +20,12 @@ class LiveSignalLoop:
     deliberately does not place orders; it produces auditable signals that can
     be consumed by paper trading. A callback may persist each signal.
     """
+
     fetch_candles: Callable[[], pd.DataFrame]
     fetch_options: Callable[[], list]
     spot_provider: Callable[[], float]
-    interval_seconds: int = 30\n    capital: float = 300000.0
+    interval_seconds: int = 30
+    capital: float = 300000.0
     on_signal: Callable[[dict], None] | None = None
     running: bool = field(default=False, init=False)
 
@@ -31,7 +33,11 @@ class LiveSignalLoop:
         candles = self.fetch_candles()
         spot = float(self.spot_provider())
         news = fetch_global_news()
-        ai = generate_ai_signal(candles, capital=self.capital, global_news_score=news.sentiment)
+        ai = generate_ai_signal(
+            candles,
+            capital=self.capital,
+            global_news_score=news.sentiment,
+        )
         option_signal, _ = generate_option_chain_signal(
             self.fetch_options(),
             spot=spot,
@@ -39,9 +45,13 @@ class LiveSignalLoop:
         )
         result = {
             "timestamp": datetime.now(),
-            "technical_direction": technical.direction,
-            "technical_stop_loss": technical.stop_loss,
-            "technical_target": technical.target,
+            "technical_direction": ai.direction,
+            "technical_stop_loss": ai.stop_loss,
+            "technical_target": ai.take_profit,
+            "ai_confidence": ai.confidence,
+            "ai_abstain": ai.abstain,
+            "position_quantity": ai.quantity,
+            "ai_reasons": ai.reasons,
             "option_direction": option_signal.direction,
             "option_confidence": option_signal.confidence,
             "option_entry": option_signal.entry_price,
