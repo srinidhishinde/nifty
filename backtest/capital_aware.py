@@ -7,7 +7,7 @@ import pandas as pd
 
 from backtest.metrics import calculate_metrics
 from features.technical.indicators import add_indicators
-from strategy.rules import StrategyConfig, evaluate_rules, rank_rule_performance
+from strategy.rules import StrategyConfig, generate_signal, rank_rule_performance
 
 
 @dataclass(frozen=True)
@@ -27,16 +27,19 @@ class CapitalAwareRuleBacktestEngine:
     The engine is deliberately intraday and includes execution costs.
     """
 
-    def __init__(self, starting_capital: float = 100_000.0, risk_per_trade: float = 1_000.0,
+    def __init__(self, starting_capital: float, risk_fraction: float = 0.01,
                  instrument: str = "NIFTY", config: StrategyConfig | None = None,
                  lot_size: int = 65, point_value: float = 1.0,
                  margin_per_lot: float = 0.0, slippage_points: float = 0.25,
-                 brokerage_per_order: float = 10.0, max_daily_loss: float | None = None,
+                 brokerage_per_order: float = 10.0, max_daily_loss_fraction: float = 0.02,
                  max_trades_per_day: int = 5):
-        if starting_capital <= 0 or risk_per_trade <= 0 or lot_size <= 0 or point_value <= 0:
-            raise ValueError("capital, risk, lot_size and point_value must be positive")
+        if starting_capital <= 0 or risk_fraction <= 0 or risk_fraction >= 1 or lot_size <= 0 or point_value <= 0:
+            raise ValueError("capital, risk_fraction, lot_size and point_value must be positive; risk_fraction must be < 1")
+        if max_daily_loss_fraction <= 0 or max_daily_loss_fraction >= 1:
+            raise ValueError("max_daily_loss_fraction must be between 0 and 1")
         self.starting_capital = float(starting_capital)
-        self.risk_per_trade = float(risk_per_trade)
+        self.risk_fraction = float(risk_fraction)
+        self.max_daily_loss_fraction = float(max_daily_loss_fraction)
         self.instrument = instrument.upper()
         self.config = config or StrategyConfig()
         self.lot_size = int(lot_size)
@@ -44,7 +47,6 @@ class CapitalAwareRuleBacktestEngine:
         self.margin_per_lot = float(margin_per_lot)
         self.slippage_points = float(slippage_points)
         self.brokerage_per_order = float(brokerage_per_order)
-        self.max_daily_loss = float(max_daily_loss) if max_daily_loss is not None else self.starting_capital * 0.02
         self.max_trades_per_day = int(max_trades_per_day)
 
     def _fill(self, price: float, direction: str, entry: bool) -> float:
@@ -55,7 +57,8 @@ class CapitalAwareRuleBacktestEngine:
         risk_per_lot = abs(entry - stop) * self.point_value * self.lot_size
         if risk_per_lot <= 0:
             return 0, 0.0
-        by_risk = int(self.risk_per_trade // risk_per_lot)
+        risk_budget = equity * self.risk_fraction
+        by_risk = int(risk_budget // risk_per_lot)
         by_margin = int(equity // self.margin_per_lot) if self.margin_per_lot > 0 else by_risk
         return min(by_risk, by_margin), risk_per_lot
 
@@ -106,116 +109,157 @@ class CapitalAwareRuleBacktestEngine:
         frame = add_indicators(frame)
         if frame.empty:
             empty = pd.DataFrame()
-            return StrictBacktestResult(empty, calculate_metrics(empty, self.starting_capital), pd.DataFrame(), pd.DataFrame(), {"status":"FAIL","reason":"empty_dataset"})
+            return StrictBacktestResult(
+                empty, calculate_metrics(empty, self.starting_capital),
+                pd.DataFrame(), pd.DataFrame(),
+                {"status": "FAIL", "reason": "empty_dataset"},
+            )
 
         start = pd.Timestamp(evaluation_start) if evaluation_start is not None else frame.timestamp.min()
         end = pd.Timestamp(evaluation_end) if evaluation_end is not None else frame.timestamp.max()
-        if start.tzinfo is None:
-            start = start.tz_localize("Asia/Kolkata")
-        else:
-            start = start.tz_convert("Asia/Kolkata")
-        if end.tzinfo is None:
-            end = end.tz_localize("Asia/Kolkata")
-        else:
-            end = end.tz_convert("Asia/Kolkata")
+        start = start.tz_localize("Asia/Kolkata") if start.tzinfo is None else start.tz_convert("Asia/Kolkata")
+        end = end.tz_localize("Asia/Kolkata") if end.tzinfo is None else end.tz_convert("Asia/Kolkata")
+
         trades: list[dict] = []
         equity_rows: list[dict] = []
         position = None
         equity = self.starting_capital
         daily_pnl: dict = {}
         daily_trades: dict = {}
+        day_start_equity: dict = {}
 
-        # Research diagnostics: distinguish "no signal" from "signal rejected".
-        bars_considered = 0
-        rule_trigger_bars = 0
-        conflicting_signal_bars = 0
-        qualified_signal_bars = 0
-        rejected_no_next_bar = 0
-        rejected_risk_budget = 0
-        rejected_daily_limit = 0
-        rejected_trade_limit = 0
+        diagnostics = {
+            "bars_considered": 0, "rule_trigger_bars": 0,
+            "conflicting_signal_bars": 0, "qualified_signal_bars": 0,
+            "rejected_no_next_bar": 0, "rejected_risk_budget": 0,
+            "rejected_daily_limit": 0, "rejected_trade_limit": 0,
+            "rejected_signal_gate": 0,
+        }
+
+        session_start = pd.Timestamp("09:15").time()
+        session_end = pd.Timestamp("15:40").time()
 
         for i in range(1, len(frame)):
-            row, prev = frame.iloc[i], frame.iloc[i-1]
+            row, prev = frame.iloc[i], frame.iloc[i - 1]
             ts = row.timestamp
-            session_start = pd.Timestamp("09:15").time()
-            session_end = pd.Timestamp("15:40").time()
-            if self.instrument == "NIFTY" and ts.timetz().replace(tzinfo=None) < session_start:
-                continue
-            if self.instrument == "NIFTY" and ts.timetz().replace(tzinfo=None) > session_end:
+            clock = ts.timetz().replace(tzinfo=None)
+            if self.instrument == "NIFTY" and (clock < session_start or clock > session_end):
                 continue
             day = ts.date()
-            daily_pnl.setdefault(day, 0.0); daily_trades.setdefault(day, 0)
+            daily_pnl.setdefault(day, 0.0)
+            daily_trades.setdefault(day, 0)
+            day_start_equity.setdefault(day, equity)
 
             if position is not None:
-                next_day = i + 1 >= len(frame) or frame.iloc[i+1].timestamp.date() != day
+                next_day = i + 1 >= len(frame) or frame.iloc[i + 1].timestamp.date() != day
                 exit_price, reason = self._resolve_exit(row, position)
-                if exit_price is None and (next_day or (self.instrument == "NIFTY" and ts.timetz().replace(tzinfo=None) >= session_end)):
+                if exit_price is None and (next_day or (self.instrument == "NIFTY" and clock >= session_end)):
                     exit_price, reason = float(row.close), "market_close"
                 if exit_price is not None:
                     direction = position["direction"]
                     filled_exit = self._fill(float(exit_price), direction, False)
-                    signed_points = filled_exit - position["entry_price"] if direction == "BUY" else position["entry_price"] - filled_exit
+                    signed_points = (
+                        filled_exit - position["entry_price"]
+                        if direction == "BUY"
+                        else position["entry_price"] - filled_exit
+                    )
                     gross = signed_points * self.point_value * position["quantity"]
                     costs = self.brokerage_per_order * 2
                     pnl = gross - costs
-                    equity += pnl; daily_pnl[day] += pnl
-                    trades.append({**position, "exit_time":ts, "exit_price":round(filled_exit,4), "gross_pnl":round(gross,2), "costs":round(costs,2), "pnl":round(pnl,2), "reason":reason})
-                    equity_rows.append({"timestamp":ts,"equity":round(equity,2),"daily_pnl":round(daily_pnl[day],2)})
+                    equity += pnl
+                    daily_pnl[day] += pnl
+                    trades.append({
+                        **position, "exit_time": ts,
+                        "exit_price": round(filled_exit, 4),
+                        "gross_pnl": round(gross, 2),
+                        "costs": round(costs, 2),
+                        "pnl": round(pnl, 2), "reason": reason,
+                    })
+                    equity_rows.append({
+                        "timestamp": ts, "equity": round(equity, 2),
+                        "daily_pnl": round(daily_pnl[day], 2),
+                    })
                     position = None
                 continue
 
             if ts < start or ts > end:
                 continue
+            diagnostics["bars_considered"] += 1
 
-            bars_considered += 1
-            if daily_pnl[day] <= -self.max_daily_loss:
-                rejected_daily_limit += 1
+            loss_limit = day_start_equity[day] * self.max_daily_loss_fraction
+            if daily_pnl[day] <= -loss_limit:
+                diagnostics["rejected_daily_limit"] += 1
                 continue
             if daily_trades[day] >= self.max_trades_per_day:
-                rejected_trade_limit += 1
+                diagnostics["rejected_trade_limit"] += 1
                 continue
 
-            signals = evaluate_rules(row, prev, self.config)
-            buys = [s for s in signals if s.direction == "BUY"]; sells = [s for s in signals if s.direction == "SELL"]
-            if not signals:
+            # Canonical decision path: the same generate_signal() used by
+            # strategy evaluation/live logic. This prevents backtest/live drift.
+            decision = generate_signal(frame.iloc[: i + 1], self.config)
+            if decision.direction == "WAIT":
                 continue
-            rule_trigger_bars += 1
-            if buys and sells:
-                conflicting_signal_bars += 1
+            diagnostics["rule_trigger_bars"] += 1
+            if not decision.valid:
+                diagnostics["rejected_signal_gate"] += 1
                 continue
-            direction = "BUY" if buys else "SELL"
-            directional_weight = sum(s.weight for s in signals if s.direction == direction)
-            confidence = min(95.0, 50.0 + 8.0 * directional_weight)
-            if len(signals) < self.config.min_rules_for_signal or confidence < self.config.min_confidence:
+
+            direction = decision.direction
+            diagnostics["qualified_signal_bars"] += 1
+            if i + 1 >= len(frame) or frame.iloc[i + 1].timestamp.date() != day:
+                diagnostics["rejected_no_next_bar"] += 1
                 continue
-            qualified_signal_bars += 1
-            if i + 1 >= len(frame) or frame.iloc[i+1].timestamp.date() != day:
-                rejected_no_next_bar += 1
+
+            next_bar = frame.iloc[i + 1]
+            entry = self._fill(float(next_bar.open), direction, True)
+
+            # Keep stop/target distances determined by the completed signal bar,
+            # then translate those distances to the actual next-bar fill.
+            signal_close = float(row.close)
+            risk_distance = abs(signal_close - float(decision.stop_loss))
+            reward_distance = abs(float(decision.target) - signal_close)
+            if risk_distance <= 0 or reward_distance <= 0:
+                diagnostics["rejected_signal_gate"] += 1
                 continue
-            entry = self._fill(float(frame.iloc[i+1].open), direction, True)
-            risk_distance = max(entry * self.config.stop_loss_pct, float(row.get("ATR", 0) or 0) * self.config.atr_stop_multiple)
-            reward_distance = max(entry * self.config.min_target_pct, float(row.get("ATR", 0) or 0) * self.config.target_atr_multiple)
+
             stop = entry - risk_distance if direction == "BUY" else entry + risk_distance
             target = entry + reward_distance if direction == "BUY" else entry - reward_distance
-            reward_risk = reward_distance / risk_distance if risk_distance > 0 else 0.0
+            reward_risk = reward_distance / risk_distance
             if reward_risk < self.config.min_reward_risk:
+                diagnostics["rejected_signal_gate"] += 1
                 continue
+
             lots, risk_per_lot = self._size(entry, stop, equity)
             if lots <= 0:
-                rejected_risk_budget += 1
+                diagnostics["rejected_risk_budget"] += 1
                 continue
+
             qty = lots * self.lot_size
             daily_trades[day] += 1
-            position = {"entry_time":frame.iloc[i+1].timestamp,"signal_time":ts,"symbol":symbol,"direction":direction,
-                        "entry_price":round(entry,4),"stop_loss":round(stop,4),"target":round(target,4),
-                        "lots":lots,"quantity":qty,"risk_per_lot":round(risk_per_lot,2),
-                        "risk_budget":round(self.risk_per_trade,2),"rule":"|".join(s.rule for s in signals),
-                        "rules":tuple(s.rule for s in signals)}
+            position = {
+                "entry_time": next_bar.timestamp,
+                "signal_time": ts,
+                "symbol": symbol,
+                "direction": direction,
+                "entry_price": round(entry, 4),
+                "stop_loss": round(stop, 4),
+                "target": round(target, 4),
+                "lots": lots,
+                "quantity": qty,
+                "risk_per_lot": round(risk_per_lot, 2),
+                "risk_budget": round(equity * self.risk_fraction, 2),
+                "confidence": decision.confidence,
+                "rule": "|".join(decision.rules),
+                "rules": tuple(decision.rules),
+            }
 
         trades_df = pd.DataFrame(trades)
         if trades_df.empty:
-            trades_df = pd.DataFrame(columns=["entry_time","signal_time","exit_time","symbol","direction","entry_price","exit_price","lots","quantity","gross_pnl","costs","pnl","reason","rule"])
+            trades_df = pd.DataFrame(columns=[
+                "entry_time","signal_time","exit_time","symbol","direction",
+                "entry_price","exit_price","lots","quantity","gross_pnl",
+                "costs","pnl","reason","rule",
+            ])
         metrics = calculate_metrics(trades_df, self.starting_capital)
         equity_df = pd.DataFrame(equity_rows)
         validation = {
@@ -231,17 +275,14 @@ class CapitalAwareRuleBacktestEngine:
             "lot_size": self.lot_size,
             "slippage_points": self.slippage_points,
             "brokerage_per_order": self.brokerage_per_order,
-            "bars_considered": bars_considered,
-            "rule_trigger_bars": rule_trigger_bars,
-            "conflicting_signal_bars": conflicting_signal_bars,
-            "qualified_signal_bars": qualified_signal_bars,
-            "rejected_no_next_bar": rejected_no_next_bar,
-            "rejected_risk_budget": rejected_risk_budget,
-            "rejected_daily_limit": rejected_daily_limit,
-            "rejected_trade_limit": rejected_trade_limit,
-            "risk_per_trade": self.risk_per_trade,
+            **diagnostics,
+            "risk_fraction": self.risk_fraction,
+            "max_daily_loss_fraction": self.max_daily_loss_fraction,
             "point_value": self.point_value,
             "min_stop_pct": self.config.stop_loss_pct,
             "min_reward_risk": self.config.min_reward_risk,
         }
-        return StrictBacktestResult(trades_df, metrics, rank_rule_performance(trades_df), equity_df, validation)
+        return StrictBacktestResult(
+            trades_df, metrics, rank_rule_performance(trades_df),
+            equity_df, validation,
+        )

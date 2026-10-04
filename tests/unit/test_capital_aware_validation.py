@@ -18,7 +18,7 @@ def _frame():
 
 def test_capital_is_not_used_as_trade_pnl():
     result = CapitalAwareRuleBacktestEngine(
-        starting_capital=100000, risk_per_trade=1000, lot_size=65,
+        starting_capital=100000, risk_fraction=0.01, lot_size=65,
         slippage_points=0, brokerage_per_order=0,
     ).run(_frame(), evaluation_start=pd.Timestamp("2035-01-01"))
     assert result.validation["final_equity"] == 100000
@@ -26,7 +26,7 @@ def test_capital_is_not_used_as_trade_pnl():
 
 def test_engine_records_validation():
     result = CapitalAwareRuleBacktestEngine(
-        starting_capital=100000, risk_per_trade=1000, lot_size=65,
+        starting_capital=100000, risk_fraction=0.01, lot_size=65,
         slippage_points=0, brokerage_per_order=0,
     ).run(_frame())
     assert result.validation["status"] == "PASS"
