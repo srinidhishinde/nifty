@@ -23,7 +23,12 @@ from strategy.strike_selector import StrikeSelector
 from backtest.rule_engine import RuleBacktestEngine
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
-from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
+from marketdata.option_chain_csv import (
+    is_nse_option_chain_export,
+    is_option_chain_snapshot,
+    parse_nse_option_chain_export,
+    parse_option_chain_csv,
+)
 from features.option_signal_engine import generate_option_chain_signal
 from strategy.buy_today_sell_tomorrow import run_buy_today_sell_tomorrow
 from strategy.btst_option_selector import rank_btst_options
@@ -1477,19 +1482,30 @@ option_csv = st.file_uploader(
 if option_csv is not None:
     try:
         option_snapshot = pd.read_csv(option_csv)
-        if not is_option_chain_snapshot(option_snapshot.columns):
-            st.error(
-                "This file is not recognized as the supported option-chain snapshot format. "
-                "Expected a Strike column and Calls OI or Puts OI."
+        if is_nse_option_chain_export(option_snapshot):
+            snapshot_contracts = parse_nse_option_chain_export(option_snapshot)
+            st.success(
+                f"NSE-style option-chain export detected: {len(snapshot_contracts):,} real CE/PE contracts."
             )
-        else:
+        elif is_option_chain_snapshot(option_snapshot.columns):
             snapshot_contracts = parse_option_chain_csv(option_snapshot)
+        else:
+            st.error(
+                "This file is not recognized as a supported option-chain format. "
+                "Supported formats: structured Strike + Calls/Puts columns, or NSE two-row export."
+            )
+            snapshot_contracts = []
+        if snapshot_contracts:
             snapshot_rows = []
             for contract in snapshot_contracts:
                 snapshot_rows.append({
                     "Side": contract.option_type,
                     "Strike": contract.strike,
+                    "LTP": contract.ltp,
                     "LTP Change %": contract.ltp_change_pct,
+                    "Bid": contract.bid,
+                    "Ask": contract.ask,
+                    "Spread": max(0.0, contract.ask - contract.bid),
                     "IV": contract.implied_volatility,
                     "OI": contract.open_interest,
                     "OI Change": contract.oi_change,
@@ -1526,8 +1542,10 @@ if option_csv is not None:
             oc[5].metric("Target Gain", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Target Gain %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
             oc[6].metric("Stop Risk", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Stop Risk %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
             oc[7].metric("Global News", f"{global_news_score:+.2f}")
-            if option_signal.entry_price is None:
-                st.info("This snapshot contains LTP change %, not option LTP. Option entry/SL/TP are unavailable for the premium; underlying reference levels remain available.")
+            if all(contract.ltp <= 0 for contract in snapshot_contracts):
+                st.info("This snapshot does not contain usable option LTP. Premium entry/SL/TP remain unavailable; underlying reference levels may still be used.")
+            elif all(contract.bid <= 0 or contract.ask <= 0 for contract in snapshot_contracts):
+                st.info("Option LTP is available, but bid/ask quality is incomplete. Premium entry/SL/TP may be available; execution-quality Rule 6 remains unavailable without spread history.")
             st.info(
                 "Rules 1–5 and 7 require candle/context history. Rule 6 additionally requires bid/ask and spread history. "
                 "This snapshot has none of those fields, so it is not silently used as candle backtest input."
