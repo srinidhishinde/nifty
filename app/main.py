@@ -1967,16 +1967,19 @@ if bt_data is not None:
                                 if futures_margin_per_lot <= 0:
                                     st.error("Futures backtest blocked: enter a valid contract-specific margin per lot. The system will not assume margin or manufacture capital capacity.")
                                     st.stop()
+                                if settings.starting_capital <= 0:
+                                    st.warning("Enter an explicit starting capital in configuration before running an executable futures backtest. Capital is an execution input, not a strategy assumption.")
+                                    st.stop()
                                 result = CapitalAwareRuleBacktestEngine(
                                     starting_capital=settings.starting_capital,
-                                    risk_per_trade=settings.max_loss_per_trade,
+                                    risk_fraction=settings.risk_fraction,
                                     instrument=instrument,
                                     lot_size=futures_lot_size,
                                     point_value=futures_point_value,
                                     margin_per_lot=futures_margin_per_lot,
                                     slippage_points=max(0.25, futures_tick_size),
                                     brokerage_per_order=10.0,
-                                    max_daily_loss=settings.max_daily_loss,
+                                    max_daily_loss_fraction=settings.max_daily_loss_fraction,
                                     max_trades_per_day=settings.max_trades_per_day,
                                 ).run(
                                     bt_data, symbol=instrument,
