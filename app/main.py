@@ -23,7 +23,10 @@ from strategy.strike_selector import StrikeSelector
 from backtest.capital_aware import CapitalAwareRuleBacktestEngine
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
-from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
+from marketdata.option_chain_csv import (
+    is_option_chain_snapshot, parse_option_chain_csv,
+    is_nse_option_chain_export, parse_nse_option_chain_export,
+)
 from features.option_signal_engine import generate_option_chain_signal
 from strategy.buy_today_sell_tomorrow import run_buy_today_sell_tomorrow
 from strategy.btst_option_selector import rank_btst_options
@@ -1471,25 +1474,32 @@ option_csv = st.file_uploader(
     "Upload option-chain snapshot CSV",
     type=["csv"],
     key="option_chain_csv",
-    help="Supports Strike plus Calls/ Puts OI, volume, IV, delta, theta, vega and built-up columns.",
+    help="Supports structured snapshots and NSE two-row option-chain exports.",
 )
 
 if option_csv is not None:
     try:
         option_snapshot = pd.read_csv(option_csv)
-        if not is_option_chain_snapshot(option_snapshot.columns):
-            st.error(
-                "This file is not recognized as the supported option-chain snapshot format. "
-                "Expected a Strike column and Calls OI or Puts OI."
-            )
-        else:
+        if is_nse_option_chain_export(option_snapshot):
+            snapshot_contracts = parse_nse_option_chain_export(option_snapshot)
+            st.success(f"NSE option-chain export detected: {len(snapshot_contracts):,} real CE/PE contracts.")
+        elif is_option_chain_snapshot(option_snapshot.columns):
             snapshot_contracts = parse_option_chain_csv(option_snapshot)
+        else:
+            st.error("Unsupported option-chain format. Expected a structured snapshot or NSE two-row export.")
+            snapshot_contracts = []
+
+        if snapshot_contracts:
             snapshot_rows = []
             for contract in snapshot_contracts:
                 snapshot_rows.append({
                     "Side": contract.option_type,
                     "Strike": contract.strike,
+                    "LTP": contract.ltp,
                     "LTP Change %": contract.ltp_change_pct,
+                    "Bid": contract.bid,
+                    "Ask": contract.ask,
+                    "Spread": max(0.0, contract.ask - contract.bid),
                     "IV": contract.implied_volatility,
                     "OI": contract.open_interest,
                     "OI Change": contract.oi_change,
@@ -1502,36 +1512,28 @@ if option_csv is not None:
                 })
             snapshot_df = pd.DataFrame(snapshot_rows).sort_values(["Strike", "Side"])
             option_signal, signal_rows = generate_option_chain_signal(
-                snapshot_contracts,
-                spot=spot,
-                global_news_score=global_news_score,
+                snapshot_contracts, spot=spot, global_news_score=global_news_score
             )
             snapshot_df = snapshot_df.merge(
-                signal_rows[
-                    ["Side", "Strike", "Signal", "Confidence", "Entry Price",
-                     "Stop Loss", "Take Profit", "Target Gain %", "Stop Risk %", "Global News"]
-                ],
-                on=["Side", "Strike"],
-                how="left",
+                signal_rows[["Side","Strike","Signal","Confidence","Entry Price","Stop Loss","Take Profit","Target Gain %","Stop Risk %","Global News"]],
+                on=["Side","Strike"], how="left"
             )
             st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
             st.dataframe(snapshot_df, use_container_width=True, hide_index=True)
-            st.markdown("#### Option-chain signal")
             oc = st.columns(8)
             oc[0].metric("Signal", option_signal.direction)
             oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%")
             oc[2].metric("Entry", "Unavailable" if option_signal.entry_price is None else f"Rs {option_signal.entry_price:.2f}")
             oc[3].metric("Stop Loss", "Unavailable" if option_signal.stop_loss is None else f"Rs {option_signal.stop_loss:.2f}")
             oc[4].metric("Take Profit", "Unavailable" if option_signal.take_profit is None else f"Rs {option_signal.take_profit:.2f}")
-            oc[5].metric("Target Gain", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Target Gain %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
-            oc[6].metric("Stop Risk", f"{signal_rows[signal_rows['Side'] == ('CE' if option_signal.direction == 'BUY CE' else 'PE')]['Stop Risk %'].max():.1f}%" if option_signal.direction in {"BUY CE", "BUY PE"} else "N/A")
+            oc[5].metric("Target Gain", "N/A")
+            oc[6].metric("Stop Risk", "N/A")
             oc[7].metric("Global News", f"{global_news_score:+.2f}")
-            if option_signal.entry_price is None:
-                st.info("This snapshot contains LTP change %, not option LTP. Option entry/SL/TP are unavailable for the premium; underlying reference levels remain available.")
-            st.info(
-                "Rules 1–5 and 7 require candle/context history. Rule 6 additionally requires bid/ask and spread history. "
-                "This snapshot has none of those fields, so it is not silently used as candle backtest input."
-            )
+            if all(contract.ltp <= 0 for contract in snapshot_contracts):
+                st.info("No usable option LTP is present. Premium entry/SL/TP are unavailable.")
+            elif all(contract.bid <= 0 or contract.ask <= 0 for contract in snapshot_contracts):
+                st.info("Option LTP is available, but bid/ask quality is incomplete; execution-quality checks remain unavailable.")
+            st.info("A single option-chain snapshot is context only. It is never used as OHLCV backtest input.")
     except Exception as exc:
         st.error(f"Option-chain snapshot import failed: {exc}")
 
