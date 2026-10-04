@@ -12,7 +12,9 @@ def test_symmetric_momentum_rules_emit_bearish_signals():
         "ADX": 25.0, "STOCH_K": 85.0, "STOCH_D": 90.0,
         "candlestick_score": -2.0,
     })
-    signals = evaluate_rules(row, row, StrategyConfig())
+    previous = row.copy()
+    previous["RSI"] = 75.0
+    signals = evaluate_rules(row, previous, StrategyConfig())
     directions = {(s.rule, s.direction) for s in signals}
     assert ("rsi_overbought_sell", "SELL") in directions
     assert ("macd_bearish", "SELL") in directions
