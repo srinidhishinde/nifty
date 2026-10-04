@@ -68,6 +68,10 @@ class CapitalAwareRuleBacktestEngine:
             raise ValueError(f"Missing columns: {sorted(missing)}")
         frame = data.copy()
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="raise")
+        if getattr(frame["timestamp"].dt, "tz", None) is not None:
+            frame["timestamp"] = frame["timestamp"].dt.tz_convert("Asia/Kolkata")
+        else:
+            frame["timestamp"] = frame["timestamp"].dt.tz_localize("Asia/Kolkata")
         for c in ("open", "high", "low", "close", "volume"):
             frame[c] = pd.to_numeric(frame[c], errors="coerce")
         frame = frame.dropna(subset=list(required)).sort_values("timestamp")
@@ -85,6 +89,14 @@ class CapitalAwareRuleBacktestEngine:
 
         start = pd.Timestamp(evaluation_start) if evaluation_start is not None else frame.timestamp.min()
         end = pd.Timestamp(evaluation_end) if evaluation_end is not None else frame.timestamp.max()
+        if start.tzinfo is None:
+            start = start.tz_localize("Asia/Kolkata")
+        else:
+            start = start.tz_convert("Asia/Kolkata")
+        if end.tzinfo is None:
+            end = end.tz_localize("Asia/Kolkata")
+        else:
+            end = end.tz_convert("Asia/Kolkata")
         trades: list[dict] = []
         equity_rows: list[dict] = []
         position = None
