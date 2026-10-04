@@ -1,5 +1,5 @@
 import pandas as pd
-from strategy.rules import StrategyConfig, evaluate_rules, generate_signal
+from strategy.rules import RuleSignal, StrategyConfig, _generate_signal_from_enriched, evaluate_rules, generate_signal
 
 def test_rsi_rule_requires_volume_confirmation():
     previous=pd.Series({"close":99.0,"RSI":25.0})
@@ -32,13 +32,21 @@ def test_risk_levels_match_pseudocode_defaults():
     assert signal.stop_loss<101.0<signal.target and signal.target>=round(101.0*1.02,2)
 
 
-def test_precision_mode_rejects_weak_signal():
-    previous=pd.Series({"open":100.0,"high":101.0,"low":99.0,"close":100.0,"volume":1000.0,
-                        "EMA9":100.0,"EMA21":99.0,"ADX":25.0})
-    row=pd.Series({"open":100.0,"high":102.0,"low":99.5,"close":101.0,"volume":1000.0,
-                   "EMA9":101.0,"EMA21":99.5,"ADX":25.0,"ATR":1.0,"ATR_PCT":0.01,
-                   "RSI":55.0,"MACD":1.0,"MACD_SIGNAL":0.5,"VWAP":100.0})
-    signal=generate_signal(pd.DataFrame([previous, row]), StrategyConfig(min_history_bars=2, require_option_confirmation=False))
+def test_precision_mode_rejects_weak_signal(monkeypatch):
+    monkeypatch.setattr(
+        "strategy.rules.evaluate_rules",
+        lambda row, previous, config: [
+            RuleSignal("ema_cross", "BUY", "test", 1.3),
+            RuleSignal("macd_bullish", "BUY", "test", 1.2),
+        ],
+    )
+    frame=pd.DataFrame([
+        {"close":100.0,"EMA9":99.0,"EMA21":99.5,"ADX":25.0,"ATR":1.0,"ATR_PCT":0.01,
+         "RSI":55.0,"MACD":0.5,"MACD_SIGNAL":0.4,"VWAP":100.0},
+        {"close":101.0,"EMA9":101.0,"EMA21":99.5,"ADX":25.0,"ATR":1.0,"ATR_PCT":0.01,
+         "RSI":55.0,"MACD":1.0,"MACD_SIGNAL":0.5,"VWAP":100.0},
+    ])
+    signal=_generate_signal_from_enriched(frame, StrategyConfig(min_history_bars=2, require_option_confirmation=False))
     assert signal.direction=="WAIT" and not signal.valid
 
 
