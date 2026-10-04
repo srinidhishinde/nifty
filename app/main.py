@@ -20,7 +20,7 @@ from strategy.ce_pe_selector import (
     MarketContext,
 )
 from strategy.strike_selector import StrikeSelector
-from backtest.rule_engine import RuleBacktestEngine
+from backtest.capital_aware import CapitalAwareRuleBacktestEngine
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
 from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
@@ -1775,17 +1775,17 @@ elif run_demo:
     bt_source = "Synthetic demo data"
 
 if bt_data is not None:
-    required_bt = {
-        "timestamp",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-    }
-    missing_bt = required_bt - set(bt_data.columns)
+    try:
+        bt_data = normalize_nifty_csv(bt_data)
+    except ValueError as schema_error:
+        missing_bt = {"timestamp", "open", "high", "low", "close", "volume"} - set(bt_data.columns)
+        if missing_bt:
+            st.error(f"Backtest data is missing/invalid required OHLCV fields: {sorted(missing_bt)}")
+        else:
+            st.error(f"Backtest data schema validation failed: {schema_error}")
+        bt_data = None
 
-    if missing_bt:
+    if bt_data is not None:
         if is_option_chain_snapshot(bt_data.columns):
             st.error(
                 "This CSV is an option-chain snapshot, not historical OHLCV candle data. "
@@ -1899,10 +1899,16 @@ if bt_data is not None:
                                 - pd.Timedelta(microseconds=1)
                             )
 
-                            result = RuleBacktestEngine(
+                            result = CapitalAwareRuleBacktestEngine(
                                 starting_capital=settings.starting_capital,
                                 risk_per_trade=settings.max_loss_per_trade,
                                 instrument=instrument,
+                                lot_size=65 if instrument == "NIFTY" else 1,
+                                point_value=1.0,
+                                slippage_points=0.25,
+                                brokerage_per_order=10.0,
+                                max_daily_loss=settings.max_daily_loss,
+                                max_trades_per_day=settings.max_trades_per_day,
                             ).run(
                                 bt_data,
                                 symbol=instrument,
@@ -1912,10 +1918,11 @@ if bt_data is not None:
                             metrics = result.metrics
                             trades = result.trades.copy()
 
-                            st.success(
-                                "Historical backtest completed. "
-                                "These results are historical simulation results, not a guarantee of future performance."
-                            )
+                            validation = result.validation
+                            if validation.get("trading_days", 0) < 100 or len(trades) < 30:
+                                st.warning("INSUFFICIENT EVIDENCE: this dataset is a smoke/sanity test only. Evidence-grade validation requires at least 100 trading days and 30 closed trades.")
+                            else:
+                                st.success("Historical backtest completed. Results are historical simulation results, not a guarantee of future performance.")
 
                             total_trades = int(metrics.total_trades)
                             wins = int(metrics.winning_trades)
@@ -1927,7 +1934,7 @@ if bt_data is not None:
                                 total_trades,
                             )
                             top[1].metric(
-                                "Win Rate / Accuracy",
+                                "Win Rate",
                                 f"{metrics.win_rate_pct:.1f}%",
                             )
                             top[2].metric(
