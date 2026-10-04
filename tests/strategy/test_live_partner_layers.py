@@ -24,8 +24,10 @@ def candles(n=80, trend=1.0):
 
 def test_session_has_entry_and_exit_only_windows():
     entry = resolve_session("NIFTY", pd.Timestamp("2026-10-01 14:30"))
+    cutoff = resolve_session("NIFTY", pd.Timestamp("2026-10-01 15:15"))
     exit_only = resolve_session("NIFTY", pd.Timestamp("2026-10-01 15:20"))
     assert entry.state == SessionState.ENTRY
+    assert cutoff.state == SessionState.EXIT_ONLY
     assert exit_only.state == SessionState.EXIT_ONLY
     assert not exit_only.entry_allowed
     assert exit_only.exits_allowed
@@ -46,7 +48,9 @@ def test_daily_objective_never_increases_risk_to_chase_target():
 
 
 def test_expected_r_is_net_of_costs():
-    assert calculate_expected_r(0.6, 2.0, 1.0, 0.1) == pytest.approx(0.5)
+    # E[R] = p(win)*win_r - p(loss)*loss_r - cost_r
+    #       = 0.6*2.0 - 0.4*1.0 - 0.1 = 0.7R
+    assert calculate_expected_r(0.6, 2.0, 1.0, 0.1) == pytest.approx(0.7)
 
 
 def test_trade_quality_rejects_weak_expectancy():
