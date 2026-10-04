@@ -38,6 +38,9 @@ def generate_option_chain_signal(
     global_news_score: float = 0.0,
     stop_loss_pct: float = 0.015,
     target_roi_pct: float = 0.30,
+    min_premium: float = 10.0,
+    max_premium: float = 500.0,
+    max_spread_pct: float = 0.05,
 ) -> tuple[OptionChainSignal, pd.DataFrame]:
     """Generate an auditable CE/PE signal.
 
@@ -47,12 +50,19 @@ def generate_option_chain_signal(
     """
     rows = []
     for contract in contracts:
+        entry = _buy_entry(contract)
+        if entry is None or entry < min_premium or entry > max_premium:
+            continue
+        bid = float(contract.bid or 0.0); ask = float(contract.ask or 0.0)
+        if bid > 0 and ask >= bid and (ask - bid) / ask > max_spread_pct:
+            continue
+        if float(contract.volume or 0.0) <= 0 or float(contract.open_interest or 0.0) <= 0:
+            continue
         analysis = analyze_option(contract)
         side_bias = 1.0 if contract.option_type == "CE" else -1.0
         news_boost = global_news_score * 12.0 * side_bias
         momentum_boost = max(-10.0, min(10.0, float(contract.ltp_change_pct or 0.0) * 0.5))
         confidence = _clamp(analysis.score + news_boost + momentum_boost)
-        entry = _buy_entry(contract)
         rows.append({
             "Side": contract.option_type,
             "Strike": contract.strike,
@@ -74,7 +84,7 @@ def generate_option_chain_signal(
 
     frame = pd.DataFrame(rows)
     if frame.empty:
-        return (OptionChainSignal("WAIT", 0.0, None, None, None, float(spot), float(spot), float(spot), ("No option contracts available",)), frame)
+        return (OptionChainSignal("WAIT", 0.0, None, None, None, float(spot), float(spot), float(spot), ("No liquid option contracts passed premium, volume, OI and spread filters",)), frame)
 
     grouped = frame.groupby("Side")["Confidence"].max().to_dict()
     ce, pe = float(grouped.get("CE", 0.0)), float(grouped.get("PE", 0.0))
