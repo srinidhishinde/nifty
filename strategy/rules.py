@@ -34,7 +34,7 @@ class StrategyConfig:
     # Risk levels are volatility/structure driven. Percentage values are only
     # a safety floor, never the primary stop mechanism.
     stop_loss_pct:float=0.005
-    min_target_pct:float=0.01
+    min_target_pct:float=0.02
     target_atr_multiple:float=2.5
     atr_stop_multiple:float=1.5
     min_confidence:float=62.0
