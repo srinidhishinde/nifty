@@ -14,11 +14,11 @@ class Settings(BaseSettings):
     app_name: str = "AI Derivatives Terminal"
     environment: str = Field(default="paper", validation_alias="APP_ENV")
 
-    starting_capital: float = Field(default=300000.0, validation_alias="CAPITAL")
-    max_loss_per_trade: float = Field(default=15000.0, validation_alias="MAX_RISK_PER_TRADE")
-    max_trades_per_day: int = Field(default=15, validation_alias="MAX_TRADES_PER_DAY")
-    max_daily_loss: float = Field(default=30000.0, validation_alias="MAX_DAILY_LOSS")
-    daily_target_pct: float = Field(default=30.0, validation_alias="DAILY_TARGET_PCT")
+    starting_capital: float = Field(default=100000.0, validation_alias="CAPITAL")
+    max_loss_per_trade: float = Field(default=1000.0, validation_alias="MAX_RISK_PER_TRADE")
+    max_trades_per_day: int = Field(default=5, validation_alias="MAX_TRADES_PER_DAY")
+    max_daily_loss: float = Field(default=2000.0, validation_alias="MAX_DAILY_LOSS")
+    daily_target_pct: float = Field(default=0.0, validation_alias="DAILY_TARGET_PCT")
     paper_trading: bool = Field(default=True, validation_alias="PAPER_TRADING")
     live_trading_enabled: bool = Field(default=False, validation_alias="LIVE_TRADING_ENABLED")
 
