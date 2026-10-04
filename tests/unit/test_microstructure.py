@@ -5,6 +5,7 @@ from features.microstructure import (
     dynamic_imbalance_threshold,
     imbalance_ratio,
     infer_aggressor,
+    advanced_aggressor_detection,
 )
 
 
@@ -40,3 +41,51 @@ def test_micro_weight_stays_bounded_and_change_limited(tmp_path):
     assert 0.10 <= first <= 0.20
     assert 0.10 <= second <= 0.20
     assert abs(second - first) <= 0.05
+
+
+def test_advanced_aggressor_detects_buyer_pressure():
+    trades = [
+        {"side": "buy", "price": 100.20, "volume": 40},
+        {"side": "buy", "price": 100.25, "volume": 40},
+        {"side": "sell", "price": 100.05, "volume": 5},
+    ]
+    result = advanced_aggressor_detection(
+        trades,
+        best_bid=100.00,
+        best_ask=100.10,
+        total_bid_volume=100,
+        total_ask_volume=100,
+    )
+    assert result["aggressor"] == "buyer"
+    assert result["signed_imbalance"] > 0.2
+    assert result["buy_pressure"] > 0.3
+
+
+def test_advanced_aggressor_detects_seller_pressure():
+    trades = [
+        {"side": "sell", "price": 99.80, "volume": 40},
+        {"side": "sell", "price": 99.75, "volume": 40},
+        {"side": "buy", "price": 99.95, "volume": 5},
+    ]
+    result = advanced_aggressor_detection(
+        trades,
+        best_bid=99.90,
+        best_ask=100.00,
+        total_bid_volume=100,
+        total_ask_volume=100,
+    )
+    assert result["aggressor"] == "seller"
+    assert result["signed_imbalance"] < -0.2
+    assert result["sell_pressure"] > 0.3
+
+
+def test_advanced_aggressor_is_neutral_without_required_market_evidence():
+    result = advanced_aggressor_detection(
+        [],
+        best_bid=100.00,
+        best_ask=100.10,
+        total_bid_volume=100,
+        total_ask_volume=100,
+    )
+    assert result["aggressor"] == "neutral"
+    assert result["signed_imbalance"] == 0.0
