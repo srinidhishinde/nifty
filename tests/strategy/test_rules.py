@@ -7,13 +7,16 @@ def test_rsi_rule_requires_volume_confirmation():
     assert any(s.rule=="rsi_oversold_buy" and s.direction=="BUY" for s in evaluate_rules(row, previous))
 
 def test_vwap_reversion_direction():
-    below=pd.Series({"close":97.0,"VWAP":100.0}); above=pd.Series({"close":103.0,"VWAP":100.0})
-    assert any(s.direction=="BUY" for s in evaluate_rules(below))
-    assert any(s.direction=="SELL" for s in evaluate_rules(above))
+    previous_below=pd.Series({"close":97.0,"VWAP":100.0,"ADX":10.0})
+    below=pd.Series({"close":98.0,"VWAP":100.0,"ADX":10.0})
+    previous_above=pd.Series({"close":103.0,"VWAP":100.0,"ADX":10.0})
+    above=pd.Series({"close":102.0,"VWAP":100.0,"ADX":10.0})
+    assert any(s.direction=="BUY" for s in evaluate_rules(below, previous_below))
+    assert any(s.direction=="SELL" for s in evaluate_rules(above, previous_above))
 
 def test_ema_cross_requires_actual_cross():
-    previous=pd.Series({"EMA20":99.0,"EMA50":100.0})
-    current=pd.Series({"close":101.0,"EMA20":101.0,"EMA50":100.0})
+    previous=pd.Series({"EMA9":99.0,"EMA21":100.0})
+    current=pd.Series({"close":101.0,"EMA9":101.0,"EMA21":100.0})
     assert any(s.rule=="ema_cross" for s in evaluate_rules(current,previous))
 
 def test_technical_signal_waits_for_warmup():
@@ -27,6 +30,6 @@ def test_risk_levels_match_pseudocode_defaults():
     frame=pd.DataFrame({"timestamp":pd.date_range("2026-10-01 09:15",periods=len(closes),freq="5min"),
                         "open":closes,"high":[p+0.5 for p in closes],"low":[p-0.5 for p in closes],
                         "close":closes,"volume":[1000.0]*len(closes)})
-    signal=generate_signal(frame,StrategyConfig(min_rules_for_signal=1, vwap_deviation_pct=100.0, min_adx=0.0))
+    signal=generate_signal(frame,StrategyConfig(min_rules_for_signal=1, min_evidence_groups=1, vwap_deviation_pct=100.0, min_adx=0.0))
     assert signal.direction=="BUY" and signal.valid
     assert signal.stop_loss<101.0<signal.target and signal.target>=round(101.0*1.02,2)
