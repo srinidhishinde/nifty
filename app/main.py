@@ -803,12 +803,12 @@ col1.metric(
 
 col2.metric(
     "Max Risk / Trade",
-    f"Rs {settings.max_loss_per_trade:,.0f}",
+    f"{settings.risk_fraction:.2%} of equity",
 )
 
 col3.metric(
     "Daily Loss Limit",
-    f"Rs {settings.max_daily_loss:,.0f}",
+    f"{settings.max_daily_loss_fraction:.2%} of equity",
 )
 
 col4.metric(
