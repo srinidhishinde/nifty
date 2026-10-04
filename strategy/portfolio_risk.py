@@ -17,7 +17,7 @@ class PortfolioRiskSnapshot:
 
 
 class PortfolioRiskEngine:
-    def __init__(self, capital: float, max_portfolio_risk_pct: float = 5.0, max_exposure_pct: float = 50.0):
+    def __init__(self, capital: float, max_portfolio_risk_pct: float = 2.0, max_exposure_pct: float = 25.0):
         if capital <= 0:
             raise ValueError("capital must be positive")
         if max_portfolio_risk_pct <= 0 or max_exposure_pct <= 0:
