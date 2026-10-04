@@ -14,8 +14,14 @@ def test_walk_forward_ensemble_is_temporal():
     assert 0<=result.accuracy_pct<=100
     assert 0<=result.coverage_pct<=100
     assert {"Prediction","Probability Up","Confidence","Abstain","Actual","Correct"}<=set(result.predictions.columns)
+    assert ((result.predictions["Probability Up"] >= 0) & (result.predictions["Probability Up"] <= 100)).all()
 
 def test_latest_prediction_returns_safe_state_with_short_history():
     result=predict_latest(make_data(40),min_train=60)
     assert result.direction=="UNAVAILABLE"
     assert result.abstain
+
+def test_latest_prediction_reports_calibrated_confidence():
+    result=predict_latest(make_data(),min_train=60)
+    assert 0 <= result.probability_up <= 1
+    assert 0 <= result.confidence <= 100
