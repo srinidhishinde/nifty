@@ -56,6 +56,8 @@ def resolve_session(instrument: str, timestamp: datetime, *, mcx_close: time = t
     current = ts.time()
     if current < policy.exchange_open or current > policy.exchange_close:
         return SessionContext(policy, ts, SessionState.CLOSED)
-    if current >= policy.strategy_exit_cutoff:
+    # Stop opening new positions at the configured entry cutoff, while still
+    # allowing existing positions to be managed until the exchange closes.
+    if current >= policy.entry_cutoff:
         return SessionContext(policy, ts, SessionState.EXIT_ONLY)
     return SessionContext(policy, ts, SessionState.ENTRY)
