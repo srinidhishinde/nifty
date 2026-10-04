@@ -17,3 +17,4 @@ pyyaml
 pydantic>=2.0
 pydantic-settings
 kotakneoapi>=3.0.7
+openai
