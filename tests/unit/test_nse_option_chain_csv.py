@@ -15,7 +15,12 @@ def test_nse_export_parser_reads_real_ltp_bid_ask_and_oi():
     assert ce.ltp == 1446.30
     assert ce.bid == 1444.25
     assert ce.ask == 1461.15
-    assert ce.open_interest == 60\n    assert ce.oi_change == 30\n    assert ce.volume == 56
-    assert pe.open_interest == 87882\n    assert pe.oi_change == 35593\n    assert pe.volume == 768948\n    assert pe.ltp == 1.80
+    assert ce.open_interest == 60
+    assert ce.oi_change == 30
+    assert ce.volume == 56
+    assert pe.open_interest == 87882
+    assert pe.oi_change == 35593
+    assert pe.volume == 768948
+    assert pe.ltp == 1.80
     assert pe.bid == 1.75
     assert pe.ask == 1.80
