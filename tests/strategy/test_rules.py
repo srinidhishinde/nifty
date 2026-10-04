@@ -36,7 +36,7 @@ def test_precision_mode_rejects_weak_signal(monkeypatch):
     monkeypatch.setattr(
         "strategy.rules.evaluate_rules",
         lambda row, previous, config: [
-            RuleSignal("ema_cross", "BUY", "test", 1.3),
+            RuleSignal("ema_cross", "BUY", "test", 1.2),
             RuleSignal("macd_bullish", "BUY", "test", 1.2),
         ],
     )
