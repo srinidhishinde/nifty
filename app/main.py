@@ -1092,11 +1092,30 @@ display_df = chain_df[visible_columns].copy()
 # Trade-plan columns: every visible option gets a concrete plan when an actual
 # option LTP exists; otherwise premium fields remain unavailable rather than
 # being fabricated from LTP-change percentages.
-plan = chain_signal_rows[[
-    "Side", "Strike", "Signal", "Confidence", "Entry Price", "Stop Loss", "Take Profit", "Max Gain %", "Max Loss %"
-]].copy()
-plan["Max Gain %"] = pd.to_numeric(plan["Max Gain %"], errors="coerce")
-plan["Max Loss %"] = pd.to_numeric(plan["Max Loss %"], errors="coerce")
+# Normalize the option trade-plan schema before rendering.  Older signal
+# frames used Max Gain % / Max Loss %, while the current engine exposes
+# Target Gain % / Stop Risk %.  Missing premium-derived values must remain
+# unavailable rather than being fabricated.
+plan = chain_signal_rows.copy()
+for column in [
+    "Side", "Strike", "Signal", "Confidence",
+    "Entry Price", "Stop Loss", "Take Profit",
+]:
+    if column not in plan.columns:
+        plan[column] = np.nan
+
+if "Target Gain %" not in plan.columns:
+    plan["Target Gain %"] = np.nan
+if "Stop Risk %" not in plan.columns:
+    plan["Stop Risk %"] = np.nan
+
+plan["Target Gain %"] = pd.to_numeric(plan["Target Gain %"], errors="coerce")
+plan["Stop Risk %"] = pd.to_numeric(plan["Stop Risk %"], errors="coerce")
+
+# Backward-compatible display aliases for any downstream UI/test code that
+# still expects the previous names.
+plan["Max Gain %"] = plan["Target Gain %"]
+plan["Max Loss %"] = plan["Stop Risk %"]
 display_df = display_df.merge(plan, on=["Side", "Strike"], how="left") if "Side" in display_df.columns else display_df
 ce_plan = plan[plan["Side"]=="CE"].rename(columns={
     "Signal":"CE Signal","Confidence":"CE Confidence","Entry Price":"CE Entry",
