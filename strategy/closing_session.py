@@ -42,6 +42,10 @@ def evaluate_closing_session(
         raise ValueError("Closing-session candles require timestamp and close")
     frame = candles.copy()
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
+    if getattr(frame["timestamp"].dt, "tz", None) is not None:
+        frame["timestamp"] = frame["timestamp"].dt.tz_convert("Asia/Kolkata")
+    else:
+        frame["timestamp"] = frame["timestamp"].dt.tz_localize("Asia/Kolkata")
     frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
     frame = frame.dropna(subset=["timestamp", "close"]).sort_values("timestamp")
     window = frame[frame["timestamp"].map(lambda x: in_window(x, NIFTY_CLOSING_RESEARCH))]
