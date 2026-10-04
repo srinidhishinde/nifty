@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from backtest.capital_simulator import simulate_capital
+from backtest.capital_simulator import simulate_capital, rolling_capital_simulation
 
 
 def sample_data(days=110):
@@ -33,3 +33,11 @@ def test_capital_simulator_returns_100_day_curve():
     assert len(result.equity_curve) == 100
     assert result.ending_capital >= 0
     assert result.starting_capital == 100_000
+
+
+def test_rolling_simulation_reports_multiple_windows():
+    result = rolling_capital_simulation(sample_data(220), window_days=100, step_days=20)
+    assert result.total_windows >= 2
+    assert len(result.windows) == result.total_windows
+    assert 0 <= result.profitable_window_pct <= 100
+    assert result.worst_ending_capital <= result.best_ending_capital
