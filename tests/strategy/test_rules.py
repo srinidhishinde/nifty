@@ -22,7 +22,7 @@ def test_technical_signal_waits_for_warmup():
     assert signal.direction=="WAIT" and not signal.valid
 
 def test_risk_levels_match_pseudocode_defaults():
-    closes=[120.0-i for i in range(60)]+[101.0]
+    closes=[60.0+i*0.5 for i in range(60)]+[101.0]
     frame=pd.DataFrame({"timestamp":pd.date_range("2026-10-01 09:15",periods=len(closes),freq="5min"),
                         "open":closes,"high":[p+0.5 for p in closes],"low":[p-0.5 for p in closes],
                         "close":closes,"volume":[1000.0]*len(closes)})
