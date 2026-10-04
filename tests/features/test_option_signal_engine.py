@@ -31,4 +31,5 @@ def test_option_signal_has_trade_plan_percentages():
 def test_option_signal_does_not_fabricate_premium_levels():
     signal, rows = generate_option_chain_signal([contract("CE",0)],25000)
     assert pd.isna(rows.iloc[0]["Entry Price"])
-    assert pd.isna(rows.iloc[0]["Take Profit"])\n    assert signal.underlying_take_profit is None\n
+    assert pd.isna(rows.iloc[0]["Take Profit"])
+    assert signal.underlying_take_profit is None
