@@ -66,3 +66,26 @@ class WhatsAppAlertService:
                     "status_code": result.status_code, "message": result.message,
                 }) + "\n")
         return results
+
+
+def format_signal_message(signal, snapshot=None, instrument="NIFTY", timeframe="5m") -> str:
+    direction = str(getattr(signal, "direction", "WAIT")).upper()
+    confidence = float(getattr(signal, "confidence", 0.0) or 0.0)
+    lines = [
+        f"AI Derivatives Signal ({instrument}, {timeframe})",
+        f"Decision: {direction}",
+        f"Confidence: {confidence:.1f}%",
+    ]
+    if snapshot is not None:
+        pcr = getattr(snapshot, "pcr_oi", None)
+        if pcr is not None:
+            lines.append(f"PCR(OI): {float(pcr):.2f}")
+        option_count = getattr(snapshot, "option_count", None)
+        if option_count is not None:
+            lines.append(f"Options: {int(option_count)}")
+    return "\n".join(lines)
+
+
+def build_signal_message(snapshot, instrument="NIFTY", timeframe="5m") -> str:
+    signal = getattr(snapshot, "signal", None)
+    return format_signal_message(signal, snapshot, instrument, timeframe)
