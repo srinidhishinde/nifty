@@ -24,3 +24,5 @@ def test_nse_export_parser_reads_real_ltp_bid_ask_and_oi():
     assert pe.ltp == 1.80
     assert pe.bid == 1.75
     assert pe.ask == 1.80
+
+# Regression coverage for NSE export field positions.
