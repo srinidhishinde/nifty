@@ -67,6 +67,100 @@ def infer_aggressor(
     return "neutral"
 
 
+def _trade_field(trade: object, name: str, default: object = None) -> object:
+    if isinstance(trade, dict):
+        return trade.get(name, default)
+    return getattr(trade, name, default)
+
+
+def advanced_aggressor_detection(
+    trades_stream: Iterable[object],
+    *,
+    best_bid: float,
+    best_ask: float,
+    total_bid_volume: float,
+    total_ask_volume: float,
+) -> dict:
+    """Classify trade aggressor using signed flow, resting liquidity and price.
+
+    This is deliberately a confirmation feature: it returns neutral when the
+    required trade/order-book evidence is unavailable rather than inferring it
+    from OHLCV data.
+    """
+    trades = list(trades_stream)[-50:]
+    valid = []
+    for trade in trades:
+        side = str(_trade_field(trade, "side", "") or "").lower()
+        price = _finite(_trade_field(trade, "price", 0.0))
+        volume = max(0.0, _finite(_trade_field(trade, "volume", 0.0)))
+        if side in {"buy", "buyer", "b", "sell", "seller", "s"} and volume > 0:
+            valid.append((side, price, volume))
+
+    bid = max(0.0, _finite(best_bid))
+    ask = max(0.0, _finite(best_ask))
+    spread = max(0.0, ask - bid)
+    mid = (bid + ask) / 2.0
+
+    buy_volume = sum(v for side, _, v in valid if side in {"buy", "buyer", "b"})
+    sell_volume = sum(v for side, _, v in valid if side in {"sell", "seller", "s"})
+    total_traded = buy_volume + sell_volume
+
+    if not valid or total_traded <= 0 or spread <= 0:
+        return {
+            "aggressor": "neutral",
+            "signed_imbalance": 0.0,
+            "buy_pressure": 0.0,
+            "sell_pressure": 0.0,
+            "tick_volatility": 0.0,
+            "tolerance": 0.0,
+            "buy_volume": round(buy_volume, 6),
+            "sell_volume": round(sell_volume, 6),
+        }
+
+    signed_imbalance = (buy_volume - sell_volume) / (total_traded + 1e-6)
+    bid_liquidity = max(0.0, _finite(total_bid_volume))
+    ask_liquidity = max(0.0, _finite(total_ask_volume))
+    buy_pressure = buy_volume / (ask_liquidity + 1e-6)
+    sell_pressure = sell_volume / (bid_liquidity + 1e-6)
+
+    prices = [price for _, price, _ in valid]
+    tick_volatility = 0.0
+    if len(prices) >= 2:
+        # Rolling standard deviations followed by an EMA (span 10), using
+        # only the most recent 50 trade prices.
+        rolling_stds = []
+        for i in range(1, len(prices)):
+            window = prices[max(0, i - 49): i + 1]
+            mean = sum(window) / len(window)
+            variance = sum((x - mean) ** 2 for x in window) / max(1, len(window) - 1)
+            rolling_stds.append(math.sqrt(max(0.0, variance)))
+        alpha = 2.0 / (10.0 + 1.0)
+        tick_volatility = rolling_stds[0]
+        for value in rolling_stds[1:]:
+            tick_volatility = alpha * value + (1.0 - alpha) * tick_volatility
+
+    tolerance = min(max(spread / 2.0, tick_volatility), 2.0 * spread)
+    last_price = valid[-1][1]
+
+    if signed_imbalance > 0.2 and buy_pressure > 0.3 and last_price > mid + tolerance:
+        aggressor = "buyer"
+    elif signed_imbalance < -0.2 and sell_pressure > 0.3 and last_price < mid - tolerance:
+        aggressor = "seller"
+    else:
+        aggressor = "neutral"
+
+    return {
+        "aggressor": aggressor,
+        "signed_imbalance": round(clamp(signed_imbalance, -1.0, 1.0), 6),
+        "buy_pressure": round(max(0.0, buy_pressure), 6),
+        "sell_pressure": round(max(0.0, sell_pressure), 6),
+        "tick_volatility": round(max(0.0, tick_volatility), 6),
+        "tolerance": round(max(0.0, tolerance), 6),
+        "buy_volume": round(buy_volume, 6),
+        "sell_volume": round(sell_volume, 6),
+    }
+
+
 class AdaptiveMicroWeight:
     def __init__(self, path: str | Path = "logs/microstructure_weight.json", default: float = 0.15):
         self.path = Path(path)
