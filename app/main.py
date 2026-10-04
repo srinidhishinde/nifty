@@ -1059,6 +1059,31 @@ else:
         "Yahoo cannot be used as a silent live fallback."
     )
 
+with st.expander("Signal Journal — weekly review", expanded=False):
+    journal_path = "logs/signal_journal.jsonl"
+    if __import__("pathlib").Path(journal_path).exists():
+        try:
+            journal_rows = [
+                __import__("json").loads(line)
+                for line in __import__("pathlib").Path(journal_path).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            journal_df = pd.DataFrame(journal_rows)
+            st.caption(f"Persistent decision journal: {len(journal_df):,} records")
+            if not journal_df.empty:
+                st.dataframe(journal_df.tail(200), width="stretch", hide_index=True)
+                st.download_button(
+                    "Download signal journal",
+                    data=__import__("pathlib").Path(journal_path).read_bytes(),
+                    file_name="signal_journal.jsonl",
+                    mime="application/json",
+                    width="stretch",
+                )
+        except Exception as exc:
+            st.warning(f"Signal journal could not be read: {exc}")
+    else:
+        st.info("No signal journal records yet. The first evaluated Kotak Neo decision will create it.")
+
 with st.expander("Trading system health & safety gates", expanded=False):
     health = pd.DataFrame([
         ["Data source", "KOTAK NEO", "Primary production/paper decision source"],
