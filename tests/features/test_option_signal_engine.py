@@ -4,9 +4,22 @@ from features.option_chain import OptionContract
 
 def contract(side="CE", ltp=100.0):
     return OptionContract(
-        option_type=side,strike=25000,ltp=ltp,ltp_change_pct=2.0,
-        implied_volatility=15.0,open_interest=100000,oi_change=5000,
-        volume=20000,delta=0.5,theta=-5.0,vega=8.0,built_up="Long Buildup"
+        symbol=f"NIFTY25000{side}",
+        expiry="2026-10-29",
+        option_type=side,
+        strike=25000,
+        ltp=ltp,
+        bid=99.5 if ltp > 0 else 0.0,
+        ask=100.5 if ltp > 0 else 0.0,
+        ltp_change_pct=2.0,
+        implied_volatility=15.0,
+        open_interest=100000,
+        oi_change=5000,
+        volume=20000,
+        delta=0.5,
+        theta=-5.0,
+        vega=8.0,
+        built_up="Long Buildup",
     )
 
 def test_option_signal_has_trade_plan_percentages():
