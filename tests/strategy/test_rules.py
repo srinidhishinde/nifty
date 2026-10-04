@@ -27,7 +27,7 @@ def test_technical_signal_waits_for_warmup():
 def test_risk_levels_match_pseudocode_defaults():
     closes=[60.0+i*0.5 for i in range(60)]+[101.0]
     frame=pd.DataFrame({"timestamp":pd.date_range("2026-10-01 09:15",periods=len(closes),freq="5min"),"open":closes,"high":[p+0.5 for p in closes],"low":[p-0.5 for p in closes],"close":closes,"volume":[1000.0]*60+[5000.0]})
-    signal=generate_signal(frame,StrategyConfig(min_rules_for_signal=1, min_evidence_groups=1, vwap_deviation_pct=100.0, min_adx=0.0, min_confidence=0.0))
+    signal=generate_signal(frame,StrategyConfig(min_rules_for_signal=1, min_evidence_groups=1, vwap_deviation_pct=100.0, min_adx=0.0, min_confidence=0.0, precision_mode=False))
     assert signal.direction=="BUY" and signal.valid
     assert signal.stop_loss<101.0<signal.target and signal.target>=round(101.0*1.02,2)
 
