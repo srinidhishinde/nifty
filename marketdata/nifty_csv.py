@@ -4,31 +4,36 @@ import re
 import pandas as pd
 
 ALIASES = {
-    "timestamp": ["timestamp", "date", "date "],
+    "timestamp": ["timestamp", "datetime", "date", "time", "timestamp ", "datetime "],
     "open": ["open", "open "],
     "high": ["high", "high "],
     "low": ["low", "low "],
-    "close": ["close", "close "],
-    "volume": ["volume", "shares traded", "shares traded "],
+    "close": ["close", "close ", "closing price"],
+    "volume": ["volume", "volume ", "shares traded", "shares traded ", "total volume"],
 }
 
+
+def _key(value: object) -> str:
+    return re.sub(r"\\s+", " ", str(value).strip().lower())
+
+
 def normalize_nifty_csv(df: pd.DataFrame) -> pd.DataFrame:
-    lookup = {re.sub(r"\s+", " ", str(c).strip().lower()): c for c in df.columns}
-    resolved = {}
+    """Normalize common broker/exchange OHLCV headers into the canonical schema."""
+    lookup = {_key(column): column for column in df.columns}
+    resolved: dict[str, object] = {}
     for target, aliases in ALIASES.items():
         for alias in aliases:
-            key = re.sub(r"\s+", " ", alias.strip().lower())
-            if key in lookup:
-                resolved[target] = lookup[key]
+            if _key(alias) in lookup:
+                resolved[target] = lookup[_key(alias)]
                 break
-    required = {"timestamp", "open", "high", "low", "close"}
+
+    required = {"timestamp", "open", "high", "low", "close", "volume"}
     missing = required - set(resolved)
     if missing:
-        raise ValueError(f"Missing NIFTY OHLC fields: {sorted(missing)}")
+        raise ValueError(f"Missing NIFTY OHLCV fields: {sorted(missing)}")
+
     out = pd.DataFrame({target: df[source] for target, source in resolved.items()})
-    if "volume" not in out:
-        out["volume"] = 0.0
     out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce", dayfirst=True)
-    for c in ("open","high","low","close","volume"):
-        out[c] = pd.to_numeric(out[c], errors="coerce")
-    return out.dropna(subset=["timestamp","open","high","low","close"]).sort_values("timestamp").reset_index(drop=True)
+    for column in ("open", "high", "low", "close", "volume"):
+        out[column] = pd.to_numeric(out[column], errors="coerce")
+    return out.dropna(subset=["timestamp", "open", "high", "low", "close", "volume"]).sort_values("timestamp").reset_index(drop=True)
