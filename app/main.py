@@ -1729,9 +1729,20 @@ st.caption(
     "used to judge strategy accuracy."
 )
 
+source_mode = st.radio(
+    "Backtest data source",
+    ["Real CSV (recommended)", "Synthetic demo (UI smoke test only)"],
+    horizontal=True,
+    help=(
+        "Real CSV is the only mode used for evidence-grade backtesting. "
+        "Synthetic data is isolated to explicit UI/engine smoke testing."
+    ),
+)
+
 uploaded = st.file_uploader(
     "Upload historical OHLCV CSV",
     type=["csv"],
+    disabled=source_mode != "Real CSV (recommended)",
     help=(
         "Required columns: timestamp, open, high, low, close, volume. "
         "For trustworthy results, include warm-up candles before the period you want to score."
@@ -1741,38 +1752,56 @@ uploaded = st.file_uploader(
 run_demo = st.button(
     "Run Synthetic Demo",
     use_container_width=True,
-    help="UI/engine smoke test only. Do not treat synthetic results as evidence of profitability.",
+    disabled=source_mode != "Synthetic demo (UI smoke test only)",
+    help="UI/engine smoke test only. Never use synthetic results to judge strategy accuracy or profitability.",
 )
 
 bt_data = None
 bt_source = None
 
-if uploaded is not None:
-    try:
-        bt_data = pd.read_csv(uploaded)
-        bt_source = f"Uploaded historical CSV: {uploaded.name}"
-    except Exception as exc:
-        st.error(f"Could not read backtest CSV: {exc}")
-elif run_demo:
-    rng = np.random.default_rng(int(seed))
-    bt_ts = pd.date_range(
-        end=pd.Timestamp.now().normalize() - pd.Timedelta(days=1),
-        periods=800,
-        freq="5min",
-    )
-    volatility = max(abs(float(spot)) * 0.0008, 1.0)
-    base = float(spot) + np.cumsum(
-        rng.normal(0, volatility, len(bt_ts))
-    )
-    bt_data = pd.DataFrame({
-        "timestamp": bt_ts,
-        "open": base,
-        "high": base + rng.uniform(0, volatility * 2, len(bt_ts)),
-        "low": base - rng.uniform(0, volatility * 2, len(bt_ts)),
-        "close": base + rng.normal(0, volatility * 0.6, len(bt_ts)),
-        "volume": rng.integers(10000, 100000, len(bt_ts)),
-    })
-    bt_source = "Synthetic demo data"
+if source_mode == "Real CSV (recommended)":
+    if uploaded is not None:
+        try:
+            bt_data = pd.read_csv(uploaded)
+            bt_source = f"REAL UPLOAD — {uploaded.name}"
+            st.success(
+                f"Real historical CSV loaded: **{uploaded.name}**. "
+                "Synthetic data is disabled for this run."
+            )
+        except Exception as exc:
+            st.error(f"Could not read backtest CSV: {exc}")
+    else:
+        st.info(
+            "Waiting for a real historical OHLCV CSV. "
+            "No synthetic data will be substituted automatically."
+        )
+else:
+    if run_demo:
+        rng = np.random.default_rng(int(seed))
+        bt_ts = pd.date_range(
+            end=pd.Timestamp.now().normalize() - pd.Timedelta(days=1),
+            periods=800,
+            freq="5min",
+        )
+        volatility = max(abs(float(spot)) * 0.0008, 1.0)
+        base = float(spot) + np.cumsum(
+            rng.normal(0, volatility, len(bt_ts))
+        )
+        bt_data = pd.DataFrame({
+            "timestamp": bt_ts,
+            "open": base,
+            "high": base + rng.uniform(0, volatility * 2, len(bt_ts)),
+            "low": base - rng.uniform(0, volatility * 2, len(bt_ts)),
+            "close": base + rng.normal(0, volatility * 0.6, len(bt_ts)),
+            "volume": rng.integers(10000, 100000, len(bt_ts)),
+        })
+        bt_source = "SYNTHETIC DEMO — smoke test only"
+        st.warning(
+            "Synthetic demo is active. Results are for UI/engine validation only "
+            "and are excluded from evidence-grade performance conclusions."
+        )
+    else:
+        st.info("Synthetic demo is not running. Select it and press Run Synthetic Demo only for smoke testing.")
 
 if bt_data is not None:
     required_bt = {
