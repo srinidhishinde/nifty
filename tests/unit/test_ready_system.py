@@ -88,3 +88,20 @@ def test_signal_research_conservative_exit_resolution():
     price, reason, _ = _resolve_outcome(frame, 1, "BUY", 98.0, 102.0)
     assert price == 98.0
     assert reason == "stop_loss"
+
+
+def test_spot_signal_research_rejects_overlapping_signals(monkeypatch):
+    from backtest.signal_research import run_signal_research
+    from strategy.rules import RuleSignal, StrategyConfig
+    monkeypatch.setattr(
+        "backtest.signal_research.evaluate_rules",
+        lambda row, previous, config: [RuleSignal("ema_cross", "BUY", "test", 1.0), RuleSignal("adx_trend_confirmation", "BUY", "test", 1.0)],
+    )
+    ts = pd.date_range("2026-01-05 09:15", periods=8, freq="5min", tz="Asia/Kolkata")
+    data = pd.DataFrame({
+        "timestamp": ts,
+        "open": [100.0] * len(ts), "high": [100.5] * len(ts),
+        "low": [99.5] * len(ts), "close": [100.0] * len(ts), "volume": [1000.0] * len(ts),
+    })
+    result = run_signal_research(data, config=StrategyConfig(min_history_bars=1))
+    assert result.validation["rejected_overlap"] > 0
