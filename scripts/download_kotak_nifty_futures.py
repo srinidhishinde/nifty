@@ -133,6 +133,7 @@ def fetch_contract(client: NeoAPI, contract: dict[str, str], start: date, end: d
         return pd.DataFrame(columns=REQUIRED + ["contract_symbol", "expiry", "neo_symbol", "oi"])
 
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True).dt.tz_convert(IST)
+    frame = frame[frame["timestamp"].notna()]
     for col in ["open", "high", "low", "close", "volume", "oi"]:
         frame[col] = pd.to_numeric(frame[col], errors="coerce")
 
@@ -267,6 +268,11 @@ def main() -> None:
         clean = combined[REQUIRED].drop_duplicates("timestamp").sort_values("timestamp")
         clean.to_csv(output / "nifty_futures_5m_backtest.csv", index=False)
         manifest["quality"] = quality_report(clean, start, end)
+        manifest["quality"]["raw_rows"] = int(len(combined))
+        manifest["quality"]["raw_unique_contracts"] = int(combined["neo_symbol"].nunique())
+        manifest["quality"]["overlapping_timestamps_across_contracts"] = int(
+            combined.groupby("timestamp")["neo_symbol"].nunique().gt(1).sum()
+        )
     else:
         manifest["quality"] = {"rows": 0, "complete": False}
 
