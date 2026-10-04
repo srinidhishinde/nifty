@@ -793,6 +793,36 @@ else:
 if prediction_source:
     st.caption(f"Prediction source: {prediction_source} · historical validation only")
 
+    # Historical prediction is only useful with an out-of-sample score. Reuse
+    # the exact canonical signal engine so the displayed win rate is not based
+    # on the synthetic research signal.
+    try:
+        prediction_research = run_signal_research(
+            prediction_frame,
+            StrategyConfig(require_option_confirmation=False),
+        )
+        pv = prediction_research.validation
+        st.markdown("#### Historical prediction performance")
+        pm = st.columns(6)
+        pm[0].metric("Win %", f"{pv.get('win_rate_pct', 0.0):.1f}%")
+        pm[1].metric("Signals", f"{pv.get('signals', 0):,}")
+        pm[2].metric("Wins", f"{pv.get('wins', 0):,}")
+        pm[3].metric("Losses", f"{pv.get('losses', 0):,}")
+        pm[4].metric("Average R", f"{pv.get('average_R', 0.0):.3f}")
+        pm[5].metric("Total R", f"{pv.get('total_R', 0.0):.2f}")
+        st.caption(
+            "Win % is historical spot/index signal research over the loaded Yahoo "
+            "window. It is NOT an options/futures profitability percentage and "
+            "does not guarantee future performance."
+        )
+        if int(pv.get("signals", 0)) == 0:
+            st.warning(
+                "No closed historical signals survived the current precision gates, "
+                "so a meaningful win percentage cannot be estimated for this window."
+            )
+    except Exception as exc:
+        st.warning(f"Historical performance calculation unavailable: {exc}")
+
 # ============================================================
 # Research spot
 # ============================================================
