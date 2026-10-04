@@ -128,7 +128,11 @@ class CapitalAwareRuleBacktestEngine:
         for i in range(1, len(frame)):
             row, prev = frame.iloc[i], frame.iloc[i-1]
             ts = row.timestamp
-            if self.instrument == "NIFTY" and not (ts.timetz().replace(tzinfo=None) >= pd.Timestamp("09:15").time() and ts.timetz().replace(tzinfo=None) <= pd.Timestamp("15:40").time()):
+            session_start = pd.Timestamp("09:15").time()
+            session_end = pd.Timestamp("15:40").time()
+            if self.instrument == "NIFTY" and ts.timetz().replace(tzinfo=None) < session_start:
+                continue
+            if self.instrument == "NIFTY" and ts.timetz().replace(tzinfo=None) > session_end:
                 continue
             day = ts.date()
             daily_pnl.setdefault(day, 0.0); daily_trades.setdefault(day, 0)
@@ -136,7 +140,7 @@ class CapitalAwareRuleBacktestEngine:
             if position is not None:
                 next_day = i + 1 >= len(frame) or frame.iloc[i+1].timestamp.date() != day
                 exit_price, reason = self._resolve_exit(row, position)
-                if exit_price is None and next_day:
+                if exit_price is None and (next_day or (self.instrument == "NIFTY" and ts.timetz().replace(tzinfo=None) >= session_end)):
                     exit_price, reason = float(row.close), "market_close"
                 if exit_price is not None:
                     direction = position["direction"]
@@ -158,6 +162,10 @@ class CapitalAwareRuleBacktestEngine:
             if not signals or (buys and sells):
                 continue
             direction = "BUY" if buys else "SELL"
+            directional_weight = sum(s.weight for s in signals if s.direction == direction)
+            confidence = min(95.0, 50.0 + 8.0 * directional_weight)
+            if len(signals) < self.config.min_rules_for_signal or confidence < self.config.min_confidence:
+                continue
             if i + 1 >= len(frame) or frame.iloc[i+1].timestamp.date() != day:
                 continue
             entry = self._fill(float(frame.iloc[i+1].open), direction, True)
