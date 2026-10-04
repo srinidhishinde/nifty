@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 # Current option strike intervals used by the dashboard's research chain.
 # Live broker chains must use the broker/exchange-provided strike values rather
 # than this table. MCX updates these parameters via contract specifications
@@ -37,3 +39,17 @@ def round_to_strike(value: float, step: float) -> float:
     if price < 0 or increment <= 0:
         raise ValueError("price must be non-negative and step must be positive")
     return float(int(price / increment + 0.5) * increment)
+
+
+@dataclass(frozen=True)
+class FuturesContractSpec:
+    instrument: str
+    lot_size: int
+    point_value: float
+    tick_size: float
+    margin_per_lot: float
+
+
+def validate_futures_contract_spec(spec: FuturesContractSpec) -> None:
+    if not spec.instrument or spec.lot_size <= 0 or spec.point_value <= 0 or spec.tick_size <= 0 or spec.margin_per_lot <= 0:
+        raise ValueError("Futures contract specification requires positive instrument, lot_size, point_value, tick_size and margin_per_lot")
