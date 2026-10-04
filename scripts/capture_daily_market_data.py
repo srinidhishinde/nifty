@@ -12,6 +12,7 @@ from marketdata.providers.kotak_neo import KotakNeoProvider
 
 
 def capture_instrument(provider: KotakNeoProvider, store: DailyMarketStore, instrument: str, session_date: date) -> None:
+    metadata = {"source": "KOTAK_NEO", "instrument": instrument, "timeframe": "5m", "status": "CAPTURED"}
     if instrument == "NIFTY":
         candles = provider.get_historical_candles(
             symbol="Nifty 50",
@@ -21,10 +22,22 @@ def capture_instrument(provider: KotakNeoProvider, store: DailyMarketStore, inst
             end=session_date + timedelta(days=1),
         )
     else:
-        raise RuntimeError(
-            f"MCX candle mapping for {instrument} requires an explicit Neo symbol. "
-            "Do not guess an MCX token; configure the instrument map first."
+        contract = provider.resolve_mcx_futures(instrument)
+        candles = provider.get_historical_candles(
+            symbol=contract["trading_symbol"] or contract["symbol"],
+            exchange="MCX",
+            timeframe="5m",
+            start=session_date,
+            end=session_date + timedelta(days=1),
+            neosymbol=contract["neosymbol"],
         )
+        metadata.update({
+            "resolved_trading_symbol": contract["trading_symbol"],
+            "neosymbol": contract["neosymbol"],
+            "instrument_token": contract["instrument_token"],
+            "expiry": contract["expiry"],
+            "lot_size": contract["lot_size"],
+        })
 
     rows = [{
         "timestamp": c.timestamp, "open": c.open, "high": c.high,
@@ -35,13 +48,8 @@ def capture_instrument(provider: KotakNeoProvider, store: DailyMarketStore, inst
     if frame.empty:
         raise RuntimeError(f"Kotak Neo returned no {instrument} candles for {session_date}.")
     store.save_candles(instrument, frame, session_date)
-    store.save_metadata(instrument, session_date, {
-        "source": "KOTAK_NEO",
-        "instrument": instrument,
-        "timeframe": "5m",
-        "rows": len(frame),
-        "status": "CAPTURED",
-    })
+    metadata["rows"] = len(frame)
+    store.save_metadata(instrument, session_date, metadata)
 
 
 def main() -> int:
@@ -62,7 +70,8 @@ def main() -> int:
         capture_instrument(provider, store, "NIFTY", session_date)
 
     if settings.capture_mcx_enabled:
-        print("MCX capture is enabled but requires explicit configured Neo symbols; no synthetic MCX data will be created.")
+        for symbol in [s.strip().upper() for s in settings.mcx_capture_symbols.split(",") if s.strip()]:
+            capture_instrument(provider, store, symbol, session_date)
 
     return 0
 
