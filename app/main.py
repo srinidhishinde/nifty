@@ -112,9 +112,23 @@ def build_research_signal(
         75.0,
     )
 
+    research_base = {
+        "NIFTY": 25040.0,
+        "BANKNIFTY": 58000.0,
+        "CRUDEOIL": 6500.0,
+        "NATURALGAS": 300.0,
+        "COPPER": 950.0,
+        "SILVER": 95000.0,
+        "GOLD": 125000.0,
+    }.get(instrument.upper(), 25040.0)
+    research_strike = round_to_strike(
+        research_base,
+        get_strike_step(instrument),
+    )
+
     ce = OptionAnalysis(
         option_type="CE",
-        strike=25000.0,
+        strike=research_strike,
         ltp=100.0,
         volume=10000.0,
         open_interest=20000.0,
@@ -137,7 +151,7 @@ def build_research_signal(
 
     pe = OptionAnalysis(
         option_type="PE",
-        strike=25000.0,
+        strike=research_strike,
         ltp=100.0,
         volume=10000.0,
         open_interest=20000.0,
