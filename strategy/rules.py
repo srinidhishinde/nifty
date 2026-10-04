@@ -2,9 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import pandas as pd
 from features.technical.indicators import add_indicators
-
 RULE_NAMES=("rsi_oversold_buy","rsi_overbought_sell","macd_bullish","macd_bearish","bollinger_breakout","bollinger_breakdown","ema_cross","vwap_reversion","order_book_imbalance","sentiment_negative","adx_trend_confirmation","stochastic_reversal","candlestick_confirmation","option_flow_confirmation")
-
 @dataclass(frozen=True)
 class RuleSignal:
     rule:str; direction:str; reason:str; weight:float=1.0
@@ -14,7 +12,6 @@ class StrategySignal:
 @dataclass(frozen=True)
 class StrategyConfig:
     rsi_oversold:float=30.0; rsi_overbought:float=70.0; vwap_deviation_pct:float=2.0; bid_ask_ratio_max:float=0.5; spread_widening_factor:float=1.25; sentiment_negative_threshold:float=-0.5; stop_loss_pct:float=0.005; min_target_pct:float=0.02; target_atr_multiple:float=2.5; atr_stop_multiple:float=1.5; min_confidence:float=62.0; min_rules_for_signal:int=2; min_evidence_groups:int=2; min_adx:float=18.0; max_atr_pct:float=0.04; min_history_bars:int=50; min_reward_risk:float=1.8; min_volume_ratio:float=1.0; breakout_volume_ratio:float=1.2; min_signal_separation:float=0.10; require_option_confirmation:bool=True
-
 def _v(row,names,default=None):
     if row is None:return default
     for n in names:
@@ -22,8 +19,7 @@ def _v(row,names,default=None):
             try:return float(row[n])
             except (TypeError,ValueError):pass
     return default
-
-def _option_flow_rules(row:pd.Series)->list[RuleSignal]:
+def _option_flow_rules(row):
     pcr=_v(row,("PCR_OI","pcr_oi","PCR")); pce=_v(row,("PCE","pce")); delta=_v(row,("NET_DELTA","net_delta","DELTA_EXPOSURE")); gamma=_v(row,("GAMMA_EXPOSURE","gamma_exposure","NET_GAMMA"))
     if pcr is None or pce is None:return []
     if pcr>1.05 and pce>1.05:
@@ -37,7 +33,6 @@ def _option_flow_rules(row:pd.Series)->list[RuleSignal]:
         if gamma is not None and gamma<0:extra.append("negative gamma exposure")
         return [RuleSignal("option_flow_confirmation","SELL",f"PCR/PCE bearish confirmation{(' with '+', '.join(extra)) if extra else ''}",1.35)]
     return []
-
 def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyConfig|None=None)->list[RuleSignal]:
     c=config or StrategyConfig(); close=_v(row,("close",))
     if close is None or close<=0:return []
@@ -71,14 +66,13 @@ def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyCon
         elif rising and pdim<=pdip and dim>dip and fast is not None and slow is not None and fast<slow:out.append(RuleSignal("adx_trend_confirmation","SELL","Rising ADX with bearish DI crossover and EMA alignment",1.0))
     k,dv=_v(row,("STOCH_K",)),_v(row,("STOCH_D",)); pk,pd=_v(previous,("STOCH_K",)),_v(previous,("STOCH_D",))
     if None not in (k,dv,pk,pd):
-        if pk<=pd and k>dv and k<20:out.append(RuleSignal("stochastic_reversal","BUY","Stochastic bullish crossover from oversold",0.9)
+        if pk<=pd and k>dv and k<20:out.append(RuleSignal("stochastic_reversal","BUY","Stochastic bullish crossover from oversold",0.9))
         elif pk>=pd and k<dv and k>80:out.append(RuleSignal("stochastic_reversal","SELL","Stochastic bearish crossover from overbought",0.9))
     cs=_v(row,("candlestick_score",),0)
     if cs>=2 and volume_ratio>=c.min_volume_ratio:out.append(RuleSignal("candlestick_confirmation","BUY",f"Bullish candlestick score {cs:.0f} with volume confirmation",1.0))
     elif cs<=-2 and volume_ratio>=c.min_volume_ratio:out.append(RuleSignal("candlestick_confirmation","SELL",f"Bearish candlestick score {cs:.0f} with volume confirmation",1.0))
     if c.require_option_confirmation:out.extend(_option_flow_rules(row))
     return out
-
 def _evidence_group(rule:str)->str:
     if rule in {"ema_cross","adx_trend_confirmation"}:return "trend"
     if rule in {"macd_bullish","macd_bearish","rsi_oversold_buy","rsi_overbought_sell","stochastic_reversal"}:return "momentum"
@@ -88,7 +82,6 @@ def _evidence_group(rule:str)->str:
     if rule=="sentiment_negative":return "news"
     if rule=="option_flow_confirmation":return "options"
     return "other"
-
 def generate_signal(data:pd.DataFrame,config:StrategyConfig|None=None)->StrategySignal:
     c=config or StrategyConfig()
     if len(data)<c.min_history_bars:return StrategySignal("WAIT",(),("Indicator warm-up: insufficient history",),0,0,0,0,False)
@@ -102,7 +95,6 @@ def generate_signal(data:pd.DataFrame,config:StrategyConfig|None=None)->Strategy
     if separation<c.min_signal_separation or len(groups)<c.min_evidence_groups:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
     close=float(row["close"]); risk=max(close*c.stop_loss_pct,atr*c.atr_stop_multiple if atr>0 else 0); reward=max(close*c.min_target_pct,atr*c.target_atr_multiple if atr>0 else 0,risk*c.min_reward_risk); stop=close-risk if direction=="BUY" else close+risk; target=close+reward if direction=="BUY" else close-reward; valid=len(rules)>=c.min_rules_for_signal and confidence>=c.min_confidence
     return StrategySignal(direction,tuple(r.rule for r in rules),tuple(r.reason for r in rules),round(stop,2),round(target,2),atr,round(confidence,2),valid)
-
 def rank_rule_performance(trades:pd.DataFrame)->pd.DataFrame:
     cols=["rule","trades","wins","losses","win_rate_pct","net_pnl","roi_pct"]
     if trades.empty:return pd.DataFrame(columns=cols)
