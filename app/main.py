@@ -23,7 +23,7 @@ from strategy.strike_selector import StrikeSelector
 from backtest.capital_aware import CapitalAwareRuleBacktestEngine
 from backtest.signal_research import run_signal_research
 from features.technical.indicators import add_indicators
-from strategy.rules import StrategyConfig, evaluate_rules
+from strategy.rules import StrategyConfig, StrategySignal, _generate_signal_from_enriched, evaluate_rules
 from marketdata.option_chain_csv import (
     is_option_chain_snapshot, parse_option_chain_csv,
     is_nse_option_chain_export, parse_nse_option_chain_export,
@@ -680,6 +680,38 @@ news_snapshot = fetch_global_news()
 global_news_score = news_snapshot.sentiment
 
 # ============================================================
+# Canonical prediction data
+# ============================================================
+
+st.subheader("Prediction Data")
+st.caption("The AI prediction uses completed real OHLCV candles. Synthetic research data is never used as the production prediction input.")
+prediction_file = st.file_uploader(
+    "Upload NIFTY intraday OHLCV CSV",
+    type=["csv"],
+    key="primary_prediction_csv",
+    help="Required columns: timestamp, open, high, low, close, volume.",
+)
+
+canonical_signal = StrategySignal(
+    "WAIT", (), ("Real completed OHLCV data required for prediction",), 0.0, 0.0, 0.0, 0.0, False
+)
+prediction_frame = None
+if prediction_file is not None:
+    try:
+        prediction_frame = normalize_nifty_csv(pd.read_csv(prediction_file))
+        prediction_frame = add_indicators(prediction_frame.copy())
+        canonical_signal = _generate_signal_from_enriched(
+            prediction_frame,
+            StrategyConfig(require_option_confirmation=False),
+        )
+        st.success(f"Prediction engine loaded {len(prediction_frame):,} completed candles from {prediction_file.name}.")
+    except Exception as exc:
+        canonical_signal = StrategySignal(
+            "WAIT", (), (f"Prediction data error: {exc}",), 0.0, 0.0, 0.0, 0.0, False
+        )
+        st.error(f"Prediction data could not be used: {exc}")
+
+# ============================================================
 # Research spot
 # ============================================================
 
@@ -828,22 +860,31 @@ st.subheader(
     f"{instrument} - AI Signal"
 )
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 
-c1.metric(
-    "15m Regime",
-    context.trend,
-)
+if canonical_signal.valid:
+    display_prediction = canonical_signal.direction
+    prediction_status = "READY"
+else:
+    display_prediction = "WAIT"
+    prediction_status = "WAIT"
 
-c2.metric(
-    f"{timeframe} Signal",
-    signal.decision,
-)
+c1.metric("Prediction", display_prediction)
+c2.metric("Confidence", f"{canonical_signal.confidence:.1f}%")
+c3.metric("Status", prediction_status)
+c4.metric("R:R", "—" if not canonical_signal.valid else f"{abs(canonical_signal.target - float(prediction_frame.iloc[-1]['close'])) / max(abs(float(prediction_frame.iloc[-1]['close']) - canonical_signal.stop_loss), 1e-9):.2f}")
 
-c3.metric(
-    "ML Probability",
-    f"{ml_probability * 100:.1f}%",
-)
+if canonical_signal.valid:
+    st.success(f"{canonical_signal.direction} signal passed the canonical precision gate.")
+    pc = st.columns(3)
+    pc[0].metric("Entry", f"{float(prediction_frame.iloc[-1]['close']):,.2f}")
+    pc[1].metric("Stop Loss", f"{canonical_signal.stop_loss:,.2f}")
+    pc[2].metric("Target", f"{canonical_signal.target:,.2f}")
+else:
+    st.warning(canonical_signal.reasons[0] if canonical_signal.reasons else "No qualified signal.")
+
+if canonical_signal.rules:
+    st.caption("Rules: " + ", ".join(canonical_signal.rules))
 
 st.divider()
 
