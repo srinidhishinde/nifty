@@ -74,7 +74,7 @@ def generate_option_chain_signal(
 
     frame = pd.DataFrame(rows)
     if frame.empty:
-        return (OptionChainSignal("WAIT", 0.0, None, None, None, float(spot), float(spot), float(spot), ("No option contracts available",)), frame)
+        return (OptionChainSignal("WAIT", 0.0, None, None, None, float(spot), float(spot), None, ("No option contracts available",)), frame)
 
     grouped = frame.groupby("Side")["Confidence"].max().to_dict()
     ce, pe = float(grouped.get("CE", 0.0)), float(grouped.get("PE", 0.0))
