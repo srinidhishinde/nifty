@@ -125,9 +125,11 @@ def advanced_aggressor_detection(
 
     prices = [price for _, price, _ in valid]
     tick_volatility = 0.0
-    if len(prices) >= 2:
-        # Rolling standard deviations followed by an EMA (span 10), using
-        # only the most recent 50 trade prices.
+    if len(prices) >= 20:
+        # The specification calls for recent-tick volatility. Require a
+        # meaningful sample before allowing volatility to widen tolerance;
+        # sparse streams fall back to half-spread rather than overreacting
+        # to a handful of prints.
         rolling_stds = []
         for i in range(1, len(prices)):
             window = prices[max(0, i - 49): i + 1]
