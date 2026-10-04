@@ -21,6 +21,7 @@ from strategy.ce_pe_selector import (
 )
 from strategy.strike_selector import StrikeSelector
 from backtest.capital_aware import CapitalAwareRuleBacktestEngine
+from backtest.signal_research import run_signal_research
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
 from marketdata.option_chain_csv import (
@@ -1899,67 +1900,114 @@ if bt_data is not None:
                                 - pd.Timedelta(microseconds=1)
                             )
 
-                            result = CapitalAwareRuleBacktestEngine(
-                                starting_capital=settings.starting_capital,
-                                risk_per_trade=settings.max_loss_per_trade,
-                                instrument=instrument,
-                                lot_size=65 if instrument == "NIFTY" else 1,
-                                point_value=1.0,
-                                slippage_points=0.25,
-                                brokerage_per_order=10.0,
-                                max_daily_loss=settings.max_daily_loss,
-                                max_trades_per_day=settings.max_trades_per_day,
-                            ).run(
-                                bt_data,
-                                symbol=instrument,
-                                evaluation_start=evaluation_start,
-                                evaluation_end=evaluation_end,
+                            # NIFTY spot/index CSVs are for signal research, not executable futures P&L.
+                            # Futures P&L requires contract-specific futures candles/specifications.
+                            is_probably_spot = instrument == "NIFTY" and not any(
+                                column.lower() in {"contract", "expiry", "futures_symbol", "instrument_type"}
+                                for column in bt_data.columns
                             )
-                            metrics = result.metrics
-                            trades = result.trades.copy()
 
-                            validation = result.validation
-                            trading_days = int(validation.get("trading_days", 0))
-                            qualified_signals = int(validation.get("qualified_signal_bars", 0))
-                            rejected_risk = int(validation.get("rejected_risk_budget", 0))
-                            if trading_days < 100:
-                                st.warning(
-                                    "INSUFFICIENT EVIDENCE: fewer than 100 trading days are available. "
-                                    "This run is a smoke/sanity test, not evidence of profitability."
+                            if is_probably_spot:
+                                research = run_signal_research(
+                                    bt_data,
+                                    evaluation_start=evaluation_start,
+                                    evaluation_end=evaluation_end,
                                 )
-                            elif len(trades) < 30:
-                                if qualified_signals and rejected_risk == qualified_signals:
-                                    st.warning(
-                                        "NO EXECUTABLE TRADES: qualified signals were found, but every "
-                                        "candidate was rejected because one whole futures lot exceeds the "
-                                        "configured per-trade risk budget. The risk model was NOT loosened."
-                                    )
-                                elif qualified_signals == 0:
-                                    st.warning(
-                                        "NO QUALIFIED SIGNALS: the rules did not produce an executable "
-                                        "candidate under the configured confirmation gates."
-                                    )
+                                rv = research.validation
+                                st.info(
+                                    "SIGNAL RESEARCH MODE: this CSV is treated as NIFTY spot/index OHLCV. "
+                                    "Signals and outcomes are measured in index points/R, not futures rupees. "
+                                    "Upload contract-specific NIFTY futures OHLCV for executable ₹1 lakh P&L."
+                                )
+                                st.markdown("#### Signal research funnel")
+                                rf = st.columns(6)
+                                rf[0].metric("Bars", f"{rv.get('bars_considered', 0):,}")
+                                rf[1].metric("Rule-trigger bars", f"{rv.get('rule_trigger_bars', 0):,}")
+                                rf[2].metric("Qualified signals", f"{rv.get('qualified_signal_bars', 0):,}")
+                                rf[3].metric("Conflicts", f"{rv.get('conflicting_signal_bars', 0):,}")
+                                rf[4].metric("Evaluated signals", f"{rv.get('signals', 0):,}")
+                                rf[5].metric("Trading days", f"{rv.get('trading_days', 0):,}")
+                                sm = st.columns(5)
+                                sm[0].metric("Signal Win Rate", f"{rv.get('win_rate_pct', 0.0):.1f}%")
+                                sm[1].metric("Average R", f"{rv.get('average_R', 0.0):.3f}")
+                                sm[2].metric("Total R", f"{rv.get('total_R', 0.0):.2f}")
+                                sm[3].metric("Wins", f"{rv.get('wins', 0):,}")
+                                sm[4].metric("Losses", f"{rv.get('losses', 0):,}")
+                                if not research.signals.empty:
+                                    st.markdown("#### Qualified signal outcomes")
+                                    st.dataframe(research.signals, width="stretch", hide_index=True)
                                 else:
-                                    st.warning(
-                                        "INSUFFICIENT TRADE EVIDENCE: the dataset has enough history, "
-                                        "but fewer than 30 closed trades were produced."
-                                    )
-                            else:
-                                st.success(
-                                    "Historical backtest completed. Results are historical simulation "
-                                    "results, not a guarantee of future performance."
+                                    st.warning("No qualified signals survived the confirmation, volatility and timing gates.")
+                                st.warning(
+                                    "This is NOT a futures profitability result. Futures P&L requires historical "
+                                    "futures candles plus the correct contract/expiry lot specification."
                                 )
+                            else:
+                                result = CapitalAwareRuleBacktestEngine(
+                                    starting_capital=settings.starting_capital,
+                                    risk_per_trade=settings.max_loss_per_trade,
+                                    instrument=instrument,
+                                    lot_size=65 if instrument == "NIFTY" else 1,
+                                    point_value=1.0,
+                                    slippage_points=0.25,
+                                    brokerage_per_order=10.0,
+                                    max_daily_loss=settings.max_daily_loss,
+                                    max_trades_per_day=settings.max_trades_per_day,
+                                ).run(
+                                    bt_data, symbol=instrument,
+                                    evaluation_start=evaluation_start, evaluation_end=evaluation_end,
+                                )
+                                metrics = result.metrics
+                                trades = result.trades.copy()
+                                validation = result.validation
+                                trading_days = int(validation.get("trading_days", 0))
+                                qualified_signals = int(validation.get("qualified_signal_bars", 0))
+                                rejected_risk = int(validation.get("rejected_risk_budget", 0))
+                                if trading_days < 100:
+                                    st.warning("INSUFFICIENT EVIDENCE: fewer than 100 trading days are available.")
+                                elif len(trades) < 30:
+                                    if qualified_signals and rejected_risk == qualified_signals:
+                                        st.warning("NO EXECUTABLE TRADES: qualified signals were found, but every candidate exceeded the configured per-trade risk budget. The risk model was NOT loosened.")
+                                    elif qualified_signals == 0:
+                                        st.warning("NO QUALIFIED SIGNALS: no candidate survived the configured confirmation gates.")
+                                    else:
+                                        st.warning("INSUFFICIENT TRADE EVIDENCE: the dataset has enough history, but fewer than 30 closed trades were produced.")
+                                else:
+                                    st.success("Historical futures backtest completed. Results are historical simulation results, not a guarantee of future performance.")
+                                st.markdown("#### Backtest diagnostic funnel")
+                                funnel = st.columns(6)
+                                funnel[0].metric("Bars", f"{validation.get('bars_considered', 0):,}")
+                                funnel[1].metric("Rule-trigger bars", f"{validation.get('rule_trigger_bars', 0):,}")
+                                funnel[2].metric("Qualified signals", f"{qualified_signals:,}")
+                                funnel[3].metric("Risk rejected", f"{rejected_risk:,}")
+                                funnel[4].metric("Closed trades", f"{len(trades):,}")
+                                funnel[5].metric("Trading days", f"{trading_days:,}")
+                                total_trades = int(metrics.total_trades)
+                                wins = int(metrics.winning_trades)
+                                losses = int(metrics.losing_trades)
+                                top = st.columns(5)
+                                top[0].metric("Closed Trades", total_trades)
+                                top[1].metric("Win Rate", f"{metrics.win_rate_pct:.1f}%")
+                                top[2].metric("Net P&L", f"Rs {metrics.net_pnl:,.0f}")
+                                top[3].metric("Return", f"{metrics.return_pct:.2f}%")
+                                top[4].metric("Profit Factor", "∞" if metrics.profit_factor == float("inf") else f"{metrics.profit_factor:.2f}")
+                                detail = st.columns(5)
+                                detail[0].metric("Wins", wins)
+                                detail[1].metric("Losses", losses)
+                                detail[2].metric("Avg Trade", f"Rs {metrics.average_trade:,.0f}")
+                                detail[3].metric("Max Drawdown", f"Rs {metrics.max_drawdown:,.0f}")
+                                detail[4].metric("Max DD %", f"{metrics.max_drawdown_pct:.2f}%")
+                                if not result.rule_performance.empty:
+                                    st.markdown("#### Rule-by-Rule Accuracy")
+                                    st.dataframe(result.rule_performance.rename(columns={"win_rate_pct":"accuracy_pct"}), width="stretch", hide_index=True)
+                                if not trades.empty:
+                                    st.markdown("#### Historical Futures Trades")
+                                    cols=[x for x in ["entry_time","exit_time","direction","entry_price","exit_price","stop_loss","target","quantity","rule","pnl","reason"] if x in trades.columns]
+                                    st.dataframe(trades[cols], width="stretch", hide_index=True)
+                                else:
+                                    st.warning("No executable futures trades were closed in this period. That is not the same as 0% accuracy.")
 
-                            st.markdown("#### Backtest diagnostic funnel")
-                            funnel = st.columns(6)
-                            funnel[0].metric("Bars", f"{validation.get('bars_considered', 0):,}")
-                            funnel[1].metric("Rule-trigger bars", f"{validation.get('rule_trigger_bars', 0):,}")
-                            funnel[2].metric("Qualified signals", f"{qualified_signals:,}")
-                            funnel[3].metric("Risk rejected", f"{rejected_risk:,}")
-                            funnel[4].metric("Closed trades", f"{len(trades):,}")
-                            funnel[5].metric("Trading days", f"{trading_days:,}")
-                            if qualified_signals and rejected_risk:
-                                st.caption(
+                            st.caption(
                                     "A risk rejection means the stop distance × lot size exceeds the "
                                     "configured ₹1,000-style risk budget. This is intentional; do not "
                                     "increase risk merely to manufacture trades."
