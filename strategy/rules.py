@@ -58,16 +58,18 @@ def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyCon
     c=config or StrategyConfig(); close=_v(row,("close",))
     if close is None or close<=0:return []
     out=[]
-    rsi=_v(row,("RSI",)); vol=_v(row,("volume",),0); vma=_v(row,("VOLUME_MA20",)); volume_ratio=_v(row,("VOLUME_RATIO",),1.0) or 0.0
-    if rsi is not None and rsi<c.rsi_oversold and vma and volume_ratio>=c.min_volume_ratio:out.append(RuleSignal("rsi_oversold_buy","BUY","RSI oversold with volume confirmation",1.2))
-    if rsi is not None and rsi>c.rsi_overbought and vma and volume_ratio>=c.min_volume_ratio:out.append(RuleSignal("rsi_overbought_sell","SELL","RSI overbought with volume confirmation",1.2))
-    macd,sig=_v(row,("MACD",)),_v(row,("MACD_SIGNAL","Signal"))
-    if macd is not None and sig is not None and macd>sig and macd>0:out.append(RuleSignal("macd_bullish","BUY","MACD above signal and zero",1.2))
-    if macd is not None and sig is not None and macd<sig and macd<0:out.append(RuleSignal("macd_bearish","SELL","MACD below signal and zero",1.2))
+    rsi=_v(row,("RSI",)); prev_rsi=_v(previous,("RSI",)); vol=_v(row,("volume",),0); vma=_v(row,("VOLUME_MA20",)); volume_ratio=_v(row,("VOLUME_RATIO",),1.0) or 0.0
+    if rsi is not None and prev_rsi is not None and prev_rsi<=c.rsi_oversold and rsi>c.rsi_oversold and vma and volume_ratio>=c.min_volume_ratio:out.append(RuleSignal("rsi_oversold_buy","BUY","RSI oversold with volume confirmation",1.2))
+    if rsi is not None and prev_rsi is not None and prev_rsi>=c.rsi_overbought and rsi<c.rsi_overbought and vma and volume_ratio>=c.min_volume_ratio:out.append(RuleSignal("rsi_overbought_sell","SELL","RSI overbought with volume confirmation",1.2))
+    macd,sig=_v(row,("MACD",)),_v(row,("MACD_SIGNAL","Signal")); prev_macd,prev_sig=_v(previous,("MACD",)),_v(previous,("MACD_SIGNAL","Signal"))
+    if None not in (macd,sig,prev_macd,prev_sig) and prev_macd<=prev_sig and macd>sig and macd>0:out.append(RuleSignal("macd_bullish","BUY","MACD bullish crossover above zero",1.2))
+    if None not in (macd,sig,prev_macd,prev_sig) and prev_macd>=prev_sig and macd<sig and macd<0:out.append(RuleSignal("macd_bearish","SELL","MACD bearish crossover below zero",1.2))
     sentiment=_v(row,("sentiment","news_sentiment","Sentiment"),0); upper=_v(row,("BB_UPPER","UpperBand"))
-    if upper is not None and close>upper and sentiment>0:out.append(RuleSignal("bollinger_breakout","BUY","Upper-band breakout with positive news",1.0))
+    prev_close=_v(previous,("close",)); prev_upper=_v(previous,("BB_UPPER","UpperBand"))
+    if upper is not None and prev_close is not None and prev_upper is not None and prev_close<=prev_upper and close>upper and sentiment>=0 and volume_ratio>=1.2:out.append(RuleSignal("bollinger_breakout","BUY","Upper-band breakout with volume/news confirmation",1.0))
     lower=_v(row,("BB_LOWER","LowerBand"))
-    if lower is not None and close<lower and sentiment<0:out.append(RuleSignal("bollinger_breakdown","SELL","Lower-band breakdown with negative news",1.0))
+    prev_lower=_v(previous,("BB_LOWER","LowerBand"))
+    if lower is not None and prev_close is not None and prev_lower is not None and prev_close>=prev_lower and close<lower and sentiment<=0 and volume_ratio>=1.2:out.append(RuleSignal("bollinger_breakdown","SELL","Lower-band breakdown with volume/news confirmation",1.0))
     fast,slow=_v(row,("EMA20",)),_v(row,("EMA50",))
     pf,ps=_v(previous,("EMA20",)),_v(previous,("EMA50",))
     if None not in (fast,slow,pf,ps) and pf<=ps and fast>slow:out.append(RuleSignal("ema_cross","BUY","EMA20 crossed above EMA50",1.3))
