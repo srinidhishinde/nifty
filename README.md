@@ -156,7 +156,7 @@ Before running the production decision panel, configure:
 - `NEO_MPIN`
 - `NEO_NIFTY_NEOSYMBOL` — the current `exchange_segment|instrument_token` used by Kotak Neo historical candles.
 
-Kotak Neo's current SDK requires the historical API to receive a Neo symbol in this form, and the 5-minute historical endpoint has a 30-day request limit. citeturn1search2turn2search0
+Kotak Neo's current SDK requires the historical API to receive a Neo symbol in this form, and the 5-minute historical endpoint has a 30-day request limit.
 
 ## Dashboard ChatGPT assistant
 
@@ -169,7 +169,7 @@ OPENAI_API_KEY=your_key
 OPENAI_MODEL=gpt-6-luna
 ```
 
-The assistant receives only a sanitized dashboard snapshot and is explicitly prevented from overriding trading gates or exposing broker credentials. The integration uses OpenAI's current Responses API rather than the retired Assistants API. citeturn0search0turn0search2
+The assistant receives only a sanitized dashboard snapshot and is explicitly prevented from overriding trading gates or exposing broker credentials. The integration uses OpenAI's current Responses API rather than the retired Assistants API.
 
 **Important:** the ChatGPT assistant is explanatory/advisory. It does not place or bypass orders.
 
