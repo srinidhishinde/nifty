@@ -75,7 +75,7 @@ def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyCon
     if adx is not None and adx>=c.min_adx:
         fast_now=_v(row,("EMA20",close)); slow_now=_v(row,("EMA50",close))
         trend="BUY" if fast_now>=slow_now else "SELL"
-        out.append(RuleSignal("adx_trend_confirmation",trend,f"ADX {adx:.1f} confirms trend",0.8))
+        out.append(RuleSignal("adx_trend_confirmation",trend,f"ADX {adx:.1f} confirms {trend} trend",0.8))
     k,d=_v(row,("STOCH_K",)),_v(row,("STOCH_D",))
     if k is not None and d is not None:
         if k<20 and k>d:out.append(RuleSignal("stochastic_reversal","BUY","Stochastic bullish reversal",0.9))
