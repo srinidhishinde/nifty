@@ -1,13 +1,21 @@
 import pandas as pd
-from features.option_chain import OptionContract
 from features.option_signal_engine import generate_option_chain_signal
+from features.option_chain import OptionContract
 
-def test_option_signal_has_confidence_and_levels():
-    contracts=[
-        OptionContract("CE_25000","",25000,"CE",100,99,101,10000,20000,5000,20,ltp_change_pct=2),
-        OptionContract("PE_25000","",25000,"PE",80,79,81,5000,20000,-1000,22,ltp_change_pct=-1),
-    ]
-    signal, rows = generate_option_chain_signal(contracts, 25000, 0.2)
-    assert signal.confidence >= 0
-    assert {"Confidence","Entry Price","Stop Loss","Take Profit","Global News"} <= set(rows.columns)
+def contract(side="CE", ltp=100.0):
+    return OptionContract(
+        option_type=side,strike=25000,ltp=ltp,ltp_change_pct=2.0,
+        implied_volatility=15.0,open_interest=100000,oi_change=5000,
+        volume=20000,delta=0.5,theta=-5.0,vega=8.0,built_up="Long Buildup"
+    )
 
+def test_option_signal_has_trade_plan_percentages():
+    signal, rows = generate_option_chain_signal([contract("CE"), contract("PE")],25000)
+    assert {"Entry Price","Stop Loss","Take Profit","Max Gain %","Max Loss %"} <= set(rows.columns)
+    assert rows["Max Gain %"].notna().all()
+    assert rows["Max Loss %"].notna().all()
+
+def test_option_signal_does_not_fabricate_premium_levels():
+    signal, rows = generate_option_chain_signal([contract("CE",0)],25000)
+    assert pd.isna(rows.iloc[0]["Entry Price"])
+    assert pd.isna(rows.iloc[0]["Take Profit"])
