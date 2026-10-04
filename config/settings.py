@@ -40,7 +40,9 @@ class Settings(BaseSettings):
     kotak_access_token: str = ""
     kotak_totp_secret: str = ""
 
-    allow_order_submission: bool = Field(default=False, validation_alias="ALLOW_ORDER_SUBMISSION")
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-5.6", validation_alias="OPENAI_MODEL")
+\n    allow_order_submission: bool = Field(default=False, validation_alias="ALLOW_ORDER_SUBMISSION")
 
     def live_trading_allowed(self) -> bool:
         return (
