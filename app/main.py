@@ -1749,7 +1749,7 @@ bt_source = None
 
 if uploaded is not None:
     try:
-        bt_data = pd.read_csv(uploaded)
+        bt_data = normalize_nifty_csv(pd.read_csv(uploaded))
         bt_source = f"Uploaded historical CSV: {uploaded.name}"
     except Exception as exc:
         st.error(f"Could not read backtest CSV: {exc}")
