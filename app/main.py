@@ -3,6 +3,8 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+
+from strategy.market_specs import get_option_strike_step, round_to_strike
 import streamlit as st
 
 from config.settings import settings
@@ -29,6 +31,7 @@ from prediction.nifty_model import walk_forward_predict
 from news.global_news import fetch_global_news
 from marketdata.nifty_csv import normalize_nifty_csv
 from marketdata.option_chain_replay import replay_option_chain_csv
+from strategy.cross_market_trend import calculate_trend, TrendSnapshot, aggregate_context
 
 
 # ============================================================
@@ -109,9 +112,23 @@ def build_research_signal(
         75.0,
     )
 
+    research_base = {
+        "NIFTY": 25040.0,
+        "BANKNIFTY": 58000.0,
+        "CRUDEOIL": 6500.0,
+        "NATURALGAS": 300.0,
+        "COPPER": 950.0,
+        "SILVER": 95000.0,
+        "GOLD": 125000.0,
+    }.get(instrument.upper(), 25040.0)
+    research_strike = round_to_strike(
+        research_base,
+        get_strike_step(instrument),
+    )
+
     ce = OptionAnalysis(
         option_type="CE",
-        strike=25000.0,
+        strike=research_strike,
         ltp=100.0,
         volume=10000.0,
         open_interest=20000.0,
@@ -134,7 +151,7 @@ def build_research_signal(
 
     pe = OptionAnalysis(
         option_type="PE",
-        strike=25000.0,
+        strike=research_strike,
         ltp=100.0,
         volume=10000.0,
         open_interest=20000.0,
@@ -208,9 +225,7 @@ def build_research_option_chain(
         f"{instrument}:{seed}:{spot}"
     )
 
-    atm_strike = round(
-        spot / strike_step
-    ) * strike_step
+    atm_strike = round_to_strike(spot, strike_step)
 
     strikes = [
         atm_strike
@@ -508,23 +523,9 @@ def build_option_chain_dataframe(
 # Strike configuration
 # ============================================================
 
-def get_strike_step(
-    instrument: str,
-) -> float:
-
-    if instrument == "NIFTY":
-        return 50.0
-
-    if instrument == "BANKNIFTY":
-        return 100.0
-
-    if instrument in {
-        "CRUDEOIL",
-        "NATURALGAS",
-    }:
-        return 10.0
-
-    return 100.0
+def get_strike_step(instrument: str) -> float:
+    """Compatibility wrapper around the centralized market specification."""
+    return get_option_strike_step(instrument)
 
 
 # ============================================================
@@ -536,6 +537,29 @@ st.set_page_config(
     page_icon="AI",
     layout="wide",
 )
+
+# Modern terminal styling: information-dense, high-contrast and status-oriented.
+st.markdown("""
+<style>
+[data-testid="stAppViewContainer"] { background: #07111f; }
+[data-testid="stHeader"] { background: rgba(7,17,31,0.85); }
+.block-container { padding-top: 1.2rem; max-width: 1500px; }
+[data-testid="stMetric"] {
+  background: linear-gradient(135deg, rgba(18,35,58,.96), rgba(10,22,38,.96));
+  border: 1px solid rgba(91,151,255,.22);
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+}
+.market-radar { border:1px solid rgba(91,151,255,.22); border-radius:16px; padding:14px; background:linear-gradient(135deg,#0c1b2f,#091525); }
+.radar-title { font-size:1.05rem; font-weight:700; margin-bottom:8px; }
+.radar-pill { display:inline-block; padding:7px 11px; margin:3px; border-radius:999px; font-weight:700; font-size:.82rem; }
+.radar-up { background:#063b2a; color:#54e39a; }
+.radar-down { background:#45171d; color:#ff7785; }
+.radar-range { background:#403512; color:#ffd86b; }
+.radar-na { background:#263244; color:#b9c5d6; }
+</style>
+""", unsafe_allow_html=True)
 
 st.title(
     "AI Derivatives Terminal"
@@ -682,6 +706,52 @@ if spot is None and not neo_status.connected:
 if spot is None:
     spot = 0.0
 
+
+# ============================================================
+# Cross-market trend radar
+# ============================================================
+def _research_trend_snapshot(name: str, seed_value: int) -> TrendSnapshot:
+    base = {"NIFTY": 25040.0, "CRUDE": 6500.0, "NATGAS": 300.0, "COPPER": 950.0}[name]
+    rng = np.random.default_rng(abs(hash((name, int(seed_value)))) % (2**32))
+    returns = rng.normal(0.0, base * 0.0008, 120)
+    close = base + np.cumsum(returns)
+    frame = pd.DataFrame({
+        "timestamp": pd.date_range(end=pd.Timestamp.now(), periods=120, freq="5min"),
+        "open": close,
+        "high": close + abs(rng.normal(0, base * 0.0003, 120)),
+        "low": close - abs(rng.normal(0, base * 0.0003, 120)),
+        "close": close,
+        "volume": rng.integers(1000, 10000, 120),
+    })
+    return calculate_trend(name, frame, is_live=False)
+
+
+st.subheader("Market Radar")
+st.caption("Directional context for NIFTY, Crude Oil, Natural Gas and Copper. Research cards are explicitly marked when a live feed is unavailable.")
+radar_names = ["NIFTY", "CRUDE", "NATGAS", "COPPER"]
+radar_cols = st.columns(4)
+radar_snapshots: dict[str, TrendSnapshot] = {}
+for name, col in zip(radar_names, radar_cols):
+    if name == "NIFTY" and neo_status.connected:
+        # Until historical intraday streaming is wired for every instrument, do not
+        # fabricate a live trend from the single index quote.
+        snap = TrendSnapshot(name, "LIVE_QUOTE_ONLY", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", pd.Timestamp.now(), 0, True, "Live quote available; completed-candle history is required for a genuine trend score.")
+    else:
+        snap = _research_trend_snapshot(name, int(seed))
+    radar_snapshots[name] = snap
+    if snap.direction in {"STRONG_UP", "UP"}:
+        cls = "radar-up"
+    elif snap.direction in {"STRONG_DOWN", "DOWN"}:
+        cls = "radar-down"
+    elif snap.direction == "RANGE":
+        cls = "radar-range"
+    else:
+        cls = "radar-na"
+    source = "LIVE" if snap.is_live else "RESEARCH"
+    col.markdown(f'<div class="market-radar"><div class="radar-title">{name}</div><span class="radar-pill {cls}">{snap.direction}</span><br><small>{source} · score {snap.score:.0f} · {snap.volatility}</small><br><small>{snap.reason}</small></div>', unsafe_allow_html=True)
+
+radar_context = aggregate_context(radar_snapshots)
+st.caption(f"Cross-market context score: {radar_context:+.1f}. This is a context filter, not a standalone trade signal.")
 
 # ============================================================
 # System readiness dashboard
