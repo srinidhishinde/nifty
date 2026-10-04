@@ -25,7 +25,8 @@ class LiveSignalLoop:
     fetch_options: Callable[[], list]
     spot_provider: Callable[[], float]
     interval_seconds: int = 30
-    capital: float = 300000.0
+    capital: float = 100000.0
+    _last_signal_key: tuple | None = field(default=None, init=False)
     on_signal: Callable[[dict], None] | None = None
     running: bool = field(default=False, init=False)
 
@@ -59,8 +60,14 @@ class LiveSignalLoop:
             "option_take_profit": option_signal.take_profit,
             "global_news": news.sentiment,
         }
-        if self.on_signal:
-            self.on_signal(result)
+        signal_key = (result["technical_direction"], ai.confidence, ai.stop_loss, ai.take_profit, str(result["timestamp"].date()))
+        if signal_key == self._last_signal_key:
+            result["duplicate_signal"] = True
+        else:
+            result["duplicate_signal"] = False
+            self._last_signal_key = signal_key
+            if self.on_signal:
+                self.on_signal(result)
         return result
 
     def run(self, max_cycles: int | None = None) -> None:
