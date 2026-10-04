@@ -25,9 +25,9 @@ class TradeLevelCalculator:
     """
     Calculates entry, stop-loss and target levels for an option trade.
 
-    Default configuration is intentionally conservative and must be
-    overridden by the unified volatility/contract risk engine for live or
-    evidence-grade backtests. This class remains a compatibility calculator.
+    Default configuration:
+        Stop loss = 20% below entry
+        Target    = 40% above entry
 
     Therefore:
         Entry       = 100
@@ -40,9 +40,9 @@ class TradeLevelCalculator:
 
     def __init__(
         self,
-        stop_loss_pct: float = 10.0,
-        target_pct: float = 20.0,
-        minimum_risk_reward: float = 1.8,
+        stop_loss_pct: float = 20.0,
+        target_pct: float = 40.0,
+        minimum_risk_reward: float = 2.0,
     ) -> None:
 
         if stop_loss_pct <= 0:
