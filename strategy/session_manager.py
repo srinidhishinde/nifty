@@ -41,7 +41,7 @@ class SessionContext:
 def policy_for(instrument: str, *, mcx_close: time = time(23, 30)) -> SessionPolicy:
     name = instrument.upper()
     if name == "NIFTY":
-        return SessionPolicy(name, time(9, 15), time(15, 30), time(15, 15), time(15, 30))
+        return SessionPolicy(name, time(9, 15), time(15, 40), time(15, 15), time(15, 40))
     if name in {"MCX", "CRUDEOIL", "NATURALGAS", "COPPER", "SILVER", "GOLD"}:
         return SessionPolicy(name, time(9, 0), mcx_close, time(23, 0), mcx_close)
     raise ValueError(f"Unsupported instrument '{instrument}'")
