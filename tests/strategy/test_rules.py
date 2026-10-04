@@ -1,5 +1,5 @@
 import pandas as pd
-from strategy.rules import StrategyConfig, evaluate_rules, generate_signal
+from strategy.rules import RuleSignal, StrategyConfig, _generate_signal_from_enriched, evaluate_rules, generate_signal
 
 def test_rsi_rule_requires_volume_confirmation():
     previous=pd.Series({"close":99.0,"RSI":25.0})
@@ -27,6 +27,35 @@ def test_technical_signal_waits_for_warmup():
 def test_risk_levels_match_pseudocode_defaults():
     closes=[60.0+i*0.5 for i in range(60)]+[101.0]
     frame=pd.DataFrame({"timestamp":pd.date_range("2026-10-01 09:15",periods=len(closes),freq="5min"),"open":closes,"high":[p+0.5 for p in closes],"low":[p-0.5 for p in closes],"close":closes,"volume":[1000.0]*60+[5000.0]})
-    signal=generate_signal(frame,StrategyConfig(min_rules_for_signal=1, min_evidence_groups=1, vwap_deviation_pct=100.0, min_adx=0.0, min_confidence=0.0))
+    signal=generate_signal(frame,StrategyConfig(min_rules_for_signal=1, min_evidence_groups=1, vwap_deviation_pct=100.0, min_adx=0.0, min_confidence=0.0, precision_mode=False))
     assert signal.direction=="BUY" and signal.valid
     assert signal.stop_loss<101.0<signal.target and signal.target>=round(101.0*1.02,2)
+
+
+def test_precision_mode_rejects_weak_signal(monkeypatch):
+    monkeypatch.setattr(
+        "strategy.rules.evaluate_rules",
+        lambda row, previous, config: [
+            RuleSignal("ema_cross", "BUY", "test", 1.2),
+            RuleSignal("macd_bullish", "BUY", "test", 1.2),
+        ],
+    )
+    frame=pd.DataFrame([
+        {"close":100.0,"EMA9":99.0,"EMA21":99.5,"ADX":25.0,"ATR":1.0,"ATR_PCT":0.01,
+         "RSI":55.0,"MACD":0.5,"MACD_SIGNAL":0.4,"VWAP":100.0},
+        {"close":101.0,"EMA9":101.0,"EMA21":99.5,"ADX":25.0,"ATR":1.0,"ATR_PCT":0.01,
+         "RSI":55.0,"MACD":1.0,"MACD_SIGNAL":0.5,"VWAP":100.0},
+    ])
+    signal=_generate_signal_from_enriched(frame, StrategyConfig(min_history_bars=2, require_option_confirmation=False))
+    assert signal.direction=="WAIT" and not signal.valid
+
+
+def test_precision_mode_can_be_disabled_for_legacy_research():
+    closes=[60.0+i*0.5 for i in range(60)]+[101.0]
+    frame=pd.DataFrame({"timestamp":pd.date_range("2026-10-01 09:15",periods=len(closes),freq="5min"),
+                        "open":closes,"high":[p+0.5 for p in closes],"low":[p-0.5 for p in closes],
+                        "close":closes,"volume":[1000.0]*60+[5000.0]})
+    signal=generate_signal(frame, StrategyConfig(min_rules_for_signal=1, min_evidence_groups=1,
+                                                  min_confidence=0.0, precision_mode=False,
+                                                  vwap_deviation_pct=100.0, min_adx=0.0))
+    assert signal.direction=="BUY" and signal.valid

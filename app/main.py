@@ -23,7 +23,7 @@ from strategy.strike_selector import StrikeSelector
 from backtest.capital_aware import CapitalAwareRuleBacktestEngine
 from backtest.signal_research import run_signal_research
 from features.technical.indicators import add_indicators
-from strategy.rules import StrategyConfig, evaluate_rules
+from strategy.rules import StrategyConfig, StrategySignal, _generate_signal_from_enriched, evaluate_rules
 from marketdata.option_chain_csv import (
     is_option_chain_snapshot, parse_option_chain_csv,
     is_nse_option_chain_export, parse_nse_option_chain_export,
@@ -680,6 +680,150 @@ news_snapshot = fetch_global_news()
 global_news_score = news_snapshot.sentiment
 
 # ============================================================
+# Canonical prediction data
+# ============================================================
+
+st.subheader("Prediction Data")
+st.caption(
+    "The primary prediction uses completed historical/live OHLCV candles. "
+    "When the market is closed, Yahoo Finance ^NSEI can provide historical NIFTY 50 "
+    "candles for prediction validation. Synthetic research data is never used as the "
+    "production prediction input."
+)
+
+prediction_cols = st.columns(4)
+prediction_interval = prediction_cols[0].selectbox(
+    "Prediction interval", ["5m", "15m", "30m", "60m", "1d"],
+    index=0, key="primary_prediction_interval"
+)
+prediction_days = prediction_cols[1].number_input(
+    "Historical days", min_value=5, max_value=59, value=30, step=5,
+    key="primary_prediction_days"
+)
+prediction_symbol = prediction_cols[2].text_input(
+    "Yahoo symbol", value="^NSEI", key="primary_prediction_symbol"
+)
+prediction_pull = prediction_cols[3].button(
+    "Load Yahoo prediction", type="primary", width="stretch",
+    key="primary_prediction_pull"
+)
+
+if prediction_pull:
+    try:
+        prediction_end = pd.Timestamp.now(tz="Asia/Kolkata").date()
+        prediction_start = prediction_end - pd.Timedelta(days=int(prediction_days))
+        prediction_result = fetch_yahoo_ohlcv(
+            prediction_start,
+            prediction_end,
+            symbol=prediction_symbol.strip() or "^NSEI",
+            interval=prediction_interval,
+        )
+        st.session_state["primary_prediction_result"] = prediction_result
+    except Exception as exc:
+        st.session_state["primary_prediction_result"] = None
+        st.error(f"Yahoo prediction data could not be loaded: {exc}")
+
+prediction_result = st.session_state.get("primary_prediction_result")
+prediction_frame = None
+prediction_source = None
+canonical_signal = StrategySignal(
+    "WAIT", (), ("Historical Yahoo OHLCV data required for prediction",),
+    0.0, 0.0, 0.0, 0.0, False
+)
+
+if prediction_result is not None and prediction_result.status == "OK":
+    try:
+        prediction_frame = normalize_nifty_csv(prediction_result.data)
+        interval_minutes = {
+            "5m": 5,
+            "15m": 15,
+            "30m": 30,
+            "60m": 60,
+            "1d": 1440,
+        }.get(prediction_result.interval, 5)
+        prediction_quality = assess_ohlcv(
+            prediction_frame,
+            expected_minutes=interval_minutes,
+        )
+        # Yahoo intraday data naturally has overnight/weekend/session gaps.
+        # Those are not malformed candles, so only RED quality blocks prediction.
+        if prediction_quality.status != "RED" and len(prediction_frame) >= 60:
+            prediction_frame = add_indicators(prediction_frame.copy())
+            if prediction_quality.status in {"ORANGE", "YELLOW"}:
+                st.warning(
+                    "Yahoo data quality is "
+                    f"{prediction_quality.status}: "
+                    + " | ".join(prediction_quality.reasons)
+                    + ". The latest completed candles are still usable for historical signal validation."
+                )
+            canonical_signal = _generate_signal_from_enriched(
+                prediction_frame,
+                StrategyConfig(require_option_confirmation=False),
+            )
+            prediction_source = (
+                f"Yahoo Finance {prediction_result.symbol} "
+                f"{prediction_result.interval} historical candles"
+            )
+            st.success(
+                f"Historical prediction ready: {len(prediction_frame):,} completed "
+                f"candles from {prediction_result.provider_start} to "
+                f"{prediction_result.provider_end}. This is NOT a live signal."
+            )
+        else:
+            reasons = " | ".join(prediction_quality.reasons) or "insufficient completed candles"
+            canonical_signal = StrategySignal(
+                "WAIT", (), (f"Prediction data quality gate: {reasons}",),
+                0.0, 0.0, 0.0, 0.0, False
+            )
+            st.warning(f"Yahoo prediction is blocked by the data-quality/warm-up gate: {reasons}")
+    except Exception as exc:
+        canonical_signal = StrategySignal(
+            "WAIT", (), (f"Prediction data error: {exc}",),
+            0.0, 0.0, 0.0, 0.0, False
+        )
+        st.error(f"Prediction data could not be used: {exc}")
+elif prediction_result is not None:
+    st.error(f"Yahoo prediction unavailable: {prediction_result.message}")
+else:
+    st.info(
+        "No historical prediction data loaded yet. Select an interval and click "
+        "'Load Yahoo prediction'. The signal remains WAIT until completed real candles are available."
+    )
+
+if prediction_source:
+    st.caption(f"Prediction source: {prediction_source} · historical validation only")
+
+    # Historical prediction is only useful with an out-of-sample score. Reuse
+    # the exact canonical signal engine so the displayed win rate is not based
+    # on the synthetic research signal.
+    try:
+        prediction_research = run_signal_research(
+            prediction_frame,
+            StrategyConfig(require_option_confirmation=False),
+        )
+        pv = prediction_research.validation
+        st.markdown("#### Historical prediction performance")
+        pm = st.columns(6)
+        pm[0].metric("Win %", f"{pv.get('win_rate_pct', 0.0):.1f}%")
+        pm[1].metric("Signals", f"{pv.get('signals', 0):,}")
+        pm[2].metric("Wins", f"{pv.get('wins', 0):,}")
+        pm[3].metric("Losses", f"{pv.get('losses', 0):,}")
+        pm[4].metric("Average R", f"{pv.get('average_R', 0.0):.3f}")
+        pm[5].metric("Total R", f"{pv.get('total_R', 0.0):.2f}")
+        st.caption(
+            "Win % is historical spot/index signal research over the loaded Yahoo "
+            "window. It is NOT an options/futures profitability percentage and "
+            "does not guarantee future performance."
+        )
+        if int(pv.get("signals", 0)) == 0:
+            st.warning(
+                "No closed historical signals survived the current precision gates, "
+                "so a meaningful win percentage cannot be estimated for this window."
+            )
+    except Exception as exc:
+        st.warning(f"Historical performance calculation unavailable: {exc}")
+
+# ============================================================
 # Research spot
 # ============================================================
 
@@ -828,22 +972,31 @@ st.subheader(
     f"{instrument} - AI Signal"
 )
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 
-c1.metric(
-    "15m Regime",
-    context.trend,
-)
+if canonical_signal.valid:
+    display_prediction = canonical_signal.direction
+    prediction_status = "READY"
+else:
+    display_prediction = "WAIT"
+    prediction_status = "WAIT"
 
-c2.metric(
-    f"{timeframe} Signal",
-    signal.decision,
-)
+c1.metric("Prediction", display_prediction)
+c2.metric("Confidence", f"{canonical_signal.confidence:.1f}%")
+c3.metric("Status", prediction_status)
+c4.metric("R:R", "—" if not canonical_signal.valid else f"{abs(canonical_signal.target - float(prediction_frame.iloc[-1]['close'])) / max(abs(float(prediction_frame.iloc[-1]['close']) - canonical_signal.stop_loss), 1e-9):.2f}")
 
-c3.metric(
-    "ML Probability",
-    f"{ml_probability * 100:.1f}%",
-)
+if canonical_signal.valid:
+    st.success(f"{canonical_signal.direction} signal passed the canonical precision gate.")
+    pc = st.columns(3)
+    pc[0].metric("Entry", f"{float(prediction_frame.iloc[-1]['close']):,.2f}")
+    pc[1].metric("Stop Loss", f"{canonical_signal.stop_loss:,.2f}")
+    pc[2].metric("Target", f"{canonical_signal.target:,.2f}")
+else:
+    st.warning(canonical_signal.reasons[0] if canonical_signal.reasons else "No qualified signal.")
+
+if canonical_signal.rules:
+    st.caption("Rules: " + ", ".join(canonical_signal.rules))
 
 st.divider()
 
@@ -1802,7 +1955,7 @@ if yahoo_result is not None:
         )
 
         if len(yahoo_data) >= 60:
-            yahoo_research = run_signal_research(yahoo_data)
+            yahoo_research = run_signal_research(yahoo_data, StrategyConfig(require_option_confirmation=False))
             yv = yahoo_research.validation
 
             st.markdown("#### Yahoo signal-validation funnel")

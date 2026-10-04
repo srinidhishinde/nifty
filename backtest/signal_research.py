@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from features.technical.indicators import add_indicators
-from strategy.rules import StrategyConfig, evaluate_rules
+from strategy.rules import StrategyConfig, _generate_signal_from_enriched
 
 
 @dataclass(frozen=True)
@@ -144,29 +144,18 @@ def run_signal_research(
             counters["rejected_warmup"] += 1
             continue
 
-        signals = evaluate_rules(row, prev, c)
-        if not signals:
+        signal = _generate_signal_from_enriched(frame.iloc[: i + 1], c)
+        if signal.direction == "WAIT" or not signal.valid:
             continue
+
+        direction = signal.direction
+        signals = list(signal.rules)
         counters["rule_trigger_bars"] += 1
-
-        buys = [s for s in signals if s.direction == "BUY"]
-        sells = [s for s in signals if s.direction == "SELL"]
-        if buys and sells:
-            counters["conflicting_signal_bars"] += 1
-            continue
-
-        direction = "BUY" if buys else "SELL"
-        directional_weight = sum(s.weight for s in signals if s.direction == direction)
-        confidence = min(95.0, 50.0 + 8.0 * directional_weight)
-        atr = float(row.get("ATR", 0) or 0)
+        atr = float(signal.atr)
         atr_pct = float(row.get("ATR_PCT", 0) or 0)
-
         if atr_pct > c.max_atr_pct:
             counters["rejected_atr"] += 1
             continue
-        if len(signals) < c.min_rules_for_signal or confidence < c.min_confidence:
-            continue
-
         next_row = frame.iloc[i + 1]
         if next_row.timestamp.date() != ts.date():
             counters["rejected_no_next_bar"] += 1
@@ -200,8 +189,8 @@ def run_signal_research(
                 "entry_time": next_row.timestamp,
                 "exit_time": exit_time,
                 "direction": direction,
-                "confidence": round(confidence, 2),
-                "rules": "|".join(s.rule for s in signals),
+                "confidence": round(signal.confidence, 2),
+                "rules": "|".join(signals),
                 "entry": round(entry, 2),
                 "stop_loss": round(stop, 2),
                 "target": round(target, 2),

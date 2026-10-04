@@ -11,7 +11,7 @@ class StrategySignal:
     direction:str; rules:tuple[str,...]; reasons:tuple[str,...]; stop_loss:float; target:float; atr:float; confidence:float; valid:bool
 @dataclass(frozen=True)
 class StrategyConfig:
-    rsi_oversold:float=30.0; rsi_overbought:float=70.0; vwap_deviation_pct:float=2.0; bid_ask_ratio_max:float=0.5; spread_widening_factor:float=1.25; sentiment_negative_threshold:float=-0.5; stop_loss_pct:float=0.005; min_target_pct:float=0.02; target_atr_multiple:float=2.5; atr_stop_multiple:float=1.5; min_confidence:float=62.0; min_rules_for_signal:int=2; min_evidence_groups:int=2; min_adx:float=18.0; max_atr_pct:float=0.04; min_history_bars:int=50; min_reward_risk:float=1.8; min_volume_ratio:float=1.0; breakout_volume_ratio:float=1.2; min_signal_separation:float=0.10; require_option_confirmation:bool=True
+    rsi_oversold:float=30.0; rsi_overbought:float=70.0; vwap_deviation_pct:float=2.0; bid_ask_ratio_max:float=0.5; spread_widening_factor:float=1.25; sentiment_negative_threshold:float=-0.5; stop_loss_pct:float=0.005; min_target_pct:float=0.02; target_atr_multiple:float=2.5; atr_stop_multiple:float=1.5; min_confidence:float=62.0; min_rules_for_signal:int=2; min_evidence_groups:int=2; min_adx:float=18.0; max_atr_pct:float=0.04; min_history_bars:int=50; min_reward_risk:float=1.8; min_volume_ratio:float=1.0; breakout_volume_ratio:float=1.2; min_signal_separation:float=0.10; require_option_confirmation:bool=True; precision_mode:bool=True; precision_min_directional_weight:float=2.5; precision_min_evidence_groups:int=2; precision_min_confidence:float=70.0; max_entry_extension_atr:float=1.25; require_regime_alignment:bool=True
 def _v(row,names,default=None):
     if row is None:return default
     for n in names:
@@ -82,19 +82,33 @@ def _evidence_group(rule:str)->str:
     if rule=="sentiment_negative":return "news"
     if rule=="option_flow_confirmation":return "options"
     return "other"
+def _generate_signal_from_enriched(e:pd.DataFrame,config:StrategyConfig)->StrategySignal:
+    if len(e)<config.min_history_bars:return StrategySignal("WAIT",(),("Indicator warm-up: insufficient history",),0,0,0,0,False)
+    row=e.iloc[-1]; prev=e.iloc[-2]; required=("RSI","EMA9","EMA21","MACD","MACD_SIGNAL","ATR","ATR_PCT","VWAP","ADX")
+    if any(pd.isna(row.get(name)) for name in required):return StrategySignal("WAIT",(),("Indicator warm-up: required features unavailable",),0,0,float(_v(row,("ATR",),0) or 0),0,False)
+    rules=evaluate_rules(row,prev,config); buys=[r for r in rules if r.direction=="BUY"]; sells=[r for r in rules if r.direction=="SELL"]; atr=float(_v(row,("ATR",),0) or 0); direction="BUY" if buys and not sells else "SELL" if sells and not buys else "WAIT"
+    if direction=="WAIT":return StrategySignal(direction,tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,0,False)
+    directional=sum(r.weight for r in rules if r.direction==direction); groups={_evidence_group(r.rule) for r in rules if r.direction==direction}; confidence=min(95.0,50+8*directional+4*max(0,len(groups)-1)); atr_pct=float(_v(row,("ATR_PCT",),0) or 0)
+    if atr_pct>config.max_atr_pct:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+    buy_weight=sum(r.weight for r in buys); sell_weight=sum(r.weight for r in sells); separation=abs(buy_weight-sell_weight)/max(buy_weight+sell_weight,1e-9)
+    if separation<config.min_signal_separation or len(groups)<config.min_evidence_groups:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+    close=float(row["close"])
+    if config.precision_mode:
+        if directional < config.precision_min_directional_weight or len(groups) < config.precision_min_evidence_groups or confidence < config.precision_min_confidence:
+            return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+        ema_fast=float(_v(row,("EMA9",),close) or close); ema_slow=float(_v(row,("EMA21",),close) or close); adx_value=float(_v(row,("ADX",),0) or 0)
+        if config.require_regime_alignment and adx_value >= config.min_adx:
+            if direction=="BUY" and ema_fast <= ema_slow:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+            if direction=="SELL" and ema_fast >= ema_slow:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+        extension=abs(close-ema_fast)/atr if atr>0 else 0.0
+        if extension>config.max_entry_extension_atr:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+    risk=max(close*config.stop_loss_pct,atr*config.atr_stop_multiple if atr>0 else 0); reward=max(close*config.min_target_pct,atr*config.target_atr_multiple if atr>0 else 0,risk*config.min_reward_risk); stop=close-risk if direction=="BUY" else close+risk; target=close+reward if direction=="BUY" else close-reward; valid=len(rules)>=config.min_rules_for_signal and confidence>=config.min_confidence
+    return StrategySignal(direction,tuple(r.rule for r in rules),tuple(r.reason for r in rules),round(stop,2),round(target,2),atr,round(confidence,2),valid)
+
 def generate_signal(data:pd.DataFrame,config:StrategyConfig|None=None)->StrategySignal:
     c=config or StrategyConfig()
     if len(data)<c.min_history_bars:return StrategySignal("WAIT",(),("Indicator warm-up: insufficient history",),0,0,0,0,False)
-    e=add_indicators(data); row=e.iloc[-1]; prev=e.iloc[-2]; required=("RSI","EMA9","EMA21","MACD","MACD_SIGNAL","ATR","ATR_PCT","VWAP","ADX")
-    if any(pd.isna(row.get(name)) for name in required):return StrategySignal("WAIT",(),("Indicator warm-up: required features unavailable",),0,0,float(_v(row,("ATR",),0) or 0),0,False)
-    rules=evaluate_rules(row,prev,c); buys=[r for r in rules if r.direction=="BUY"]; sells=[r for r in rules if r.direction=="SELL"]; atr=float(_v(row,("ATR",),0) or 0); direction="BUY" if buys and not sells else "SELL" if sells and not buys else "WAIT"
-    if direction=="WAIT":return StrategySignal(direction,tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,0,False)
-    directional=sum(r.weight for r in rules if r.direction==direction); groups={_evidence_group(r.rule) for r in rules if r.direction==direction}; confidence=min(95.0,50+8*directional+4*max(0,len(groups)-1)); atr_pct=float(_v(row,("ATR_PCT",),0) or 0)
-    if atr_pct>c.max_atr_pct:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
-    buy_weight=sum(r.weight for r in buys); sell_weight=sum(r.weight for r in sells); separation=abs(buy_weight-sell_weight)/max(buy_weight+sell_weight,1e-9)
-    if separation<c.min_signal_separation or len(groups)<c.min_evidence_groups:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
-    close=float(row["close"]); risk=max(close*c.stop_loss_pct,atr*c.atr_stop_multiple if atr>0 else 0); reward=max(close*c.min_target_pct,atr*c.target_atr_multiple if atr>0 else 0,risk*c.min_reward_risk); stop=close-risk if direction=="BUY" else close+risk; target=close+reward if direction=="BUY" else close-reward; valid=len(rules)>=c.min_rules_for_signal and confidence>=c.min_confidence
-    return StrategySignal(direction,tuple(r.rule for r in rules),tuple(r.reason for r in rules),round(stop,2),round(target,2),atr,round(confidence,2),valid)
+    return _generate_signal_from_enriched(add_indicators(data),c)
 def rank_rule_performance(trades:pd.DataFrame)->pd.DataFrame:
     cols=["rule","trades","wins","losses","win_rate_pct","net_pnl","roi_pct"]
     if trades.empty:return pd.DataFrame(columns=cols)
