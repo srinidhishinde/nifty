@@ -26,6 +26,6 @@ def test_risk_levels_match_pseudocode_defaults():
     frame=pd.DataFrame({"timestamp":pd.date_range("2026-10-01 09:15",periods=len(closes),freq="5min"),
                         "open":closes,"high":[p+0.5 for p in closes],"low":[p-0.5 for p in closes],
                         "close":closes,"volume":[1000.0]*len(closes)})
-    signal=generate_signal(frame,StrategyConfig(min_rules_for_signal=1, vwap_deviation_pct=100.0, min_adx=1000.0))
+    signal=generate_signal(frame,StrategyConfig(min_rules_for_signal=1, vwap_deviation_pct=100.0, min_adx=18.0))
     assert signal.direction=="BUY" and signal.valid
     assert signal.stop_loss<101.0<signal.target and signal.target>=round(101.0*1.02,2)
