@@ -74,7 +74,7 @@ def _apply_calibration(p: float, slope: float, intercept: float) -> float:
         return float(p)
     logit = np.log(np.clip(p, 1e-5, 1-1e-5) / np.clip(1-p, 1e-5, 1-1e-5))
     z = slope * logit + intercept
-    return float(1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
+    return float(1.0 / (1.0 + np.exp(-np.clip(z, -30, 30))))
 
 
 def _prediction(models, train: pd.DataFrame, current: pd.DataFrame) -> float:
