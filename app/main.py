@@ -572,6 +572,8 @@ st.markdown("""
 .radar-down { background:#45171d; color:#ff7785; }
 .radar-range { background:#403512; color:#ffd86b; }
 .radar-na { background:#263244; color:#b9c5d6; }
+.st-key-dashboard_chat { position: fixed; right: 24px; bottom: 24px; z-index: 9999; }
+.st-key-dashboard_chat button { border-radius: 999px; box-shadow: 0 10px 28px rgba(0,0,0,.35); }
 </style>
 """, unsafe_allow_html=True)
 
