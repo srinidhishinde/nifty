@@ -20,3 +20,4 @@ models/*.joblib
 .vscode/
 
 .env
+config/whatsapp_recipients.json
