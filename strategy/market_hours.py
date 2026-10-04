@@ -12,7 +12,7 @@ def market_is_open(timestamp, instrument: str) -> bool:
     current = ts.time()
     instrument = instrument.upper()
     if instrument == "NIFTY":
-        return time(9, 15) <= current <= time(15, 30)
+        return time(9, 15) <= current <= time(15, 40)
     if instrument == "MCX":
         return time(9, 0) <= current <= time(23, 30)
     return False
