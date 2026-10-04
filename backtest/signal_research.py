@@ -122,8 +122,10 @@ def run_signal_research(
         "rejected_warmup": 0,
         "rejected_atr": 0,
         "rejected_no_next_bar": 0,
+        "rejected_overlap": 0,
     }
 
+    active_until: pd.Timestamp | None = None
     for i in range(1, len(frame) - 1):
         row = frame.iloc[i]
         prev = frame.iloc[i - 1]
@@ -134,6 +136,10 @@ def run_signal_research(
             continue
 
         counters["bars_considered"] += 1
+        if active_until is not None and ts <= active_until:
+            counters.setdefault("rejected_overlap", 0)
+            counters["rejected_overlap"] += 1
+            continue
         if i < c.min_history_bars:
             counters["rejected_warmup"] += 1
             continue
@@ -187,6 +193,7 @@ def run_signal_research(
         r_multiple = signed_points / risk_distance if risk_distance > 0 else 0.0
         counters["qualified_signal_bars"] += 1
 
+        active_until = exit_time
         rows.append(
             {
                 "signal_time": ts,
