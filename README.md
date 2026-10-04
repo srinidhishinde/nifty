@@ -143,3 +143,33 @@ The application also accepts the wide CE/PE option-chain export format containin
 This is analyzed as an **option-chain snapshot**, not converted into OHLCV candles. A snapshot does not contain candle open/high/low/close history, timestamps, or bid/ask spread history, so it cannot legitimately be used as the historical seven-rule candle backtest.
 
 Rules 1–5 and 7 need candle/context history; Rule 6 needs bid/ask and spread history. The UI therefore keeps snapshot analysis separate from historical backtesting rather than inventing missing data.
+
+## Kotak Neo production decision source
+
+The production/paper decision path uses **Kotak Neo**. Yahoo Finance is intentionally isolated to historical research and independent validation; it is not a silent live fallback.
+
+Before running the production decision panel, configure:
+
+- `NEO_CONSUMER_KEY`
+- `NEO_MOBILE`
+- `NEO_UCC`
+- `NEO_MPIN`
+- `NEO_NIFTY_NEOSYMBOL` — the current `exchange_segment|instrument_token` used by Kotak Neo historical candles.
+
+Kotak Neo's current SDK requires the historical API to receive a Neo symbol in this form, and the 5-minute historical endpoint has a 30-day request limit.
+
+## Dashboard ChatGPT assistant
+
+The dashboard includes a bottom-right **Ask ChatGPT** popover. It can explain the current decision, rule/ML/ensemble state, data-quality gates, option-chain observations, risk controls, backtests, and general platform questions.
+
+Configure:
+
+```
+OPENAI_API_KEY=your_key
+OPENAI_MODEL=gpt-6-luna
+```
+
+The assistant receives only a sanitized dashboard snapshot and is explicitly prevented from overriding trading gates or exposing broker credentials. The integration uses OpenAI's current Responses API rather than the retired Assistants API.
+
+**Important:** the ChatGPT assistant is explanatory/advisory. It does not place or bypass orders.
+

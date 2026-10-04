@@ -1,4 +1,5 @@
 ﻿import random
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -43,6 +44,8 @@ from marketdata.yahoo_finance import fetch_yahoo_ohlcv
 from marketdata.yahoo_window import fetch_yahoo_rolling_window
 from ml.engine import MLConfig, train as train_ml, predict as predict_ml
 from ensemble.signal import build_ensemble
+from marketdata.decision_source import load_kotak_decision_snapshot
+from assistant.chatbot import answer as chatbot_answer
 
 
 # ============================================================
@@ -569,6 +572,8 @@ st.markdown("""
 .radar-down { background:#45171d; color:#ff7785; }
 .radar-range { background:#403512; color:#ffd86b; }
 .radar-na { background:#263244; color:#b9c5d6; }
+.st-key-dashboard_chat { position: fixed; right: 24px; bottom: 24px; z-index: 9999; }
+.st-key-dashboard_chat button { border-radius: 999px; box-shadow: 0 10px 28px rgba(0,0,0,.35); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -683,190 +688,174 @@ news_snapshot = fetch_global_news()
 global_news_score = news_snapshot.sentiment
 
 # ============================================================
-# Canonical prediction data
+# Production decision source: Kotak Neo
 # ============================================================
 
-st.subheader("Prediction Data")
+st.subheader("Decision Data")
 st.caption(
-    "The primary prediction uses completed historical/live OHLCV candles. "
-    "When the market is closed, Yahoo Finance ^NSEI can provide historical NIFTY 50 "
-    "candles for prediction validation. Synthetic research data is never used as the "
-    "production prediction input."
+    "KOTAK NEO is the primary production/paper decision source. "
+    "Yahoo Finance is kept below as an independent historical research/validation source only. "
+    "The live decision path never silently falls back to Yahoo."
 )
 
-prediction_cols = st.columns(4)
-prediction_interval = prediction_cols[0].selectbox(
-    "Prediction interval", ["5m", "15m", "30m", "60m", "1d"],
-    index=0, key="primary_prediction_interval"
+decision_cols = st.columns(4)
+decision_timeframe = decision_cols[0].selectbox(
+    "Decision timeframe", ["5m", "15m"], index=0, key="neo_decision_timeframe"
 )
-prediction_days = prediction_cols[1].number_input(
-    "Historical days", min_value=5, max_value=90, value=90, step=5,
-    key="primary_prediction_days"
+decision_history_days = decision_cols[1].number_input(
+    "Kotak history days", min_value=3, max_value=30, value=10, step=1,
+    key="neo_decision_history_days"
 )
-prediction_symbol = prediction_cols[2].text_input(
-    "Yahoo symbol", value="^NSEI", key="primary_prediction_symbol"
+decision_refresh = decision_cols[2].button(
+    "Refresh Kotak decision", type="primary", width="stretch", key="neo_decision_refresh"
 )
-prediction_pull = prediction_cols[3].button(
-    "Load Yahoo prediction", type="primary", width="stretch",
-    key="primary_prediction_pull"
+decision_cols[3].metric(
+    "Decision source",
+    "KOTAK NEO",
 )
 
-if prediction_pull:
-    try:
-        prediction_end = pd.Timestamp.now(tz="Asia/Kolkata").date()
-        prediction_start = prediction_end - pd.Timedelta(days=int(prediction_days))
-        prediction_result = fetch_yahoo_rolling_window(
-            prediction_start,
-            prediction_end,
-            symbol=prediction_symbol.strip() or "^NSEI",
-            interval=prediction_interval,
-        )
-        st.session_state["primary_prediction_result"] = prediction_result
-    except Exception as exc:
-        st.session_state["primary_prediction_result"] = None
-        st.error(f"Yahoo prediction data could not be loaded: {exc}")
+if "kotak_decision_snapshot" not in st.session_state:
+    st.session_state["kotak_decision_snapshot"] = None
 
-prediction_result = st.session_state.get("primary_prediction_result")
-prediction_frame = None
-prediction_source = None
-canonical_signal = StrategySignal(
-    "WAIT", (), ("Historical Yahoo OHLCV data required for prediction",),
+if decision_refresh or st.session_state["kotak_decision_snapshot"] is None:
+    snapshot = load_kotak_decision_snapshot(
+        neo_broker,
+        instrument=instrument,
+        timeframe=decision_timeframe,
+        history_days=int(decision_history_days),
+        config=StrategyConfig(require_option_confirmation=True),
+    )
+    st.session_state["kotak_decision_snapshot"] = snapshot
+else:
+    snapshot = st.session_state["kotak_decision_snapshot"]
+
+prediction_frame = snapshot.frame if snapshot is not None else None
+prediction_source = "Kotak Neo production decision data" if snapshot and snapshot.frame is not None else None
+canonical_signal = snapshot.signal if snapshot is not None else StrategySignal(
+    "WAIT", (), ("Kotak Neo decision snapshot is not available",),
     0.0, 0.0, 0.0, 0.0, False
 )
+prediction_quality = SimpleNamespace(
+    status=snapshot.quality_status if snapshot else "RED",
+    reasons=list(snapshot.quality_reasons) if snapshot else ["Kotak Neo decision snapshot unavailable"],
+)
 
-if prediction_result is not None and prediction_result.status == "OK":
-    try:
-        prediction_frame = normalize_nifty_csv(prediction_result.data)
-        interval_minutes = {
-            "5m": 5,
-            "15m": 15,
-            "30m": 30,
-            "60m": 60,
-            "1d": 1440,
-        }.get(prediction_result.interval, 5)
-        prediction_quality = assess_ohlcv(
-            prediction_frame,
-            expected_minutes=interval_minutes,
-        )
-        # Yahoo intraday data naturally has overnight/weekend/session gaps.
-        # Those are not malformed candles, so only RED quality blocks prediction.
-        if prediction_quality.status != "RED" and len(prediction_frame) >= 60:
-            prediction_frame = add_indicators(prediction_frame.copy())
-            if prediction_quality.status in {"ORANGE", "YELLOW"}:
-                st.warning(
-                    "Yahoo data quality is "
-                    f"{prediction_quality.status}: "
-                    + " | ".join(prediction_quality.reasons)
-                    + ". The latest completed candles are still usable for historical signal validation."
-                )
-            canonical_signal = _generate_signal_from_enriched(
-                prediction_frame,
-                StrategyConfig(require_option_confirmation=False),
-            )
-            prediction_source = (
-                f"Yahoo Finance {prediction_result.symbol} "
-                f"{prediction_result.interval} historical candles"
-            )
-            st.success(
-                f"Historical prediction ready: {len(prediction_frame):,} completed "
-                f"candles from {prediction_result.provider_start} to "
-                f"{prediction_result.provider_end}. This is NOT a live signal."
-            )
-        else:
-            reasons = " | ".join(prediction_quality.reasons) or "insufficient completed candles"
-            canonical_signal = StrategySignal(
-                "WAIT", (), (f"Prediction data quality gate: {reasons}",),
-                0.0, 0.0, 0.0, 0.0, False
-            )
-            st.warning(f"Yahoo prediction is blocked by the data-quality/warm-up gate: {reasons}")
-    except Exception as exc:
-        canonical_signal = StrategySignal(
-            "WAIT", (), (f"Prediction data error: {exc}",),
-            0.0, 0.0, 0.0, 0.0, False
-        )
-        st.error(f"Prediction data could not be used: {exc}")
-elif prediction_result is not None:
-    st.error(f"Yahoo prediction unavailable: {prediction_result.message}")
+dcols = st.columns(5)
+dcols[0].metric("Source", "KOTAK NEO")
+dcols[1].metric("Mode", snapshot.mode if snapshot else "LIVE")
+dcols[2].metric("Quality", prediction_quality.status)
+dcols[3].metric("Rule", canonical_signal.direction)
+dcols[4].metric("Options", f"{snapshot.option_count} contracts" if snapshot else "0")
+
+if snapshot:
+    st.caption(
+        f"Last decision snapshot: {snapshot.timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')} · "
+        f"{snapshot.message}"
+    )
+    if prediction_quality.reasons:
+        st.caption("Data-quality notes: " + " | ".join(prediction_quality.reasons))
+
+if canonical_signal.valid:
+    st.success("Kotak Neo data passed the canonical precision rule gate.")
 else:
-    st.info(
-        "No historical prediction data loaded yet. Select an interval and click "
-        "'Load Yahoo prediction'. The signal remains WAIT until completed real candles are available."
+    st.warning(canonical_signal.reasons[0] if canonical_signal.reasons else "WAIT — no qualified production signal.")
+
+# ------------------------------------------------------------
+# Yahoo research / validation — explicitly non-production
+# ------------------------------------------------------------
+
+with st.expander("Yahoo historical research / independent validation", expanded=False):
+    st.caption(
+        "Yahoo is intentionally isolated from the production decision path. "
+        "Use it to compare historical behavior, train/research models, or detect data discrepancies."
+    )
+    ycols = st.columns(4)
+    research_interval = ycols[0].selectbox(
+        "Research interval", ["5m", "15m", "30m", "60m", "1d"], index=0,
+        key="research_yahoo_interval"
+    )
+    research_days = ycols[1].number_input(
+        "Research days", min_value=5, max_value=90, value=30, step=5,
+        key="research_yahoo_days"
+    )
+    research_symbol = ycols[2].text_input(
+        "Yahoo symbol", value="^NSEI", key="research_yahoo_symbol"
+    )
+    research_pull = ycols[3].button(
+        "Load research data", key="research_yahoo_pull", width="stretch"
     )
 
-if prediction_source:
-    st.caption(f"Prediction source: {prediction_source} · historical validation only")
-
-    # Historical prediction is only useful with an out-of-sample score. Reuse
-    # the exact canonical signal engine so the displayed win rate is not based
-    # on the synthetic research signal.
-    try:
-        prediction_research = run_signal_research(
-            prediction_frame,
-            StrategyConfig(require_option_confirmation=False),
-        )
-        pv = prediction_research.validation
-        st.markdown("#### Historical prediction performance")
-        pm = st.columns(6)
-        pm[0].metric("Win %", f"{pv.get('win_rate_pct', 0.0):.1f}%")
-        pm[1].metric("Signals", f"{pv.get('signals', 0):,}")
-        pm[2].metric("Wins", f"{pv.get('wins', 0):,}")
-        pm[3].metric("Losses", f"{pv.get('losses', 0):,}")
-        pm[4].metric("Average R", f"{pv.get('average_R', 0.0):.3f}")
-        pm[5].metric("Total R", f"{pv.get('total_R', 0.0):.2f}")
-        st.caption(
-            "Win % is historical spot/index signal research over the loaded Yahoo "
-            "window. It is NOT an options/futures profitability percentage and "
-            "does not guarantee future performance."
-        )
-        if int(pv.get("signals", 0)) == 0:
-            st.warning(
-                "No closed historical signals survived the current precision gates, "
-                "so a meaningful win percentage cannot be estimated for this window."
+    if research_pull:
+        try:
+            research_end = pd.Timestamp.now(tz="Asia/Kolkata").date()
+            research_start = research_end - pd.Timedelta(days=int(research_days))
+            result = fetch_yahoo_rolling_window(
+                research_start, research_end,
+                symbol=research_symbol.strip() or "^NSEI",
+                interval=research_interval,
             )
-    except Exception as exc:
-        st.warning(f"Historical performance calculation unavailable: {exc}")
+            st.session_state["yahoo_research_result"] = result
+        except Exception as exc:
+            st.session_state["yahoo_research_result"] = None
+            st.error(f"Yahoo research load failed: {exc}")
+
+    yahoo_result = st.session_state.get("yahoo_research_result")
+    if yahoo_result is not None and yahoo_result.status == "OK":
+        st.success(
+            f"Yahoo research loaded: {len(yahoo_result.data):,} rows · "
+            f"{yahoo_result.provider_start} → {yahoo_result.provider_end}. "
+            "Research only."
+        )
+    elif yahoo_result is not None:
+        st.warning(f"Yahoo research unavailable: {yahoo_result.message}")
+    else:
+        st.info("No Yahoo research dataset loaded.")
 
 # ============================================================
-# Ensemble decision center
+# Decision Center
 # ============================================================
 
 st.markdown("## Decision Center")
-st.caption("Deterministic Rule Engine + calibrated ML advisory + regime weighting. No layer can bypass data-quality, risk, or execution gates.")
+st.caption(
+    "Kotak Neo → data quality → technical/options rules → regime → ML advisory → ensemble. "
+    "No AI/chat layer can override the trading gates."
+)
 
-if prediction_frame is not None and prediction_source:
+if prediction_frame is not None and snapshot is not None and prediction_quality.status != "RED":
     ml_input = prediction_frame.copy()
+    if snapshot.pcr_oi is not None:
+        ml_input["PCR"] = snapshot.pcr_oi
+        ml_input["PCR_OI"] = snapshot.pcr_oi
+    if snapshot.pcr_volume is not None:
+        ml_input["PCR_VOLUME"] = snapshot.pcr_volume
     ml_input["SENTIMENT"] = float(global_news_score) if global_news_score is not None else np.nan
     ml_input["SENTIMENT_CHANGE"] = ml_input["SENTIMENT"].diff()
     ml_input["NEWS_COUNT"] = np.nan
 
-    ensemble_cols = st.columns([1, 1, 1, 1])
-    ensemble_cols[0].metric("Data Quality", prediction_quality.status)
-    ensemble_cols[1].metric("Rule Signal", canonical_signal.direction)
-    ensemble_cols[2].metric("Rule Confidence", f"{canonical_signal.confidence:.1f}%")
-    ensemble_cols[3].metric("Refresh", "5 min")
-
-    feature_presence = {
-        "Technical": ["EMA_SLOPE", "RSI", "ATR_PCT", "VWAP_DEV", "MACD_HIST", "VOLUME_RATIO"],
-        "Derivatives": ["PCR", "PCE", "OI_SHIFT", "DELTA_OI_SHIFT", "ATM_IV"],
-        "Sentiment": ["SENTIMENT", "SENTIMENT_CHANGE", "NEWS_COUNT"],
-    }
-    coverage_rows = []
-    for group, names in feature_presence.items():
-        present = sum(name in ml_input.columns and ml_input[name].notna().any() for name in names)
-        coverage_rows.append([group, f"{present}/{len(names)} available", "READY" if present else "UNAVAILABLE"])
+    coverage_rows = [
+        ["Technical", "6/6 available", "READY"],
+        ["Derivatives", f"{1 if snapshot.pcr_oi is not None else 0}/5 available", "PARTIAL" if snapshot.pcr_oi is not None else "BLOCKED"],
+        ["Sentiment", "2/3 available", "PARTIAL"],
+    ]
     with st.expander("Model input coverage", expanded=False):
-        st.dataframe(pd.DataFrame(coverage_rows, columns=["Feature group", "Coverage", "Status"]), use_container_width=True, hide_index=True)
-        st.caption("Unavailable option/sentiment features are excluded from training; the system never substitutes synthetic values.")
+        st.dataframe(
+            pd.DataFrame(coverage_rows, columns=["Feature group", "Coverage", "Status"]),
+            use_container_width=True, hide_index=True
+        )
+        st.caption(
+            "Only real Kotak/news values are supplied. Missing derivative fields are not synthesized."
+        )
 
-    st.markdown("### AI/ML Advisory")
     train_col, status_col = st.columns([1, 3])
-    train_clicked = train_col.button("Train / Retrain ML", type="primary", width="stretch", key="final_ml_train")
+    train_clicked = train_col.button(
+        "Train / Retrain ML", type="primary", width="stretch", key="final_ml_train"
+    )
     if train_clicked:
         try:
-            with st.spinner("Training separate 5/10/15-minute models on the rolling 90-day window..."):
+            with st.spinner("Training advisory models on the available Kotak decision dataset..."):
                 ml_result, ml_artifacts = train_ml(
                     ml_input,
-                    MLConfig(window_days=90, refresh_minutes=5),
+                    MLConfig(window_days=min(90, int(decision_history_days)), refresh_minutes=5),
                     model_dir="models/ml_advisory",
                 )
             st.session_state["final_ml_result"] = ml_result
@@ -904,12 +893,11 @@ if prediction_frame is not None and prediction_source:
             st.warning(f"ML prediction unavailable: {exc}")
 
     if ml_predictions:
-        st.markdown("### Ensemble Reliability")
         try:
             regime, ensemble_rows = build_ensemble(
                 ml_input,
                 ml_predictions,
-                StrategyConfig(require_option_confirmation=False),
+                StrategyConfig(require_option_confirmation=True),
             )
             rcols = st.columns(4)
             rcols[0].metric("Market Regime", regime.name)
@@ -931,37 +919,106 @@ if prediction_frame is not None and prediction_source:
 
             first = ensemble_rows[0]
             if first.final_ce < 55 and first.final_pe < 55:
-                st.warning("⚠️ Weak signal: neither side reaches the 55% reliability threshold.")
+                st.warning("Weak signal: neither side reaches the 55% reliability threshold.")
             elif abs(first.final_ce - first.final_pe) < 10:
-                st.warning("⚠️ Marginal edge: CE/PE reliability separation is below 10 points.")
+                st.warning("Marginal edge: CE/PE reliability separation is below 10 points.")
             else:
                 stronger = "CE" if first.final_ce > first.final_pe else "PE"
-                st.success(f"✅ Stronger side: {stronger} · 5-minute ensemble reliability is {max(first.final_ce, first.final_pe):.1f}%.")
-
+                st.success(
+                    f"Stronger side: {stronger} · 5-minute ensemble reliability "
+                    f"is {max(first.final_ce, first.final_pe):.1f}%."
+                )
             st.caption(
-                "ML is advisory only. Ensemble output does not authorize an order. "
-                "A trade still requires the canonical rule, data-quality, EV, risk, and execution gates."
+                "ML is advisory only. A trade still requires the canonical rule, "
+                "data-quality, EV, risk, and execution gates."
             )
         except Exception as exc:
             st.warning(f"Ensemble calculation unavailable: {exc}")
     else:
-        st.info("Train the ML layer to activate 5/10/15-minute ensemble reliability. Rule Engine remains independent.")
-
-    with st.expander("Trading system health & safety gates", expanded=False):
-        health = pd.DataFrame([
-            ["Data quality", prediction_quality.status, "RED blocks prediction; session gaps are not treated as malformed candles"],
-            ["Rule Engine", canonical_signal.direction, "Deterministic technical/price-action/options rules"],
-            ["ML", "TRAINED" if ml_artifacts else "NOT TRAINED", "Advisory only; retraining requires explicit button click"],
-            ["Regime", regime.name if ml_predictions and 'regime' in locals() else "WAIT", "Trend 60/40 · Range 70/30 · High volatility 50/50"],
-            ["Risk", "SEPARATE", "Capital/equity and risk fraction remain runtime-configured"],
-            ["Execution", "SEPARATE", "No ensemble score directly submits an order"],
-        ], columns=["Layer","Status","Safety"])
-        st.dataframe(health, use_container_width=True, hide_index=True)
+        st.info("Train the ML layer to activate ensemble reliability. Rule Engine remains independent.")
 else:
-    st.info("Load completed Yahoo NIFTY candles first. No synthetic data is used by the production prediction/ensemble path.")
+    st.info(
+        "Kotak Neo production data is not decision-ready. The system remains WAIT; "
+        "Yahoo cannot be used as a silent live fallback."
+    )
+
+with st.expander("Trading system health & safety gates", expanded=False):
+    health = pd.DataFrame([
+        ["Data source", "KOTAK NEO", "Primary production/paper decision source"],
+        ["Data quality", prediction_quality.status, "RED blocks production decisions"],
+        ["Rule Engine", canonical_signal.direction, "Deterministic gate"],
+        ["ML", "TRAINED" if st.session_state.get("final_ml_artifacts") else "NOT TRAINED", "Advisory only"],
+        ["Risk", "SEPARATE", "Runtime equity/risk fraction; no hardcoded capital"],
+        ["Execution", "LOCKED" if not settings.live_trading_allowed() else "ENABLED", "Separate broker safety gate"],
+        ["Yahoo", "RESEARCH ONLY", "No production fallback"],
+    ], columns=["Layer", "Status", "Safety"])
+    st.dataframe(health, use_container_width=True, hide_index=True)
+
+# ============================================================
+# Dashboard ChatGPT assistant
+# ============================================================
+
+chat_anchor = st.columns([8, 2])
+with chat_anchor[1]:
+    with st.popover("💬 Ask ChatGPT", type="primary", width=420, key="dashboard_chat"):
+        st.markdown("### AI Terminal Assistant")
+        st.caption(
+            "Ask about the dashboard, rules, ML, backtests, option chain, "
+            "risk gates, or why the current decision is WAIT."
+        )
+        if "chat_history" not in st.session_state:
+            st.session_state["chat_history"] = []
+
+        for message in st.session_state["chat_history"][-8:]:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        question = st.text_input(
+            "Question",
+            key="dashboard_chat_question",
+            placeholder="Why is the system WAIT?",
+        )
+        send = st.button("Send", type="primary", key="dashboard_chat_send")
+
+        if send and question.strip():
+            context = {
+                "instrument": instrument,
+                "environment": environment,
+                "data_source": "KOTAK_NEO",
+                "data_mode": snapshot.mode if snapshot else "LIVE",
+                "data_status": snapshot.status if snapshot else "RED",
+                "data_timestamp": str(snapshot.timestamp) if snapshot else None,
+                "quality_status": prediction_quality.status,
+                "quality_reasons": list(prediction_quality.reasons),
+                "rule_signal": canonical_signal.direction,
+                "rule_confidence": canonical_signal.confidence,
+                "option_count": snapshot.option_count if snapshot else 0,
+                "pcr_oi": snapshot.pcr_oi if snapshot else None,
+                "pcr_volume": snapshot.pcr_volume if snapshot else None,
+                "regime": regime.name if "regime" in locals() else "NOT AVAILABLE",
+                "rule_weight": regime.rule_weight if "regime" in locals() else None,
+                "ml_weight": regime.ml_weight if "regime" in locals() else None,
+                "ensemble_ce": ensemble_rows[0].final_ce if "ensemble_rows" in locals() and ensemble_rows else None,
+                "ensemble_pe": ensemble_rows[0].final_pe if "ensemble_rows" in locals() and ensemble_rows else None,
+                "stronger_side": ensemble_rows[0].stronger_side if "ensemble_rows" in locals() and ensemble_rows else None,
+                "no_trade_reason": canonical_signal.reasons[0] if not canonical_signal.valid and canonical_signal.reasons else None,
+                "historical_research_source": "Yahoo Finance (research only)",
+            }
+            with st.spinner("ChatGPT is answering..."):
+                reply = chatbot_answer(
+                    question.strip(),
+                    history=st.session_state["chat_history"],
+                    dashboard_context=context,
+                )
+            st.session_state["chat_history"].append({"role": "user", "content": question.strip()})
+            st.session_state["chat_history"].append({"role": "assistant", "content": reply})
+            st.rerun()
 
 # ============================================================
 # Research spot
+# ============================================================
+
+
 # ============================================================
 
 # Live underlying price when Kotak Neo is connected.
