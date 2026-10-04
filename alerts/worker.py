@@ -55,7 +55,7 @@ class ScheduledSignalAlertWorker:
         return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
 
     def run_once(self) -> list:
-        if not settings.whatsapp_alerts_enabled or not self.service.configured:
+        if not self.service.configured:
             return []
 
         snapshot = self.snapshot_factory()
