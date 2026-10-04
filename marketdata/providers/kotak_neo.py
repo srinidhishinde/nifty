@@ -345,11 +345,12 @@ class KotakNeoProvider(MarketDataProvider):
         timeframe: str,
         start: date,
         end: date,
+        neosymbol: str | None = None,
     ) -> List[Candle]:
         # Historical API requires an exchange-segment|instrument-token Neo symbol.
         # Keep this explicit/configured rather than guessing an index token.
         from config.settings import settings
-        neosymbol = settings.neo_nifty_neosymbol if symbol.lower().replace(" ", "") in {"nifty50", "nifty"} else symbol
+        neosymbol = neosymbol or (settings.neo_nifty_neosymbol if symbol.lower().replace(" ", "") in {"nifty50", "nifty"} else symbol)
         if not neosymbol:
             raise RuntimeError(
                 "NEO_NIFTY_NEOSYMBOL is not configured. "
