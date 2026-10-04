@@ -40,6 +40,9 @@ from marketdata.nifty_csv import normalize_nifty_csv
 from marketdata.option_chain_replay import replay_option_chain_csv
 from strategy.cross_market_trend import calculate_trend, TrendSnapshot, aggregate_context
 from marketdata.yahoo_finance import fetch_yahoo_ohlcv
+from marketdata.yahoo_window import fetch_yahoo_rolling_window
+from ml.engine import MLConfig, train as train_ml, predict as predict_ml
+from ensemble.signal import build_ensemble
 
 
 # ============================================================
@@ -697,7 +700,7 @@ prediction_interval = prediction_cols[0].selectbox(
     index=0, key="primary_prediction_interval"
 )
 prediction_days = prediction_cols[1].number_input(
-    "Historical days", min_value=5, max_value=59, value=30, step=5,
+    "Historical days", min_value=5, max_value=90, value=90, step=5,
     key="primary_prediction_days"
 )
 prediction_symbol = prediction_cols[2].text_input(
@@ -712,7 +715,7 @@ if prediction_pull:
     try:
         prediction_end = pd.Timestamp.now(tz="Asia/Kolkata").date()
         prediction_start = prediction_end - pd.Timedelta(days=int(prediction_days))
-        prediction_result = fetch_yahoo_ohlcv(
+        prediction_result = fetch_yahoo_rolling_window(
             prediction_start,
             prediction_end,
             symbol=prediction_symbol.strip() or "^NSEI",
@@ -822,6 +825,140 @@ if prediction_source:
             )
     except Exception as exc:
         st.warning(f"Historical performance calculation unavailable: {exc}")
+
+# ============================================================
+# Ensemble decision center
+# ============================================================
+
+st.markdown("## Decision Center")
+st.caption("Deterministic Rule Engine + calibrated ML advisory + regime weighting. No layer can bypass data-quality, risk, or execution gates.")
+
+if prediction_frame is not None and prediction_source:
+    ml_input = prediction_frame.copy()
+    ml_input["SENTIMENT"] = float(global_news_score) if global_news_score is not None else np.nan
+    ml_input["SENTIMENT_CHANGE"] = ml_input["SENTIMENT"].diff()
+    ml_input["NEWS_COUNT"] = np.nan
+
+    ensemble_cols = st.columns([1, 1, 1, 1])
+    ensemble_cols[0].metric("Data Quality", prediction_quality.status)
+    ensemble_cols[1].metric("Rule Signal", canonical_signal.direction)
+    ensemble_cols[2].metric("Rule Confidence", f"{canonical_signal.confidence:.1f}%")
+    ensemble_cols[3].metric("Refresh", "5 min")
+
+    feature_presence = {
+        "Technical": ["EMA_SLOPE", "RSI", "ATR_PCT", "VWAP_DEV", "MACD_HIST", "VOLUME_RATIO"],
+        "Derivatives": ["PCR", "PCE", "OI_SHIFT", "DELTA_OI_SHIFT", "ATM_IV"],
+        "Sentiment": ["SENTIMENT", "SENTIMENT_CHANGE", "NEWS_COUNT"],
+    }
+    coverage_rows = []
+    for group, names in feature_presence.items():
+        present = sum(name in ml_input.columns and ml_input[name].notna().any() for name in names)
+        coverage_rows.append([group, f"{present}/{len(names)} available", "READY" if present else "UNAVAILABLE"])
+    with st.expander("Model input coverage", expanded=False):
+        st.dataframe(pd.DataFrame(coverage_rows, columns=["Feature group", "Coverage", "Status"]), use_container_width=True, hide_index=True)
+        st.caption("Unavailable option/sentiment features are excluded from training; the system never substitutes synthetic values.")
+
+    st.markdown("### AI/ML Advisory")
+    train_col, status_col = st.columns([1, 3])
+    train_clicked = train_col.button("Train / Retrain ML", type="primary", width="stretch", key="final_ml_train")
+    if train_clicked:
+        try:
+            with st.spinner("Training separate 5/10/15-minute models on the rolling 90-day window..."):
+                ml_result, ml_artifacts = train_ml(
+                    ml_input,
+                    MLConfig(window_days=90, refresh_minutes=5),
+                    model_dir="models/ml_advisory",
+                )
+            st.session_state["final_ml_result"] = ml_result
+            st.session_state["final_ml_artifacts"] = ml_artifacts
+            st.success("ML models trained separately from the Rule Engine.")
+        except Exception as exc:
+            st.error(f"ML training failed: {exc}")
+
+    ml_result = st.session_state.get("final_ml_result")
+    ml_artifacts = st.session_state.get("final_ml_artifacts")
+    if ml_result:
+        status_col.caption(
+            f"Model {ml_result.model_version} · {ml_result.rows:,} rows · "
+            f"{ml_result.window_start} → {ml_result.window_end}"
+        )
+        train_table = pd.DataFrame([
+            {
+                "Horizon": f"{h}m",
+                "Train": f"{m['training_accuracy']*100:.1f}%",
+                "Validation": f"{m['validation_accuracy']*100:.1f}%",
+                "Balanced": f"{m['validation_balanced_accuracy']*100:.1f}%",
+                "Time-series CV": f"{m['cv_accuracy']*100:.1f}%",
+                "Samples": m["validation_samples"],
+                "Accuracy CI": f"{m['confidence_interval_pct'][0]:.1f}%–{m['confidence_interval_pct'][1]:.1f}%",
+            }
+            for h, m in ml_result.horizons.items()
+        ])
+        st.dataframe(train_table, use_container_width=True, hide_index=True)
+
+    ml_predictions = []
+    if ml_artifacts:
+        try:
+            ml_predictions = predict_ml(ml_input, ml_artifacts, MLConfig())
+        except Exception as exc:
+            st.warning(f"ML prediction unavailable: {exc}")
+
+    if ml_predictions:
+        st.markdown("### Ensemble Reliability")
+        try:
+            regime, ensemble_rows = build_ensemble(
+                ml_input,
+                ml_predictions,
+                StrategyConfig(require_option_confirmation=False),
+            )
+            rcols = st.columns(4)
+            rcols[0].metric("Market Regime", regime.name)
+            rcols[1].metric("Rule Weight", f"{regime.rule_weight*100:.0f}%")
+            rcols[2].metric("ML Weight", f"{regime.ml_weight*100:.0f}%")
+            rcols[3].caption(regime.reason)
+
+            ensemble_table = pd.DataFrame([
+                {
+                    "Horizon": f"{x.horizon_minutes} min",
+                    "CE Reliability": f"{x.final_ce:.1f}%",
+                    "PE Reliability": f"{x.final_pe:.1f}%",
+                    "Stronger Side": "🟢 CE" if x.stronger_side == "CE" else "🔴 PE" if x.stronger_side == "PE" else "⚪ WAIT",
+                    "Validation CI": f"{x.confidence_low:.1f}%–{x.confidence_high:.1f}%",
+                }
+                for x in ensemble_rows
+            ])
+            st.dataframe(ensemble_table, use_container_width=True, hide_index=True)
+
+            first = ensemble_rows[0]
+            if first.final_ce < 55 and first.final_pe < 55:
+                st.warning("⚠️ Weak signal: neither side reaches the 55% reliability threshold.")
+            elif abs(first.final_ce - first.final_pe) < 10:
+                st.warning("⚠️ Marginal edge: CE/PE reliability separation is below 10 points.")
+            else:
+                stronger = "CE" if first.final_ce > first.final_pe else "PE"
+                st.success(f"✅ Stronger side: {stronger} · 5-minute ensemble reliability is {max(first.final_ce, first.final_pe):.1f}%.")
+
+            st.caption(
+                "ML is advisory only. Ensemble output does not authorize an order. "
+                "A trade still requires the canonical rule, data-quality, EV, risk, and execution gates."
+            )
+        except Exception as exc:
+            st.warning(f"Ensemble calculation unavailable: {exc}")
+    else:
+        st.info("Train the ML layer to activate 5/10/15-minute ensemble reliability. Rule Engine remains independent.")
+
+    with st.expander("Trading system health & safety gates", expanded=False):
+        health = pd.DataFrame([
+            ["Data quality", prediction_quality.status, "RED blocks prediction; session gaps are not treated as malformed candles"],
+            ["Rule Engine", canonical_signal.direction, "Deterministic technical/price-action/options rules"],
+            ["ML", "TRAINED" if ml_artifacts else "NOT TRAINED", "Advisory only; retraining requires explicit button click"],
+            ["Regime", regime.name if ml_predictions and 'regime' in locals() else "WAIT", "Trend 60/40 · Range 70/30 · High volatility 50/50"],
+            ["Risk", "SEPARATE", "Capital/equity and risk fraction remain runtime-configured"],
+            ["Execution", "SEPARATE", "No ensemble score directly submits an order"],
+        ], columns=["Layer","Status","Safety"])
+        st.dataframe(health, use_container_width=True, hide_index=True)
+else:
+    st.info("Load completed Yahoo NIFTY candles first. No synthetic data is used by the production prediction/ensemble path.")
 
 # ============================================================
 # Research spot
