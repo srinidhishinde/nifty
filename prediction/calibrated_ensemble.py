@@ -71,7 +71,19 @@ def predict_calibrated(
 
     p_up = float(calibrated.predict_proba(now)[0, 1])
     uncertainty = float(1.0 - abs(p_up - 0.5) * 2.0)
-    model_agreement = 1.0
+    # Calibrated ensemble confidence is reduced when component models disagree.
+    fitted = getattr(calibrated, "calibrated_classifiers_", [])
+    component_probs = []
+    for calibrated_model in fitted:
+        try:
+            component_probs.append(float(calibrated_model.predict_proba(now)[0, 1]))
+        except Exception:
+            continue
+    if len(component_probs) >= 2:
+        spread = max(component_probs) - min(component_probs)
+        model_agreement = float(np.clip(1.0 - spread, 0.0, 1.0))
+    else:
+        model_agreement = 0.0
     return CalibratedPrediction(
         probability_up=round(p_up, 4),
         probability_down=round(1.0 - p_up, 4),
