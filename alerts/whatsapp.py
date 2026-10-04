@@ -8,6 +8,7 @@ from pathlib import Path
 import requests
 
 from alerts.recipient_store import WhatsAppRecipientStore
+from alerts.runtime_settings import WhatsAppSettingsStore
 from config.settings import settings
 
 
@@ -25,7 +26,8 @@ class WhatsAppAlertService:
         self.token = str(getattr(settings, "whatsapp_api_token", "") or "").strip()
         self.phone_number_id = str(getattr(settings, "whatsapp_phone_number_id", "") or "").strip()
         self.graph_version = str(getattr(settings, "whatsapp_graph_version", "v23.0") or "v23.0").strip()
-        self.enabled = bool(getattr(settings, "whatsapp_alerts_enabled", False))
+        self.runtime_settings = WhatsAppSettingsStore()
+        self.enabled = bool(getattr(settings, "whatsapp_alerts_enabled", False)) or self.runtime_settings.enabled()
         self.log_path = Path("logs/whatsapp_alerts.jsonl")
 
     @property
