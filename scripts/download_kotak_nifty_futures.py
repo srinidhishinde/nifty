@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+# Allow direct execution from the repository root (or any working directory).
+# The scripts directory is placed on sys.path for direct execution, not the repository root.
+# Add the repository root explicitly so package imports such as config work reliably.
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import argparse
 import json
 import time
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
