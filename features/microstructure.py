@@ -84,12 +84,17 @@ class AdaptiveMicroWeight:
         adjustment = _finite(volatility_band) * 0.1 - previous
         candidate = clamp(previous + adjustment, 0.10, 0.20)
         candidate = clamp(candidate, previous - 0.05, previous + 0.05)
+
+        # Keep the public value numerically stable so an exact 0.05
+        # change cannot become 0.05000000000000002.
+        candidate = round(candidate, 6)
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             payload = {}
-        payload[key] = round(candidate, 6)
+        payload[key] = candidate
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         tmp.replace(self.path)
