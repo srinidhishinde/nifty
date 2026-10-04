@@ -1919,10 +1919,51 @@ if bt_data is not None:
                             trades = result.trades.copy()
 
                             validation = result.validation
-                            if validation.get("trading_days", 0) < 100 or len(trades) < 30:
-                                st.warning("INSUFFICIENT EVIDENCE: this dataset is a smoke/sanity test only. Evidence-grade validation requires at least 100 trading days and 30 closed trades.")
+                            trading_days = int(validation.get("trading_days", 0))
+                            qualified_signals = int(validation.get("qualified_signal_bars", 0))
+                            rejected_risk = int(validation.get("rejected_risk_budget", 0))
+                            if trading_days < 100:
+                                st.warning(
+                                    "INSUFFICIENT EVIDENCE: fewer than 100 trading days are available. "
+                                    "This run is a smoke/sanity test, not evidence of profitability."
+                                )
+                            elif len(trades) < 30:
+                                if qualified_signals and rejected_risk == qualified_signals:
+                                    st.warning(
+                                        "NO EXECUTABLE TRADES: qualified signals were found, but every "
+                                        "candidate was rejected because one whole futures lot exceeds the "
+                                        "configured per-trade risk budget. The risk model was NOT loosened."
+                                    )
+                                elif qualified_signals == 0:
+                                    st.warning(
+                                        "NO QUALIFIED SIGNALS: the rules did not produce an executable "
+                                        "candidate under the configured confirmation gates."
+                                    )
+                                else:
+                                    st.warning(
+                                        "INSUFFICIENT TRADE EVIDENCE: the dataset has enough history, "
+                                        "but fewer than 30 closed trades were produced."
+                                    )
                             else:
-                                st.success("Historical backtest completed. Results are historical simulation results, not a guarantee of future performance.")
+                                st.success(
+                                    "Historical backtest completed. Results are historical simulation "
+                                    "results, not a guarantee of future performance."
+                                )
+
+                            st.markdown("#### Backtest diagnostic funnel")
+                            funnel = st.columns(6)
+                            funnel[0].metric("Bars", f"{validation.get('bars_considered', 0):,}")
+                            funnel[1].metric("Rule-trigger bars", f"{validation.get('rule_trigger_bars', 0):,}")
+                            funnel[2].metric("Qualified signals", f"{qualified_signals:,}")
+                            funnel[3].metric("Risk rejected", f"{rejected_risk:,}")
+                            funnel[4].metric("Closed trades", f"{len(trades):,}")
+                            funnel[5].metric("Trading days", f"{trading_days:,}")
+                            if qualified_signals and rejected_risk:
+                                st.caption(
+                                    "A risk rejection means the stop distance × lot size exceeds the "
+                                    "configured ₹1,000-style risk budget. This is intentional; do not "
+                                    "increase risk merely to manufacture trades."
+                                )
 
                             total_trades = int(metrics.total_trades)
                             wins = int(metrics.winning_trades)
