@@ -11,7 +11,7 @@ class StrategySignal:
     direction:str; rules:tuple[str,...]; reasons:tuple[str,...]; stop_loss:float; target:float; atr:float; confidence:float; valid:bool
 @dataclass(frozen=True)
 class StrategyConfig:
-    rsi_oversold:float=30.0; rsi_overbought:float=70.0; vwap_deviation_pct:float=2.0; bid_ask_ratio_max:float=0.5; spread_widening_factor:float=1.25; sentiment_negative_threshold:float=-0.5; stop_loss_pct:float=0.005; min_target_pct:float=0.02; target_atr_multiple:float=2.5; atr_stop_multiple:float=1.5; min_confidence:float=62.0; min_rules_for_signal:int=2; min_evidence_groups:int=2; min_adx:float=18.0; max_atr_pct:float=0.04; min_history_bars:int=50; min_reward_risk:float=1.8; min_volume_ratio:float=1.0; breakout_volume_ratio:float=1.2; min_signal_separation:float=0.10; require_option_confirmation:bool=True
+    rsi_oversold:float=30.0; rsi_overbought:float=70.0; vwap_deviation_pct:float=2.0; bid_ask_ratio_max:float=0.5; spread_widening_factor:float=1.25; sentiment_negative_threshold:float=-0.5; stop_loss_pct:float=0.005; min_target_pct:float=0.02; target_atr_multiple:float=2.5; atr_stop_multiple:float=1.5; min_confidence:float=62.0; min_rules_for_signal:int=2; min_evidence_groups:int=2; min_adx:float=18.0; max_atr_pct:float=0.04; min_history_bars:int=50; min_reward_risk:float=1.8; min_volume_ratio:float=1.0; breakout_volume_ratio:float=1.2; min_signal_separation:float=0.10; require_option_confirmation:bool=True; precision_mode:bool=True; precision_min_directional_weight:float=3.0; precision_min_evidence_groups:int=3; precision_min_confidence:float=72.0; max_entry_extension_atr:float=1.25; require_regime_alignment:bool=True
 def _v(row,names,default=None):
     if row is None:return default
     for n in names:
@@ -93,7 +93,29 @@ def generate_signal(data:pd.DataFrame,config:StrategyConfig|None=None)->Strategy
     if atr_pct>c.max_atr_pct:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
     buy_weight=sum(r.weight for r in buys); sell_weight=sum(r.weight for r in sells); separation=abs(buy_weight-sell_weight)/max(buy_weight+sell_weight,1e-9)
     if separation<c.min_signal_separation or len(groups)<c.min_evidence_groups:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
-    close=float(row["close"]); risk=max(close*c.stop_loss_pct,atr*c.atr_stop_multiple if atr>0 else 0); reward=max(close*c.min_target_pct,atr*c.target_atr_multiple if atr>0 else 0,risk*c.min_reward_risk); stop=close-risk if direction=="BUY" else close+risk; target=close+reward if direction=="BUY" else close-reward; valid=len(rules)>=c.min_rules_for_signal and confidence>=c.min_confidence
+    close=float(row["close"])
+    if c.precision_mode:
+        # Precision mode is deliberately a trade-quality gate. It does not alter
+        # the reported win rate; it removes marginal setups before execution.
+        if directional < c.precision_min_directional_weight or len(groups) < c.precision_min_evidence_groups or confidence < c.precision_min_confidence:
+            return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+        ema_fast=float(_v(row,("EMA9",),close) or close)
+        ema_slow=float(_v(row,("EMA21",),close) or close)
+        adx_value=float(_v(row,("ADX",),0) or 0)
+        # In a directional regime, lower-timeframe signals must agree with the
+        # prevailing EMA structure. In a range, allow reversal/location setups
+        # but require stronger multi-group evidence above.
+        if c.require_regime_alignment and adx_value >= c.min_adx:
+            if direction=="BUY" and ema_fast <= ema_slow:
+                return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+            if direction=="SELL" and ema_fast >= ema_slow:
+                return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+        # Avoid buying an already extended bar or selling an already stretched
+        # bar. This reduces adverse next-bar entries without changing exits.
+        extension = abs(close-ema_fast)/atr if atr > 0 else 0.0
+        if extension > c.max_entry_extension_atr:
+            return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
+    risk=max(close*c.stop_loss_pct,atr*c.atr_stop_multiple if atr>0 else 0); reward=max(close*c.min_target_pct,atr*c.target_atr_multiple if atr>0 else 0,risk*c.min_reward_risk); stop=close-risk if direction=="BUY" else close+risk; target=close+reward if direction=="BUY" else close-reward; valid=len(rules)>=c.min_rules_for_signal and confidence>=c.min_confidence
     return StrategySignal(direction,tuple(r.rule for r in rules),tuple(r.reason for r in rules),round(stop,2),round(target,2),atr,round(confidence,2),valid)
 def rank_rule_performance(trades:pd.DataFrame)->pd.DataFrame:
     cols=["rule","trades","wins","losses","win_rate_pct","net_pnl","roi_pct"]
