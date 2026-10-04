@@ -26,6 +26,9 @@ from strategy.rules import StrategyConfig, evaluate_rules
 from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
 from features.option_signal_engine import generate_option_chain_signal
 from strategy.buy_today_sell_tomorrow import run_buy_today_sell_tomorrow
+from strategy.btst_option_selector import rank_btst_options
+from strategy.closing_session import evaluate_closing_session
+from analysis.data_quality import assess_ohlcv
 from prediction.nifty_315_340 import predict_315_340, evaluate_next_day_accuracy
 from prediction.nifty_model import walk_forward_predict
 from news.global_news import fetch_global_news
@@ -1624,6 +1627,94 @@ if intraday_file is not None:
         st.write(prediction.reason)
     except Exception as exc:
         st.error(f"NIFTY prediction failed: {exc}")
+
+st.divider()
+
+# ============================================================
+# Advanced decision workspace
+# ============================================================
+
+st.subheader("Advanced Decision Workspace")
+st.caption("A transparent research cockpit: higher-timeframe regime → setup → option-chain evidence → risk → execution. No synthetic chain is used for trade recommendations.")
+
+workspace_tabs = st.tabs(["Closing Session 15:15–15:40", "BTST Option Chain", "Data Quality"])
+
+with workspace_tabs[0]:
+    st.markdown("**NIFTY derivatives closing-session engine**")
+    st.caption("Research window for the final 25 minutes. This is not the cash-market closing auction (CAS); derivatives have their own normal-market close.")
+    closing_file = st.file_uploader("Upload NIFTY intraday candles", type=["csv"], key="closing_session_csv")
+    chain_file = st.file_uploader("Upload real NIFTY option-chain snapshot", type=["csv"], key="closing_chain_csv")
+    if closing_file is not None and chain_file is not None:
+        try:
+            close_candles = pd.read_csv(closing_file)
+            close_chain_df = pd.read_csv(chain_file)
+            close_contracts = parse_option_chain_csv(close_chain_df)
+            closing_signal, closing_table = evaluate_closing_session(
+                close_candles, close_contracts, news_score=global_news_score
+            )
+            cc = st.columns(6)
+            cc[0].metric("Decision", closing_signal.decision)
+            cc[1].metric("Confidence", f"{closing_signal.confidence:.1f}%")
+            cc[2].metric("Option", f"{closing_signal.option_type} {closing_signal.strike or ''}")
+            cc[3].metric("Entry", "—" if closing_signal.entry is None else f"₹{closing_signal.entry:.2f}")
+            cc[4].metric("SL", "—" if closing_signal.stop_loss is None else f"₹{closing_signal.stop_loss:.2f}")
+            cc[5].metric("Target", "—" if closing_signal.target is None else f"₹{closing_signal.target:.2f}")
+            st.info(" | ".join(closing_signal.reasons))
+            if closing_signal.status == "READY":
+                st.success("Trade candidate passed the closing-session research filters. Use a broker-confirmed live quote before any order.")
+            else:
+                st.warning("NO TRADE: the engine is intentionally allowed to abstain.")
+            if not closing_table.empty:
+                st.dataframe(closing_table.head(15), use_container_width=True, hide_index=True)
+        except Exception as exc:
+            st.error(f"Closing-session analysis failed: {exc}")
+    else:
+        st.info("Upload both completed intraday candles and a real option-chain snapshot to generate a candidate. The system will not invent an option.")
+
+with workspace_tabs[1]:
+    st.markdown("**BTST — Buy Today, Sell Tomorrow option selection**")
+    st.caption("The selector ranks only liquid real contracts and prices entry from the ask when available. Overnight gap risk is explicit.")
+    btst_file = st.file_uploader("Upload real option-chain snapshot", type=["csv"], key="btst_chain_csv")
+    btst_direction = st.selectbox("Underlying next-session bias", ["UP", "DOWN", "NEUTRAL"], key="btst_direction")
+    if btst_file is not None:
+        try:
+            btst_df = pd.read_csv(btst_file)
+            btst_contracts = parse_option_chain_csv(btst_df)
+            btst_signal, btst_table = rank_btst_options(btst_contracts, btst_direction)
+            bc = st.columns(6)
+            bc[0].metric("Decision", btst_signal.decision)
+            bc[1].metric("Confidence", f"{btst_signal.confidence:.1f}%")
+            bc[2].metric("Strike", "—" if btst_signal.strike is None else f"{btst_signal.strike:g}")
+            bc[3].metric("Entry", "—" if btst_signal.entry is None else f"₹{btst_signal.entry:.2f}")
+            bc[4].metric("SL", "—" if btst_signal.stop_loss is None else f"₹{btst_signal.stop_loss:.2f}")
+            bc[5].metric("Target", "—" if btst_signal.target is None else f"₹{btst_signal.target:.2f}")
+            st.warning("BTST is not guaranteed: overnight gap, IV change and next-session liquidity can invalidate the setup.")
+            if not btst_table.empty:
+                st.dataframe(btst_table.head(20), use_container_width=True, hide_index=True)
+        except Exception as exc:
+            st.error(f"BTST option analysis failed: {exc}")
+    else:
+        st.info("Upload a real option-chain snapshot. No synthetic option is recommended for BTST.")
+
+with workspace_tabs[2]:
+    st.markdown("**Data quality gate**")
+    quality_file = st.file_uploader("Upload OHLCV for quality audit", type=["csv"], key="quality_csv")
+    if quality_file is not None:
+        try:
+            quality = assess_ohlcv(pd.read_csv(quality_file))
+            qc = st.columns(6)
+            qc[0].metric("Status", quality.status)
+            qc[1].metric("Rows", f"{quality.rows:,}")
+            qc[2].metric("Duplicates", quality.duplicate_timestamps)
+            qc[3].metric("Invalid OHLC", quality.invalid_ohlc)
+            qc[4].metric("Gaps", quality.gaps_over_expected)
+            qc[5].metric("Max Gap", f"{quality.max_gap_minutes:.1f}m")
+            if quality.reasons:
+                st.warning(" | ".join(quality.reasons))
+            else:
+                st.success("No structural quality issues detected.")
+        except Exception as exc:
+            st.error(f"Data-quality audit failed: {exc}")
 
 st.divider()
 

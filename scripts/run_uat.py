@@ -32,10 +32,10 @@ def resolve_python() -> str:
         if candidate.is_file():
             return str(candidate)
 
-    raise SystemExit(
-        "Repository-local UAT environment not found. "
-        "Create it with: python -m venv .venv"
-    )
+    # CI environments already provide the intended interpreter. Falling back
+    # to it keeps the UAT harness portable while still preferring the repo venv
+    # for local Windows/macOS/Linux runs.
+    return sys.executable
 
 
 PYTHON = resolve_python()
