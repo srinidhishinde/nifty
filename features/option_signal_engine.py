@@ -17,7 +17,7 @@ class OptionChainSignal:
     take_profit: float | None
     underlying_entry: float
     underlying_stop_loss: float
-    underlying_take_profit: float
+    underlying_take_profit: float | None
     reasons: tuple[str, ...]
 
 
@@ -98,6 +98,6 @@ def generate_option_chain_signal(
         take_profit=float(tp) if tp is not None else None,
         underlying_entry=float(winner["Underlying Entry"]),
         underlying_stop_loss=float(winner["Underlying SL"]),
-        underlying_take_profit=float(winner["Underlying TP"]) if pd.notna(winner["Underlying TP"]) else float(spot),
+        underlying_take_profit=float(winner["Underlying TP"]) if pd.notna(winner["Underlying TP"]) else None,
         reasons=(reason, f"Global news sentiment={global_news_score:.2f}"),
     ), frame
