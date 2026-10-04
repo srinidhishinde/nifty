@@ -26,11 +26,11 @@ def add_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
     bullish, bearish = c > o, c < o
     prev_o, prev_c = o.shift(1), c.shift(1)
     prev_bull = bullish.shift(1).astype("boolean").fillna(False).astype(bool)
-    prev_bear = bearish.shift(1).fillna(False).astype(bool)
+    prev_bear = bearish.shift(1).astype("boolean").fillna(False).astype(bool)
     prev_body = body.shift(1)
     prev2_o, prev2_c = o.shift(2), c.shift(2)
     bull2 = bullish.shift(2).astype("boolean").fillna(False).astype(bool)
-    bear2 = bearish.shift(2).fillna(False).astype(bool)
+    bear2 = bearish.shift(2).astype("boolean").fillna(False).astype(bool)
 
     out["doji"] = (body <= rng * 0.10).fillna(False).astype(int)
     out["hammer"] = ((lower >= body_safe * 2) & (upper <= body * 0.75) & ((c-l)/rng.replace(0,np.nan) >= 0.60)).fillna(False).astype(int)
@@ -49,8 +49,8 @@ def add_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
     prev_mid = (prev_o+prev_c)/2
     out["piercing_line"] = (prev_bear & bullish & (c > prev_mid) & (c < prev_o) & (o < prev_c)).fillna(False).astype(int)
     out["dark_cloud_cover"] = (prev_bull & bearish & (c < prev_mid) & (c > prev_o) & (o > prev_c)).fillna(False).astype(int)
-    out["three_white_soldiers"] = (bullish & bullish.shift(1).fillna(False).astype(bool) & bull2 & (c > c.shift(1)) & (c.shift(1) > c.shift(2)) & (o > o.shift(1)) & (o < c.shift(1)) & (o.shift(1) < c.shift(2))).fillna(False).astype(int)
-    out["three_black_crows"] = (bearish & bearish.shift(1).fillna(False).astype(bool) & bear2 & (c < c.shift(1)) & (c.shift(1) < c.shift(2)) & (o < o.shift(1)) & (o > c.shift(1)) & (o.shift(1) > c.shift(2))).fillna(False).astype(int)
+    out["three_white_soldiers"] = (bullish & prev_bull & bull2 & (c > c.shift(1)) & (c.shift(1) > c.shift(2)) & (o > o.shift(1)) & (o < c.shift(1)) & (o.shift(1) < c.shift(2))).fillna(False).astype(int)
+    out["three_black_crows"] = (bearish & prev_bear & bear2 & (c < c.shift(1)) & (c.shift(1) < c.shift(2)) & (o < o.shift(1)) & (o > c.shift(1)) & (o.shift(1) > c.shift(2))).fillna(False).astype(int)
     out["bullish_marubozu"] = (bullish & body >= rng*0.85).fillna(False).astype(int)
     out["bearish_marubozu"] = (bearish & body >= rng*0.85).fillna(False).astype(int)
 
