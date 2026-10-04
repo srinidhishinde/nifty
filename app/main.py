@@ -1736,6 +1736,22 @@ backtest_mode = st.radio(
     horizontal=True,
     key="backtest_data_role",
 )
+
+if backtest_mode.startswith("NIFTY Futures"):
+    st.warning(
+        "Executable futures mode requires contract-specific economics. Do not use a current lot size "
+        "for a historical period that spans a contract-specification change."
+    )
+    spec_cols = st.columns(4)
+    futures_lot_size = int(spec_cols[0].number_input("Lot size", min_value=1, value=65, step=1))
+    futures_point_value = float(spec_cols[1].number_input("Point value ₹", min_value=0.0001, value=1.0, step=0.1))
+    futures_tick_size = float(spec_cols[2].number_input("Tick size", min_value=0.0001, value=0.05, step=0.05))
+    futures_margin_per_lot = float(spec_cols[3].number_input("Margin / lot ₹", min_value=0.0, value=0.0, step=1000.0))
+else:
+    futures_lot_size = 65
+    futures_point_value = 1.0
+    futures_tick_size = 0.05
+    futures_margin_per_lot = 0.0
 st.caption(
     "Use real historical OHLCV data to measure how the seven rules would have performed "
     "on past candles. Synthetic demo data is for UI smoke-testing only and must not be "
@@ -1952,9 +1968,10 @@ if bt_data is not None:
                                     starting_capital=settings.starting_capital,
                                     risk_per_trade=settings.max_loss_per_trade,
                                     instrument=instrument,
-                                    lot_size=65 if instrument == "NIFTY" else 1,
-                                    point_value=1.0,
-                                    slippage_points=0.25,
+                                    lot_size=futures_lot_size,
+                                    point_value=futures_point_value,
+                                    margin_per_lot=futures_margin_per_lot,
+                                    slippage_points=max(0.25, futures_tick_size),
                                     brokerage_per_order=10.0,
                                     max_daily_loss=settings.max_daily_loss,
                                     max_trades_per_day=settings.max_trades_per_day,
