@@ -125,7 +125,12 @@ class RuleBacktestEngine:
                         if position["direction"] == "BUY"
                         else (position["entry"] - fill_exit) / position["entry"]
                     )
-                    gross_pnl = signed_roi * position["capital_at_risk"]
+                    price_delta = (
+                        fill_exit - position["entry"]
+                        if position["direction"] == "BUY"
+                        else position["entry"] - fill_exit
+                    )
+                    gross_pnl = price_delta * position["quantity"]
                     costs = position["quantity"] * (
                         position["entry"] * self.commission_pct
                         + fill_exit * self.commission_pct
