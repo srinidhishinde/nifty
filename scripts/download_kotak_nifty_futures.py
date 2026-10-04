@@ -24,6 +24,8 @@ from config.settings import settings
 IST = "Asia/Kolkata"
 INTERVAL = "5min"
 MAX_CHUNK_DAYS = 30
+REQUEST_PAUSE_SECONDS = 8.0
+MAX_RATE_LIMIT_RETRIES = 5
 SESSION_START = "09:15"
 SESSION_END = "15:30"
 REQUIRED = ["timestamp", "open", "high", "low", "close", "volume"]
@@ -123,73 +125,54 @@ def discover_nifty_futures(client: NeoAPI) -> list[dict[str, str]]:
             f"Unable to discover active NIFTY futures. option_chain: {chain_error}; "
             f"scrip_master fallback: {fallback_error}"
         ) from fallback_error
+def _is_rate_limited(response: Any) -> bool:
+    raw = json.dumps(response, default=str).lower() if isinstance(response, (dict, list)) else str(response).lower()
+    return "429" in raw or "rate limit" in raw or "too many request" in raw
+
+def _historical_request(client: NeoAPI, contract: dict[str, str], cursor: date, chunk_end: date) -> Any:
+    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        response = client.historical_data(neosymbol=contract["neo_symbol"], interval=INTERVAL, from_date=cursor.isoformat(), to_date=chunk_end.isoformat())
+        if not _is_rate_limited(response):
+            return response
+        if attempt >= MAX_RATE_LIMIT_RETRIES:
+            raise RuntimeError(f'{contract["symbol"]} {cursor}..{chunk_end}: Kotak historical API rate limit persisted')
+        delay = min(60.0, 10.0 * (2 ** attempt))
+        print(f'{contract["symbol"]} {cursor}..{chunk_end}: rate limited; waiting {delay:.0f}s before retry {attempt + 2}/{MAX_RATE_LIMIT_RETRIES + 1}')
+        time.sleep(delay)
+    raise RuntimeError("unreachable")
+
 def fetch_contract(client: NeoAPI, contract: dict[str, str], start: date, end: date) -> pd.DataFrame:
     rows: list[list[Any]] = []
     cursor = start
-
     while cursor <= end:
         chunk_end = min(cursor + timedelta(days=MAX_CHUNK_DAYS - 1), end)
-        response = client.historical_data(
-            neosymbol=contract["neo_symbol"],
-            interval=INTERVAL,
-            from_date=cursor.isoformat(),
-            to_date=chunk_end.isoformat(),
-        )
+        response = _historical_request(client, contract, cursor, chunk_end)
         error = _error(response)
         if error:
-            raise RuntimeError(
-                f'{contract["symbol"]} {cursor}..{chunk_end}: {error}'
-            )
+            raise RuntimeError(f'{contract["symbol"]} {cursor}..{chunk_end}: {error}')
         rows.extend(_data(response).get("candles") or [])
         cursor = chunk_end + timedelta(days=1)
         if cursor <= end:
-            time.sleep(0.25)
+            time.sleep(REQUEST_PAUSE_SECONDS)
 
     if not rows:
         return pd.DataFrame(columns=REQUIRED + ["contract_symbol", "expiry", "neo_symbol", "oi"])
-
     parsed = []
     for row in rows:
         if len(row) < 6:
             continue
-        parsed.append({
-            "timestamp": row[0],
-            "open": row[1],
-            "high": row[2],
-            "low": row[3],
-            "close": row[4],
-            "volume": row[5],
-            "oi": row[6] if len(row) > 6 else None,
-            "contract_symbol": contract["symbol"],
-            "expiry": contract["expiry"],
-            "neo_symbol": contract["neo_symbol"],
-        })
-
+        parsed.append({"timestamp": row[0], "open": row[1], "high": row[2], "low": row[3], "close": row[4], "volume": row[5], "oi": row[6] if len(row) > 6 else None, "contract_symbol": contract["symbol"], "expiry": contract["expiry"], "neo_symbol": contract["neo_symbol"]})
     frame = pd.DataFrame(parsed)
     if frame.empty:
         return pd.DataFrame(columns=REQUIRED + ["contract_symbol", "expiry", "neo_symbol", "oi"])
-
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True).dt.tz_convert(IST)
     frame = frame[frame["timestamp"].notna()]
     for col in ["open", "high", "low", "close", "volume", "oi"]:
         frame[col] = pd.to_numeric(frame[col], errors="coerce")
-
     frame = frame.dropna(subset=REQUIRED)
-    frame = frame[
-        (frame["timestamp"].dt.strftime("%H:%M") >= SESSION_START)
-        & (frame["timestamp"].dt.strftime("%H:%M") <= SESSION_END)
-    ]
-
-    invalid = (
-        (frame["open"] <= 0)
-        | (frame["high"] <= 0)
-        | (frame["low"] <= 0)
-        | (frame["close"] <= 0)
-        | (frame["volume"] < 0)
-        | (frame["high"] < frame[["open", "close"]].max(axis=1))
-        | (frame["low"] > frame[["open", "close"]].min(axis=1))
-    )
-    return frame.loc[~invalid].drop_duplicates("timestamp").sort_values("timestamp")
+    frame = frame[(frame["timestamp"].dt.strftime("%H:%M") >= SESSION_START) & (frame["timestamp"].dt.strftime("%H:%M") <= SESSION_END)]
+    invalid = ((frame["open"] <= 0) | (frame["high"] <= 0) | (frame["low"] <= 0) | (frame["close"] <= 0) | (frame["volume"] < 0) | (frame["high"] < frame[["open", "close"]].max(axis=1)) | (frame["low"] > frame[["open", "close"]].min(axis=1)))
+    return frame.loc[~invalid].drop_duplicates(["timestamp", "neo_symbol"]).sort_values("timestamp")
 
 
 def expected_5m_bars(trading_days: int) -> int:
