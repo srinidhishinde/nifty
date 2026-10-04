@@ -690,11 +690,12 @@ from strategy.readiness import assess_readiness
 from strategy.regime import classify_regime
 
 st.subheader("System Readiness")
+st.caption("Design-time gate dashboard. Automated test status must be confirmed by the repository-local UAT before merge.")
 regime_snapshot = classify_regime(pd.Series({
     "ADX": 20.0, "ATR_PCT": 0.01, "EMA_SPREAD": 1.0, "VWAP_DEV": 0.0,
 }), global_news_score)
 readiness = assess_readiness(
-    tests_passed=True,
+    tests_passed=False,
     warmup_ready=True,
     risk_engine_ready=True,
     ml_available=True,
