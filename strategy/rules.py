@@ -26,6 +26,7 @@ class StrategySignal:
 @dataclass(frozen=True)
 class StrategyConfig:
     rsi_oversold:float=30.0
+    rsi_overbought:float=70.0
     vwap_deviation_pct:float=2.0
     bid_ask_ratio_max:float=0.5
     spread_widening_factor:float=1.25
@@ -39,6 +40,7 @@ class StrategyConfig:
     min_adx:float=18.0
     max_atr_pct:float=0.04
     min_history_bars:int=50
+    min_reward_risk:float=1.5
 
 def _v(row,names,default=None):
     if row is None:return default
@@ -54,13 +56,18 @@ def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyCon
     out=[]
     rsi=_v(row,("RSI",)); vol=_v(row,("volume",),0); vma=_v(row,("VOLUME_MA20",))
     if rsi is not None and rsi<c.rsi_oversold and vma and vol>vma:out.append(RuleSignal("rsi_oversold_buy","BUY","RSI oversold with volume confirmation",1.2))
+    if rsi is not None and rsi>c.rsi_overbought and vma and vol>vma:out.append(RuleSignal("rsi_overbought_sell","SELL","RSI overbought with volume confirmation",1.2))
     macd,sig=_v(row,("MACD",)),_v(row,("MACD_SIGNAL","Signal"))
     if macd is not None and sig is not None and macd>sig and macd>0:out.append(RuleSignal("macd_bullish","BUY","MACD above signal and zero",1.2))
+    if macd is not None and sig is not None and macd<sig and macd<0:out.append(RuleSignal("macd_bearish","SELL","MACD below signal and zero",1.2))
     sentiment=_v(row,("sentiment","news_sentiment","Sentiment"),0); upper=_v(row,("BB_UPPER","UpperBand"))
     if upper is not None and close>upper and sentiment>0:out.append(RuleSignal("bollinger_breakout","BUY","Upper-band breakout with positive news",1.0))
+    lower=_v(row,("BB_LOWER","LowerBand"))
+    if lower is not None and close<lower and sentiment<0:out.append(RuleSignal("bollinger_breakdown","SELL","Lower-band breakdown with negative news",1.0))
     fast,slow=_v(row,("EMA20",)),_v(row,("EMA50",))
     pf,ps=_v(previous,("EMA20",)),_v(previous,("EMA50",))
     if None not in (fast,slow,pf,ps) and pf<=ps and fast>slow:out.append(RuleSignal("ema_cross","BUY","EMA20 crossed above EMA50",1.3))
+    if None not in (fast,slow,pf,ps) and pf>=ps and fast<slow:out.append(RuleSignal("ema_cross","SELL","EMA20 crossed below EMA50",1.3))
     vwap=_v(row,("VWAP",))
     if vwap and vwap>0:
         dev=(close-vwap)/vwap*100
@@ -100,7 +107,7 @@ def generate_signal(data:pd.DataFrame,config:StrategyConfig|None=None)->Strategy
     directional=sum(r.weight for r in rules if r.direction==direction); confidence=min(95.0,50+8*directional)
     atr_pct=float(_v(row,("ATR_PCT",),0) or 0)
     if atr_pct>c.max_atr_pct:return StrategySignal("WAIT",tuple(r.rule for r in rules),tuple(r.reason for r in rules),0,0,atr,round(confidence,2),False)
-    close=float(row["close"]); risk=max(close*c.stop_loss_pct,atr*c.atr_stop_multiple if atr>0 else 0); reward=max(close*c.min_target_pct,atr*c.target_atr_multiple if atr>0 else 0)
+    close=float(row["close"]); risk=max(close*c.stop_loss_pct,atr*c.atr_stop_multiple if atr>0 else 0); reward=max(close*c.min_target_pct,atr*c.target_atr_multiple if atr>0 else 0, risk*c.min_reward_risk)
     stop=close-risk if direction=="BUY" else close+risk; target=close+reward if direction=="BUY" else close-reward
     valid=len(rules)>=c.min_rules_for_signal and confidence>=c.min_confidence
     return StrategySignal(direction,tuple(r.rule for r in rules),tuple(r.reason for r in rules),round(stop,2),round(target,2),atr,round(confidence,2),valid)
