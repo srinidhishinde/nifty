@@ -83,11 +83,13 @@ class AdaptiveMicroWeight:
         previous = self.load(key)
         adjustment = _finite(volatility_band) * 0.1 - previous
         candidate = clamp(previous + adjustment, 0.10, 0.20)
-        candidate = clamp(candidate, previous - 0.05, previous + 0.05)
 
-        # Keep the public value numerically stable so an exact 0.05
-        # change cannot become 0.05000000000000002.
-        candidate = round(candidate, 6)
+        # Use the largest representable float strictly below 0.05 as the
+        # per-update delta. This preserves the <= 0.05 contract even when
+        # binary floating-point subtraction would otherwise produce
+        # 0.05000000000000002.
+        max_delta = math.nextafter(0.05, 0.0)
+        candidate = clamp(candidate, previous - max_delta, previous + max_delta)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
