@@ -75,3 +75,12 @@ def size_position(
         round(rr, 3),
         reason,
     )
+
+
+def daily_loss_allowed(realized_pnl: float, max_daily_loss: float) -> tuple[bool, str]:
+    """Hard gate: realized loss cannot exceed the configured daily limit."""
+    if max_daily_loss <= 0:
+        return False, "Daily loss limit must be positive"
+    if realized_pnl <= -abs(max_daily_loss):
+        return False, "Daily loss limit reached"
+    return True, "Daily loss limit available"
