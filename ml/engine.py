@@ -135,8 +135,11 @@ def train(raw, cfg=MLConfig(), model_dir=None):
     results={}; artifacts={}
     for h in cfg.horizons_minutes:
         bars=max(1,round(h/cfg.refresh_minutes)); future=d.close.shift(-bars)/d.close-1
-        y=(future>cfg.label_threshold_pct).astype(int); valid=future.notna()
-        Xh=X.loc[valid].reset_index(drop=True); yh=y.loc[valid].reset_index(drop=True)
+        y=pd.Series(np.nan,index=future.index,dtype="float64")
+        y[future>cfg.label_threshold_pct]=1.0
+        y[future<-cfg.label_threshold_pct]=0.0
+        valid=future.notna() & y.notna()
+        Xh=X.loc[valid].reset_index(drop=True); yh=y.loc[valid].astype(int).reset_index(drop=True)
         split=max(1,int(len(Xh)*(1-cfg.test_fraction)))
         Xtr,Xte=Xh.iloc[:split],Xh.iloc[split:]; ytr,yte=yh.iloc[:split],yh.iloc[split:]
         if len(Xtr)<cfg.min_rows//2 or len(Xte)<30: raise ValueError(f"Insufficient train/test rows for {h}m")
