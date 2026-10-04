@@ -684,32 +684,95 @@ global_news_score = news_snapshot.sentiment
 # ============================================================
 
 st.subheader("Prediction Data")
-st.caption("The AI prediction uses completed real OHLCV candles. Synthetic research data is never used as the production prediction input.")
-prediction_file = st.file_uploader(
-    "Upload NIFTY intraday OHLCV CSV",
-    type=["csv"],
-    key="primary_prediction_csv",
-    help="Required columns: timestamp, open, high, low, close, volume.",
+st.caption(
+    "The primary prediction uses completed historical/live OHLCV candles. "
+    "When the market is closed, Yahoo Finance ^NSEI can provide historical NIFTY 50 "
+    "candles for prediction validation. Synthetic research data is never used as the "
+    "production prediction input."
 )
 
-canonical_signal = StrategySignal(
-    "WAIT", (), ("Real completed OHLCV data required for prediction",), 0.0, 0.0, 0.0, 0.0, False
+prediction_cols = st.columns(4)
+prediction_interval = prediction_cols[0].selectbox(
+    "Prediction interval", ["5m", "15m", "30m", "60m", "1d"],
+    index=0, key="primary_prediction_interval"
 )
-prediction_frame = None
-if prediction_file is not None:
+prediction_days = prediction_cols[1].number_input(
+    "Historical days", min_value=5, max_value=59, value=30, step=5,
+    key="primary_prediction_days"
+)
+prediction_symbol = prediction_cols[2].text_input(
+    "Yahoo symbol", value="^NSEI", key="primary_prediction_symbol"
+)
+prediction_pull = prediction_cols[3].button(
+    "Load Yahoo prediction", type="primary", width="stretch",
+    key="primary_prediction_pull"
+)
+
+if prediction_pull:
     try:
-        prediction_frame = normalize_nifty_csv(pd.read_csv(prediction_file))
-        prediction_frame = add_indicators(prediction_frame.copy())
-        canonical_signal = _generate_signal_from_enriched(
-            prediction_frame,
-            StrategyConfig(require_option_confirmation=False),
+        prediction_end = pd.Timestamp.now(tz="Asia/Kolkata").date()
+        prediction_start = prediction_end - pd.Timedelta(days=int(prediction_days))
+        prediction_result = fetch_yahoo_ohlcv(
+            prediction_start,
+            prediction_end,
+            symbol=prediction_symbol.strip() or "^NSEI",
+            interval=prediction_interval,
         )
-        st.success(f"Prediction engine loaded {len(prediction_frame):,} completed candles from {prediction_file.name}.")
+        st.session_state["primary_prediction_result"] = prediction_result
+    except Exception as exc:
+        st.session_state["primary_prediction_result"] = None
+        st.error(f"Yahoo prediction data could not be loaded: {exc}")
+
+prediction_result = st.session_state.get("primary_prediction_result")
+prediction_frame = None
+prediction_source = None
+canonical_signal = StrategySignal(
+    "WAIT", (), ("Historical Yahoo OHLCV data required for prediction",),
+    0.0, 0.0, 0.0, 0.0, False
+)
+
+if prediction_result is not None and prediction_result.status == "OK":
+    try:
+        prediction_frame = normalize_nifty_csv(prediction_result.data)
+        prediction_quality = assess_ohlcv(prediction_frame)
+        if prediction_quality.status == "GREEN" and len(prediction_frame) >= 60:
+            prediction_frame = add_indicators(prediction_frame.copy())
+            canonical_signal = _generate_signal_from_enriched(
+                prediction_frame,
+                StrategyConfig(require_option_confirmation=False),
+            )
+            prediction_source = (
+                f"Yahoo Finance {prediction_result.symbol} "
+                f"{prediction_result.interval} historical candles"
+            )
+            st.success(
+                f"Historical prediction ready: {len(prediction_frame):,} completed "
+                f"candles from {prediction_result.provider_start} to "
+                f"{prediction_result.provider_end}. This is NOT a live signal."
+            )
+        else:
+            reasons = " | ".join(prediction_quality.reasons) or "insufficient completed candles"
+            canonical_signal = StrategySignal(
+                "WAIT", (), (f"Prediction data quality gate: {reasons}",),
+                0.0, 0.0, 0.0, 0.0, False
+            )
+            st.warning(f"Yahoo prediction is blocked by the data-quality/warm-up gate: {reasons}")
     except Exception as exc:
         canonical_signal = StrategySignal(
-            "WAIT", (), (f"Prediction data error: {exc}",), 0.0, 0.0, 0.0, 0.0, False
+            "WAIT", (), (f"Prediction data error: {exc}",),
+            0.0, 0.0, 0.0, 0.0, False
         )
         st.error(f"Prediction data could not be used: {exc}")
+elif prediction_result is not None:
+    st.error(f"Yahoo prediction unavailable: {prediction_result.message}")
+else:
+    st.info(
+        "No historical prediction data loaded yet. Select an interval and click "
+        "'Load Yahoo prediction'. The signal remains WAIT until completed real candles are available."
+    )
+
+if prediction_source:
+    st.caption(f"Prediction source: {prediction_source} · historical validation only")
 
 # ============================================================
 # Research spot
