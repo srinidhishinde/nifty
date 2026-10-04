@@ -48,6 +48,8 @@ def generate_option_chain_signal(
             "Entry Price": contract.ltp if contract.ltp > 0 else None,
             "Stop Loss": round(contract.ltp * (1 - stop_loss_pct), 2) if contract.ltp > 0 else None,
             "Take Profit": round(contract.ltp * (1 + target_roi_pct), 2) if contract.ltp > 0 else None,
+            "Max Gain %": round(target_roi_pct * 100, 2) if contract.ltp > 0 else None,
+            "Max Loss %": round(stop_loss_pct * 100, 2) if contract.ltp > 0 else None,
             "Underlying Entry": round(float(spot), 2),
             "Underlying SL": round(float(spot) * (1 - stop_loss_pct) if contract.option_type == "CE" else float(spot) * (1 + stop_loss_pct), 2),
             "Underlying TP": round(float(spot) * (1 + target_roi_pct) if contract.option_type == "CE" else float(spot) * (1 - target_roi_pct), 2),
