@@ -190,7 +190,7 @@ def run_signal_research(
                 "exit_time": exit_time,
                 "direction": direction,
                 "confidence": round(signal.confidence, 2),
-                "rules": "|".join(s.rule for s in signals),
+                "rules": "|".join(signals),
                 "entry": round(entry, 2),
                 "stop_loss": round(stop, 2),
                 "target": round(target, 2),
