@@ -21,6 +21,7 @@ from strategy.ce_pe_selector import (
 )
 from strategy.strike_selector import StrikeSelector
 from backtest.rule_engine import RuleBacktestEngine
+from backtest.capital_simulator import simulate_capital
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, evaluate_rules
 from marketdata.option_chain_csv import is_option_chain_snapshot, parse_option_chain_csv
