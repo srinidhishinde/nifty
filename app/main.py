@@ -1964,6 +1964,9 @@ if bt_data is not None:
                                     "futures candles plus the correct contract/expiry lot specification."
                                 )
                             else:
+                                if futures_margin_per_lot <= 0:
+                                    st.error("Futures backtest blocked: enter a valid contract-specific margin per lot. The system will not assume margin or manufacture capital capacity.")
+                                    st.stop()
                                 result = CapitalAwareRuleBacktestEngine(
                                     starting_capital=settings.starting_capital,
                                     risk_per_trade=settings.max_loss_per_trade,
