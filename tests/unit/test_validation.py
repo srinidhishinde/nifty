@@ -9,7 +9,7 @@ from backtest.validation import (
 )
 
 
-def _data(days: int = 100) -> pd.DataFrame:
+def _data(days: int = 180) -> pd.DataFrame:
     rows = []
     start = pd.Timestamp("2026-01-01 09:15", tz="Asia/Kolkata")
     for d in range(days):
