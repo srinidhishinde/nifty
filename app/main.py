@@ -1063,10 +1063,10 @@ display_df = chain_df[visible_columns].copy()
 # option LTP exists; otherwise premium fields remain unavailable rather than
 # being fabricated from LTP-change percentages.
 plan = chain_signal_rows[[
-    "Side", "Strike", "Signal", "Confidence", "Entry Price", "Stop Loss", "Take Profit"
+    "Side", "Strike", "Signal", "Confidence", "Entry Price", "Stop Loss", "Take Profit", "Max Gain %", "Max Loss %"
 ]].copy()
-plan["Max Gain %"] = ((plan["Take Profit"] - plan["Entry Price"]) / plan["Entry Price"] * 100).round(2)
-plan["Max Loss %"] = ((plan["Stop Loss"] - plan["Entry Price"]) / plan["Entry Price"] * 100).abs().round(2)
+plan["Max Gain %"] = pd.to_numeric(plan["Max Gain %"], errors="coerce")
+plan["Max Loss %"] = pd.to_numeric(plan["Max Loss %"], errors="coerce")
 display_df = display_df.merge(plan, on=["Side", "Strike"], how="left") if "Side" in display_df.columns else display_df
 if "CE LTP" in display_df.columns and "PE LTP" in display_df.columns:
     ce_plan = plan[plan["Side"]=="CE"].rename(columns={
