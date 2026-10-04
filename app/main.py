@@ -1802,7 +1802,7 @@ if yahoo_result is not None:
         )
 
         if len(yahoo_data) >= 60:
-            yahoo_research = run_signal_research(yahoo_data)
+            yahoo_research = run_signal_research(yahoo_data, StrategyConfig(require_option_confirmation=False))
             yv = yahoo_research.validation
 
             st.markdown("#### Yahoo signal-validation funnel")
