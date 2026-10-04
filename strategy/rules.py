@@ -70,19 +70,27 @@ def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyCon
     lower=_v(row,("BB_LOWER","LowerBand"))
     prev_lower=_v(previous,("BB_LOWER","LowerBand"))
     if lower is not None and prev_close is not None and prev_lower is not None and prev_close>=prev_lower and close<lower and sentiment<=0 and volume_ratio>=1.2:out.append(RuleSignal("bollinger_breakdown","SELL","Lower-band breakdown with volume/news confirmation",1.0))
-    fast,slow=_v(row,("EMA20",)),_v(row,("EMA50",))
-    pf,ps=_v(previous,("EMA20",)),_v(previous,("EMA50",))
-    if None not in (fast,slow,pf,ps) and pf<=ps and fast>slow:out.append(RuleSignal("ema_cross","BUY","EMA20 crossed above EMA50",1.3))
-    if None not in (fast,slow,pf,ps) and pf>=ps and fast<slow:out.append(RuleSignal("ema_cross","SELL","EMA20 crossed below EMA50",1.3))
+    fast,slow=_v(row,("EMA9",)),_v(row,("EMA21",))
+    pf,ps=_v(previous,("EMA9",)),_v(previous,("EMA21",))
+    if None not in (fast,slow,pf,ps) and pf<=ps and fast>slow:out.append(RuleSignal("ema_cross","BUY","EMA9 crossed above EMA21",1.3))
+    if None not in (fast,slow,pf,ps) and pf>=ps and fast<slow:out.append(RuleSignal("ema_cross","SELL","EMA9 crossed below EMA21",1.3))
     vwap=_v(row,("VWAP",))
     if vwap and vwap>0:
         dev=(close-vwap)/vwap*100
-        if dev<=-c.vwap_deviation_pct:out.append(RuleSignal("vwap_reversion","BUY","Price >2% below VWAP",1.0))
-        elif dev>=c.vwap_deviation_pct:out.append(RuleSignal("vwap_reversion","SELL","Price >2% above VWAP",1.0))
-    bid,ask=_v(row,("bid","best_bid","Bid")),_v(row,("ask","best_ask","Ask")); spread=_v(row,("spread","Spread")); prev_spread=_v(previous,("spread","Spread"))
-    if bid is not None and ask and ask>0:
-        current=spread if spread is not None else ask-bid
-        if bid/ask<c.bid_ask_ratio_max and prev_spread and current>prev_spread*c.spread_widening_factor:out.append(RuleSignal("order_book_imbalance","SELL","Bid/ask imbalance with widening spread",1.3))
+        prev_vwap=_v(previous,("VWAP",))
+        prev_dev=((prev_close-prev_vwap)/prev_vwap*100) if prev_close is not None and prev_vwap else None
+        adx_for_reversion=_v(row,("ADX",),99.0) or 99.0
+        if prev_dev is not None and dev>prev_dev and prev_dev<=-c.vwap_deviation_pct and adx_for_reversion<c.min_adx:
+            out.append(RuleSignal("vwap_reversion","BUY","VWAP deviation reverting upward in non-trending regime",1.0))
+        elif prev_dev is not None and dev<prev_dev and prev_dev>=c.vwap_deviation_pct and adx_for_reversion<c.min_adx:
+            out.append(RuleSignal("vwap_reversion","SELL","VWAP deviation reverting downward in non-trending regime",1.0))
+    bid_size,ask_size=_v(row,("bid_size","best_bid_size","BidSize")), _v(row,("ask_size","best_ask_size","AskSize"))
+    spread=_v(row,("spread","Spread")); prev_spread=_v(previous,("spread","Spread"))
+    if bid_size is not None and ask_size is not None and ask_size>0:
+        imbalance=bid_size/ask_size
+        current=spread if spread is not None else _v(row,("ask","best_ask","Ask"),0)-_v(row,("bid","best_bid","Bid"),0)
+        if imbalance<c.bid_ask_ratio_max and prev_spread is not None and current>prev_spread*c.spread_widening_factor:
+            out.append(RuleSignal("order_book_imbalance","SELL","Bid-size/ask-size imbalance with widening spread",1.3))
     if sentiment<c.sentiment_negative_threshold:out.append(RuleSignal("sentiment_negative","SELL","News sentiment below -0.5",1.3))
     adx=_v(row,("ADX",))
     di_plus=_v(row,("DI_PLUS",)); di_minus=_v(row,("DI_MINUS",))
@@ -92,9 +100,10 @@ def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyCon
         elif di_minus > di_plus:
             out.append(RuleSignal("adx_trend_confirmation","SELL",f"ADX {adx:.1f} with -DI > +DI",0.8))
     k,d=_v(row,("STOCH_K",)),_v(row,("STOCH_D",))
-    if k is not None and d is not None:
-        if k<20 and k>d:out.append(RuleSignal("stochastic_reversal","BUY","Stochastic bullish reversal",0.9))
-        elif k>80 and k<d:out.append(RuleSignal("stochastic_reversal","SELL","Stochastic bearish reversal",0.9))
+    pk,pd=_v(previous,("STOCH_K",)),_v(previous,("STOCH_D",))
+    if None not in (k,d,pk,pd):
+        if pk<=pd and k>d and k<20:out.append(RuleSignal("stochastic_reversal","BUY","Stochastic bullish crossover from oversold",0.9))
+        elif pk>=pd and k<d and k>80:out.append(RuleSignal("stochastic_reversal","SELL","Stochastic bearish crossover from overbought",0.9))
     cs=_v(row,("candlestick_score",),0)
     if cs>=2:out.append(RuleSignal("candlestick_confirmation","BUY",f"Bullish candlestick score {cs:.0f}",1.0))
     elif cs<=-2:out.append(RuleSignal("candlestick_confirmation","SELL",f"Bearish candlestick score {cs:.0f}",1.0))
@@ -105,7 +114,7 @@ def generate_signal(data:pd.DataFrame,config:StrategyConfig|None=None)->Strategy
     if len(data)<c.min_history_bars:
         return StrategySignal("WAIT",(),("Indicator warm-up: insufficient history",),0,0,0,0,False)
     e=add_indicators(data); row=e.iloc[-1]; prev=e.iloc[-2]
-    required=("RSI","EMA20","EMA50","MACD","MACD_SIGNAL","ATR","ATR_PCT","VWAP")
+    required=("RSI","EMA9","EMA21","MACD","MACD_SIGNAL","ATR","ATR_PCT","VWAP")
     if any(pd.isna(row.get(name)) for name in required):
         return StrategySignal("WAIT",(),("Indicator warm-up: required features unavailable",),0,0,float(_v(row,("ATR",),0) or 0),0,False)
     rules=evaluate_rules(row,prev,c)
