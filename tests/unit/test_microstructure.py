@@ -44,10 +44,12 @@ def test_micro_weight_stays_bounded_and_change_limited(tmp_path):
 
 
 def test_advanced_aggressor_detects_buyer_pressure():
+    # The final trade must itself be an aggressive buy and print beyond
+    # mid-price + tolerance, matching the production classifier contract.
     trades = [
         {"side": "buy", "price": 100.20, "volume": 40},
-        {"side": "buy", "price": 100.25, "volume": 40},
         {"side": "sell", "price": 100.05, "volume": 5},
+        {"side": "buy", "price": 100.25, "volume": 40},
     ]
     result = advanced_aggressor_detection(
         trades,
@@ -59,13 +61,16 @@ def test_advanced_aggressor_detects_buyer_pressure():
     assert result["aggressor"] == "buyer"
     assert result["signed_imbalance"] > 0.2
     assert result["buy_pressure"] > 0.3
+    assert result["tolerance"] == 0.05
 
 
 def test_advanced_aggressor_detects_seller_pressure():
+    # The final trade must itself be an aggressive sell and print below
+    # mid-price - tolerance, matching the production classifier contract.
     trades = [
         {"side": "sell", "price": 99.80, "volume": 40},
-        {"side": "sell", "price": 99.75, "volume": 40},
         {"side": "buy", "price": 99.95, "volume": 5},
+        {"side": "sell", "price": 99.75, "volume": 40},
     ]
     result = advanced_aggressor_detection(
         trades,
@@ -77,6 +82,7 @@ def test_advanced_aggressor_detects_seller_pressure():
     assert result["aggressor"] == "seller"
     assert result["signed_imbalance"] < -0.2
     assert result["sell_pressure"] > 0.3
+    assert result["tolerance"] == 0.05
 
 
 def test_advanced_aggressor_is_neutral_without_required_market_evidence():
