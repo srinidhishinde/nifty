@@ -1727,6 +1727,16 @@ st.divider()
 
 st.subheader("Historical Rule Backtest")
 st.caption(
+    "Choose the role of the uploaded data explicitly. Spot/index OHLCV validates signal quality; "
+    "contract-specific futures OHLCV is required for executable ₹1 lakh P&L."
+)
+backtest_mode = st.radio(
+    "Backtest data role",
+    ["NIFTY Spot / Index — Signal Research", "NIFTY Futures — Executable ₹1 lakh P&L"],
+    horizontal=True,
+    key="backtest_data_role",
+)
+st.caption(
     "Use real historical OHLCV data to measure how the seven rules would have performed "
     "on past candles. Synthetic demo data is for UI smoke-testing only and must not be "
     "used to judge strategy accuracy."
@@ -1900,12 +1910,7 @@ if bt_data is not None:
                                 - pd.Timedelta(microseconds=1)
                             )
 
-                            # NIFTY spot/index CSVs are for signal research, not executable futures P&L.
-                            # Futures P&L requires contract-specific futures candles/specifications.
-                            is_probably_spot = instrument == "NIFTY" and not any(
-                                column.lower() in {"contract", "expiry", "futures_symbol", "instrument_type"}
-                                for column in bt_data.columns
-                            )
+                            is_probably_spot = backtest_mode.startswith("NIFTY Spot")
 
                             if is_probably_spot:
                                 research = run_signal_research(
