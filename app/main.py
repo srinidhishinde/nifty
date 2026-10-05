@@ -46,6 +46,10 @@ from ml.engine import MLConfig, train as train_ml, predict as predict_ml
 from ensemble.signal import build_ensemble
 from marketdata.decision_source import load_kotak_decision_snapshot
 from assistant.chatbot import answer as chatbot_answer
+from alerts.recipient_store import WhatsAppRecipientStore
+from alerts.runtime_settings import WhatsAppSettingsStore
+from alerts.whatsapp import WhatsAppAlertService
+from analytics.signal_journal import SignalJournal
 
 
 # ============================================================
@@ -680,6 +684,67 @@ st.sidebar.caption(
 )
 
 
+st.sidebar.divider()
+st.sidebar.subheader("WhatsApp Alerts")
+st.sidebar.caption("Manage alert recipients here. Numbers are stored locally and do not require .env edits.")
+
+recipient_store = WhatsAppRecipientStore()
+whatsapp_runtime = WhatsAppSettingsStore()
+wa_service = WhatsAppAlertService(recipient_store)
+wa_recipients = recipient_store.load()
+wa_enabled = whatsapp_runtime.enabled() or bool(getattr(settings, "whatsapp_alerts_enabled", False))
+
+with st.sidebar.expander("Recipients", expanded=True):
+
+    if wa_recipients:
+        for recipient in wa_recipients:
+            row = st.columns([4, 1])
+            row[0].caption(f"+{recipient}")
+            if row[1].button("Remove", key=f"wa_remove_{recipient}"):
+                recipient_store.remove(recipient)
+                st.rerun()
+    else:
+        st.info("No recipients configured.")
+
+    with st.form("whatsapp_recipient_form", clear_on_submit=True):
+        new_recipient = st.text_input(
+            "Add mobile number",
+            placeholder="+91 9876543210",
+            help="Use international format. Spaces, brackets and a leading + are accepted.",
+        )
+        add_recipient = st.form_submit_button("Add recipient", width="stretch")
+        if add_recipient:
+            try:
+                saved = recipient_store.add(new_recipient)
+                st.success(f"Recipient +{recipient_store.normalize(new_recipient)} added.")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
+    if wa_recipients:
+        st.caption(f"{len(wa_recipients)} recipient(s) saved locally.")
+
+    enable_whatsapp = st.toggle(
+        "Enable WhatsApp sending",
+        value=wa_enabled,
+        key="whatsapp_dashboard_enabled",
+        help="This controls alert sending from the dashboard. API credentials remain in .env.",
+    )
+    if enable_whatsapp != wa_enabled:
+        whatsapp_runtime.set_enabled(enable_whatsapp)
+        wa_enabled = enable_whatsapp
+        st.rerun()
+
+    if not wa_recipients:
+        st.warning("Add at least one recipient before sending alerts.")
+    elif not wa_service.token or not wa_service.phone_number_id:
+        st.warning("WhatsApp API credentials are missing. Add the Meta access token and phone number ID to .env once; recipients remain dashboard-managed.")
+    elif wa_enabled:
+        st.success("WhatsApp sending is enabled.")
+    else:
+        st.info("WhatsApp sending is disabled. Turn on the toggle above to enable alerts.")
+
+
 # ============================================================
 # Global news
 # ============================================================
@@ -692,6 +757,8 @@ global_news_score = news_snapshot.sentiment
 # ============================================================
 
 st.subheader("Decision Data")
+signal_journal = SignalJournal()
+
 st.caption(
     "KOTAK NEO is the primary production/paper decision source. "
     "Yahoo Finance is kept below as an independent historical research/validation source only. "
@@ -840,7 +907,7 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
     with st.expander("Model input coverage", expanded=False):
         st.dataframe(
             pd.DataFrame(coverage_rows, columns=["Feature group", "Coverage", "Status"]),
-            use_container_width=True, hide_index=True
+            width="stretch", hide_index=True
         )
         st.caption(
             "Only real Kotak/news values are supplied. Missing derivative fields are not synthesized."
@@ -883,7 +950,7 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
             }
             for h, m in ml_result.horizons.items()
         ])
-        st.dataframe(train_table, use_container_width=True, hide_index=True)
+        st.dataframe(train_table, width="stretch", hide_index=True)
 
     ml_predictions = []
     if ml_artifacts:
@@ -894,10 +961,41 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
 
     if ml_predictions:
         try:
+            micro = None
+            micro_required = {"bid_size", "ask_size"}
+            if micro_required.issubset(set(ml_input.columns)):
+                from features.microstructure import microstructure_features, AdaptiveMicroWeight
+                latest = ml_input.iloc[-1]
+                depth = (
+                    pd.to_numeric(ml_input["bid_size"], errors="coerce").fillna(0)
+                    + pd.to_numeric(ml_input["ask_size"], errors="coerce").fillna(0)
+                ) * pd.to_numeric(ml_input["close"], errors="coerce").fillna(0)
+                last_week = depth.tail(min(len(depth), 7 * 78))
+                liquidity_threshold = float(last_week.quantile(0.95)) if len(last_week) >= 20 else float("inf")
+                tick_atr_14 = pd.to_numeric(ml_input.get("ATR_TICK_14", pd.Series(dtype=float)), errors="coerce")
+                tick_atr_20 = pd.to_numeric(ml_input.get("ATR_TICK_20", pd.Series(dtype=float)), errors="coerce")
+                if not tick_atr_14.empty and not tick_atr_20.empty and tick_atr_14.notna().any() and tick_atr_20.notna().any():
+                    volatility_band = float(tick_atr_14.iloc[-1] / max(float(tick_atr_20.iloc[-1]), 1e-9))
+                    ticks = ml_input.get("LAST_TRADE_PRICE", pd.Series(dtype=float)).dropna().tail(50).tolist()
+                    micro = microstructure_features(
+                        bid_volume=float(latest.get("bid_size", 0) or 0),
+                        ask_volume=float(latest.get("ask_size", 0) or 0),
+                        liquidity_threshold=liquidity_threshold,
+                        imbalance_history=ml_input.get("IMBALANCE_RATIO", pd.Series(dtype=float)).dropna().tail(20).tolist(),
+                        last_trade_price=float(latest.get("LAST_TRADE_PRICE", latest.get("close", 0)) or 0),
+                        last_trade_direction=latest.get("LAST_TRADE_DIRECTION"),
+                        best_bid=float(latest.get("best_bid", 0) or 0),
+                        best_ask=float(latest.get("best_ask", 0) or 0),
+                        last_ticks=ticks,
+                        spread_width=float(latest.get("spread", 0) or 0),
+                        volatility_band=volatility_band,
+                    )
+                    micro["micro_weight"] = AdaptiveMicroWeight().update(volatility_band)
             regime, ensemble_rows = build_ensemble(
                 ml_input,
                 ml_predictions,
                 StrategyConfig(require_option_confirmation=True),
+                micro=micro,
             )
             rcols = st.columns(4)
             rcols[0].metric("Market Regime", regime.name)
@@ -915,7 +1013,7 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                 }
                 for x in ensemble_rows
             ])
-            st.dataframe(ensemble_table, use_container_width=True, hide_index=True)
+            st.dataframe(ensemble_table, width="stretch", hide_index=True)
 
             first = ensemble_rows[0]
             if first.final_ce < 55 and first.final_pe < 55:
@@ -932,6 +1030,35 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                 "ML is advisory only. A trade still requires the canonical rule, "
                 "data-quality, EV, risk, and execution gates."
             )
+            # Streamlit reruns are frequent. Journal a Kotak snapshot only once,
+            # while still allowing every genuinely new 5m/15m decision to be stored.
+            snapshot_key = str(snapshot.timestamp) if snapshot is not None else ""
+            last_journal_key = st.session_state.get("last_signal_journal_key")
+            if snapshot_key and snapshot_key != last_journal_key:
+                signal_journal.append_decision(
+                    instrument=instrument,
+                    timeframe=decision_timeframe,
+                    source="KOTAK_NEO",
+                    status=str(snapshot.status),
+                    direction=str(first.stronger_side),
+                    confidence=max(float(first.final_ce), float(first.final_pe)),
+                    reliability=max(float(first.final_ce), float(first.final_pe)),
+                    reason="; ".join(canonical_signal.reasons),
+                    regime=regime.name,
+                    pcr=snapshot.pcr_oi,
+                    imbalance_ratio=(micro or {}).get("imbalance_ratio") if isinstance(micro, dict) else None,
+                    aggressor=(micro or {}).get("aggressor", "") if isinstance(micro, dict) else "",
+                    micro_weight=(micro or {}).get("micro_weight") if isinstance(micro, dict) else None,
+                    threshold=(micro or {}).get("imbalance_trigger") if isinstance(micro, dict) else None,
+                    ml_ce=float(first.ml_ce),
+                    ml_pe=float(first.ml_pe),
+                    rule_ce=float(first.rule_ce),
+                    rule_pe=float(first.rule_pe),
+                    entry=float(prediction_frame.iloc[-1]["close"]) if prediction_frame is not None else None,
+                    stop_loss=float(canonical_signal.stop_loss) if canonical_signal.stop_loss > 0 else None,
+                    target=float(canonical_signal.target) if canonical_signal.target > 0 else None,
+                )
+                st.session_state["last_signal_journal_key"] = snapshot_key
         except Exception as exc:
             st.warning(f"Ensemble calculation unavailable: {exc}")
     else:
@@ -941,6 +1068,31 @@ else:
         "Kotak Neo production data is not decision-ready. The system remains WAIT; "
         "Yahoo cannot be used as a silent live fallback."
     )
+
+with st.expander("Signal Journal — weekly review", expanded=False):
+    journal_path = "logs/signal_journal.jsonl"
+    if __import__("pathlib").Path(journal_path).exists():
+        try:
+            journal_rows = [
+                __import__("json").loads(line)
+                for line in __import__("pathlib").Path(journal_path).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            journal_df = pd.DataFrame(journal_rows)
+            st.caption(f"Persistent decision journal: {len(journal_df):,} records")
+            if not journal_df.empty:
+                st.dataframe(journal_df.tail(200), width="stretch", hide_index=True)
+                st.download_button(
+                    "Download signal journal",
+                    data=__import__("pathlib").Path(journal_path).read_bytes(),
+                    file_name="signal_journal.jsonl",
+                    mime="application/json",
+                    width="stretch",
+                )
+        except Exception as exc:
+            st.warning(f"Signal journal could not be read: {exc}")
+    else:
+        st.info("No signal journal records yet. The first evaluated Kotak Neo decision will create it.")
 
 with st.expander("Trading system health & safety gates", expanded=False):
     health = pd.DataFrame([
@@ -952,7 +1104,7 @@ with st.expander("Trading system health & safety gates", expanded=False):
         ["Execution", "LOCKED" if not settings.live_trading_allowed() else "ENABLED", "Separate broker safety gate"],
         ["Yahoo", "RESEARCH ONLY", "No production fallback"],
     ], columns=["Layer", "Status", "Safety"])
-    st.dataframe(health, use_container_width=True, hide_index=True)
+    st.dataframe(health, width="stretch", hide_index=True)
 
 # ============================================================
 # Dashboard ChatGPT assistant

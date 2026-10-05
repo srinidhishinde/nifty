@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import pandas as pd
 from strategy.rules import StrategyConfig, evaluate_rules
 
+
 @dataclass(frozen=True)
 class Regime:
     name:str
@@ -49,12 +50,35 @@ def combine(rule_ce,rule_pe,ml_ce,ml_pe,regime):
     if total>0: ce,pe=100*ce/total,100*pe/total
     return round(ce,2),round(pe,2)
 
-def build_ensemble(data:pd.DataFrame,predictions,config:StrategyConfig|None=None):
+
+
+def apply_microstructure(ce: float, pe: float, micro: dict | None) -> tuple[float, float]:
+    if not micro or not micro.get("imbalance_triggered"):
+        return ce, pe
+    weight = max(0.10, min(0.20, float(micro.get("micro_weight", 0.15))))
+    ratio = float(micro.get("imbalance_ratio", 0.0))
+    aggressor = str(micro.get("aggressor", "neutral")).lower()
+    if aggressor == "buyer":
+        ratio = abs(ratio)
+    elif aggressor == "seller":
+        ratio = -abs(ratio)
+    else:
+        return ce, pe
+    micro_ce = 100.0 if ratio > 0 else 0.0
+    micro_pe = 100.0 if ratio < 0 else 0.0
+    ce = (1.0 - weight) * ce + weight * micro_ce
+    pe = (1.0 - weight) * pe + weight * micro_pe
+    total = ce + pe
+    return (100.0 * ce / total, 100.0 * pe / total) if total > 0 else (ce, pe)
+
+
+def build_ensemble(data:pd.DataFrame,predictions,config:StrategyConfig|None=None,micro:dict|None=None):
     if len(data)<2: raise ValueError("At least two completed candles are required")
     c=config or StrategyConfig(require_option_confirmation=False)
     frame=data.sort_values("timestamp").copy(); row,prev=frame.iloc[-1],frame.iloc[-2]
     regime=detect_regime(row,prev); rce,rpe=rule_scores(row,prev,c); result=[]
     for p in predictions:
         ce,pe=combine(rce,rpe,p.ce_probability*100,p.pe_probability*100,regime)
+        ce, pe = apply_microstructure(ce, pe, micro)
         result.append(EnsembleRow(p.horizon_minutes,rce,rpe,p.ce_probability*100,p.pe_probability*100,ce,pe,"CE" if ce>pe else "PE" if pe>ce else "WAIT",p.confidence_low,p.confidence_high))
     return regime,result

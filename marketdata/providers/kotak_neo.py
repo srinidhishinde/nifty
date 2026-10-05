@@ -255,6 +255,89 @@ class KotakNeoProvider(MarketDataProvider):
                     oi_change=contract.oi_change,
                 )
 
+    def resolve_mcx_futures(self, symbol: str) -> dict:
+        """Resolve the nearest tradable MCX futures contract from Neo scrip master.
+
+        Tokens are never hardcoded because Kotak refreshes the scrip master daily.
+        """
+        requested = str(symbol or "").strip().upper()
+        if not requested:
+            raise ValueError("MCX symbol cannot be empty.")
+
+        rows = self.client.search_scrip(
+            exchange_segment="mcx_fo",
+            symbol=requested,
+            expiry="",
+            option_type="FUT",
+            strike_price="",
+        )
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError(f"No MCX futures contract found for '{requested}'.")
+
+        from datetime import datetime
+        candidates = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            token = str(row.get("pSymbol") or "").strip()
+            segment = str(row.get("pExchSeg") or "mcx_fo").strip().lower()
+            trading_symbol = str(row.get("pTrdSymbol") or "").strip()
+            name = str(row.get("pSymbolName") or requested).strip().upper()
+            option_type = str(row.get("pOptionType") or "").upper()
+            expiry_raw = row.get("pExpiryDate")
+            if not token or segment != "mcx_fo" or option_type not in {"", "XX", "FUT"}:
+                continue
+            expiry = None
+            if expiry_raw:
+                try:
+                    expiry = datetime.strptime(str(expiry_raw), "%d%b%Y")
+                except ValueError:
+                    try:
+                        expiry = datetime.fromisoformat(str(expiry_raw)).replace(tzinfo=None)
+                    except ValueError:
+                        expiry = None
+            candidates.append((expiry or datetime.max, token, trading_symbol, name, row))
+
+        if not candidates:
+            raise RuntimeError(f"MCX scrip master returned no futures rows for '{requested}'.")
+        candidates.sort(key=lambda item: item[0])
+        expiry, token, trading_symbol, name, row = candidates[0]
+        return {
+            "symbol": name,
+            "trading_symbol": trading_symbol,
+            "neosymbol": f"mcx_fo|{token}",
+            "instrument_token": token,
+            "exchange_segment": "mcx_fo",
+            "expiry": None if expiry == datetime.max else expiry.date().isoformat(),
+            "lot_size": row.get("lLotSize") or row.get("iLotSize"),
+        }
+
+    def get_mcx_quote(self, contract: dict) -> dict:
+        """Fetch one current MCX futures snapshot using a resolved Neo contract."""
+        token = str(contract.get("instrument_token") or "").strip()
+        if not token:
+            raise ValueError("Resolved MCX contract has no instrument token.")
+        response = self.client.quotes(
+            instrument_tokens=[{"instrument_token": token, "exchange_segment": "mcx_fo"}],
+            quote_type="all",
+        )
+        if not isinstance(response, list) or not response:
+            data = self._response_data(response)
+            response = data.get("quotes") or data.get("data") or []
+        if not response or not isinstance(response[0], dict):
+            raise RuntimeError(f"Kotak Neo returned no quote for {contract.get('trading_symbol') or token}.")
+        row = response[0]
+        ohlc = row.get("ohlc") or {}
+        return {
+            "open": self._float(ohlc.get("open")),
+            "high": self._float(ohlc.get("high")),
+            "low": self._float(ohlc.get("low")),
+            "close": self._float(ohlc.get("close") or row.get("ltp")),
+            "volume": self._float(row.get("last_volume") or row.get("volume")),
+            "open_interest": self._float(row.get("open_int") or row.get("openInterest")),
+            "ltp": self._float(row.get("ltp")),
+        }
+
     def get_historical_candles(
         self,
         symbol: str,
@@ -262,11 +345,12 @@ class KotakNeoProvider(MarketDataProvider):
         timeframe: str,
         start: date,
         end: date,
+        neosymbol: str | None = None,
     ) -> List[Candle]:
         # Historical API requires an exchange-segment|instrument-token Neo symbol.
         # Keep this explicit/configured rather than guessing an index token.
         from config.settings import settings
-        neosymbol = settings.neo_nifty_neosymbol if symbol.lower().replace(" ", "") in {"nifty50", "nifty"} else symbol
+        neosymbol = neosymbol or (settings.neo_nifty_neosymbol if symbol.lower().replace(" ", "") in {"nifty50", "nifty"} else symbol)
         if not neosymbol:
             raise RuntimeError(
                 "NEO_NIFTY_NEOSYMBOL is not configured. "

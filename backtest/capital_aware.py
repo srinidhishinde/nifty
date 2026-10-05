@@ -8,6 +8,7 @@ import pandas as pd
 from backtest.metrics import calculate_metrics
 from features.technical.indicators import add_indicators
 from strategy.rules import StrategyConfig, generate_signal, rank_rule_performance
+from risk.daily_guard import enforce_daily_loss
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,7 @@ class CapitalAwareRuleBacktestEngine:
         daily_pnl: dict = {}
         daily_trades: dict = {}
         day_start_equity: dict = {}
+        cooloff_until: dict = {}
 
         diagnostics = {
             "bars_considered": 0, "rule_trigger_bars": 0,
@@ -187,9 +189,23 @@ class CapitalAwareRuleBacktestEngine:
             diagnostics["bars_considered"] += 1
 
             loss_limit = day_start_equity[day] * self.max_daily_loss_fraction
-            if daily_pnl[day] <= -loss_limit:
+            volatility_band = 1.0
+            atr_now = float(row.get("ATR5", 0) or 0)
+            atr_base = float(row.get("ATR", 0) or 0)
+            if atr_now > 0 and atr_base > 0:
+                volatility_band = atr_now / atr_base
+            risk_decision = enforce_daily_loss(
+                max(0.0, -daily_pnl[day]),
+                loss_limit,
+                volatility_band,
+                now=ts.to_pydatetime(),
+                cooloff_until=cooloff_until.get(day),
+            )
+            if not risk_decision.allowed:
                 diagnostics["rejected_daily_limit"] += 1
                 continue
+            if risk_decision.cooloff_minutes > 0 and risk_decision.reason == "first_daily_loss_breach_reduced_size":
+                cooloff_until[day] = ts.to_pydatetime() + pd.Timedelta(minutes=risk_decision.cooloff_minutes)
             if daily_trades[day] >= self.max_trades_per_day:
                 diagnostics["rejected_trade_limit"] += 1
                 continue
@@ -230,6 +246,8 @@ class CapitalAwareRuleBacktestEngine:
                 continue
 
             lots, risk_per_lot = self._size(entry, stop, equity)
+            if risk_decision.size_multiplier < 1.0:
+                lots = int(lots * risk_decision.size_multiplier)
             if lots <= 0:
                 diagnostics["rejected_risk_budget"] += 1
                 continue
