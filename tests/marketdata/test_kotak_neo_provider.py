@@ -1,3 +1,4 @@
+from datetime import date
 from marketdata.providers.kotak_neo import KotakNeoProvider
 
 
@@ -83,3 +84,38 @@ def test_option_chain_success_payload_without_stat_is_accepted():
 def test_exchange_alias_is_normalized():
     assert KotakNeoProvider.normalize_exchange("NSE") == "nse_fo"
     assert KotakNeoProvider.normalize_exchange("MCX") == "mcx_fo"
+
+
+class FakeHistoricalNeo:
+    def __init__(self):
+        self.calls = []
+
+    def historical_data(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"status": "success", "data": {"candles": []}}
+
+
+def test_kotak_historical_interval_uses_neo_format():
+    client = FakeHistoricalNeo()
+    KotakNeoProvider(client).get_historical_candles(
+        symbol="NIFTY",
+        exchange="NSE",
+        timeframe="5m",
+        start=date(2026, 9, 25),
+        end=date(2026, 10, 5),
+        neosymbol="nse_cm|26000",
+    )
+    assert client.calls[0]["interval"] == "5min"
+
+
+def test_kotak_historical_interval_preserves_supported_neo_value():
+    client = FakeHistoricalNeo()
+    KotakNeoProvider(client).get_historical_candles(
+        symbol="NIFTY",
+        exchange="NSE",
+        timeframe="15min",
+        start=date(2026, 9, 25),
+        end=date(2026, 10, 5),
+        neosymbol="nse_cm|26000",
+    )
+    assert client.calls[0]["interval"] == "15min"
