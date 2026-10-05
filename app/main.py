@@ -1395,59 +1395,46 @@ st.divider()
 
 
 # ============================================================
-# CE / WAIT / PE
+# Research-only CE / WAIT / PE selector
 # ============================================================
 
-left, middle, right = st.columns(3)
-
-with left:
-
-    st.subheader("CE")
-
-    st.metric(
-        "Score",
-        f"{signal.ce_score:.1f}",
+if environment == "RESEARCH":
+    st.subheader("Research CE / WAIT / PE")
+    st.caption(
+        "Synthetic research selector only. It is not the canonical Kotak Neo "
+        "decision and must not be used as a paper/live trade signal."
     )
 
-    if signal.decision == "CE":
-        st.success("Selected")
-    else:
-        st.write("Not selected")
+    left, middle, right = st.columns(3)
 
+    with left:
+        st.subheader("CE")
+        st.metric("Score", f"{signal.ce_score:.1f}")
+        if signal.decision == "CE":
+            st.success("Selected")
+        else:
+            st.write("Not selected")
 
-with middle:
+    with middle:
+        st.subheader("WAIT")
+        st.metric("Edge", f"{signal.edge:.1f}")
+        if signal.decision == "WAIT":
+            st.warning("Insufficient confirmation")
+        else:
+            st.write("Available when evidence conflicts")
 
-    st.subheader("WAIT")
-
-    st.metric(
-        "Edge",
-        f"{signal.edge:.1f}",
+    with right:
+        st.subheader("PE")
+        st.metric("Score", f"{signal.pe_score:.1f}")
+        if signal.decision == "PE":
+            st.success("Selected")
+        else:
+            st.write("Not selected")
+else:
+    st.info(
+        f"Research CE/PE selector is hidden in {environment} mode. "
+        "The canonical signal above is the only decision displayed for this environment."
     )
-
-    if signal.decision == "WAIT":
-        st.warning(
-            "Insufficient confirmation"
-        )
-    else:
-        st.write(
-            "Available when evidence conflicts"
-        )
-
-
-with right:
-
-    st.subheader("PE")
-
-    st.metric(
-        "Score",
-        f"{signal.pe_score:.1f}",
-    )
-
-    if signal.decision == "PE":
-        st.success("Selected")
-    else:
-        st.write("Not selected")
-
 
 st.divider()
 
@@ -1560,41 +1547,69 @@ if live_contracts:
         for x in live_contracts
     ]
 else:
-    contracts = build_research_option_chain(
-        instrument=instrument,
-        spot=spot,
-        seed=int(seed),
-        strike_step=strike_step,
-    )
+    contracts = []
+    if environment == "RESEARCH":
+        contracts = build_research_option_chain(
+            instrument=instrument,
+            spot=spot,
+            seed=int(seed),
+            strike_step=strike_step,
+        )
+        st.warning(
+            "RESEARCH DATA ONLY — this option chain is synthetic and is not a broker feed. "
+            "It is available only in RESEARCH environment."
+        )
+    else:
+        st.warning(
+            f"No live {instrument} option-chain data is available. "
+            f"{environment} mode will not substitute synthetic contracts."
+        )
 
-chain_df = build_option_chain_dataframe(
-    contracts=contracts,
-    spot=spot,
-)
-
-chain_signal, chain_signal_rows = generate_option_chain_signal(
-    contracts,
-    spot=spot,
-    global_news_score=global_news_score,
-)
-
-# A synthetic research chain may be useful for UI/research smoke tests, but it
-# must never produce an apparently executable live trade plan.
 chain_is_live = bool(live_contracts)
-if not chain_is_live:
-    st.warning(
-        "RESEARCH DATA ONLY — this option chain is synthetic and is not a broker feed. "
-        "Signal, confidence, entry, stop and target below are not trade instructions."
+if contracts:
+    chain_df = build_option_chain_dataframe(
+        contracts=contracts,
+        spot=spot,
     )
+else:
+    chain_df = pd.DataFrame()
 
-st.markdown("#### Option-chain signal levels")
-signal_cols = st.columns(6)
-signal_cols[0].metric("Signal", chain_signal.direction if chain_is_live else "RESEARCH")
-signal_cols[1].metric("Confidence", f"{chain_signal.confidence:.1f}%" if chain_is_live else "N/A")
-signal_cols[2].metric("Entry", ("Unavailable" if chain_signal.entry_price is None else f"Rs {chain_signal.entry_price:.2f}") if chain_is_live else "Unavailable")
-signal_cols[3].metric("Stop Loss", ("Unavailable" if chain_signal.stop_loss is None else f"Rs {chain_signal.stop_loss:.2f}") if chain_is_live else "Unavailable")
-signal_cols[4].metric("Take Profit", ("Unavailable" if chain_signal.take_profit is None else f"Rs {chain_signal.take_profit:.2f}") if chain_is_live else "Unavailable")
-signal_cols[5].metric("Global News", f"{global_news_score:+.2f}")
+if contracts:
+    chain_signal, chain_signal_rows = generate_option_chain_signal(
+        contracts,
+        spot=spot,
+        global_news_score=global_news_score,
+    )
+else:
+    chain_signal, chain_signal_rows = None, []
+
+if chain_signal is not None:
+    st.markdown("#### Option-chain signal levels")
+    signal_cols = st.columns(6)
+    signal_cols[0].metric(
+        "Signal",
+        chain_signal.direction if chain_is_live else "RESEARCH",
+    )
+    signal_cols[1].metric(
+        "Confidence",
+        f"{chain_signal.confidence:.1f}%" if chain_is_live else "N/A",
+    )
+    signal_cols[2].metric(
+        "Entry",
+        f"Rs {chain_signal.entry_price:.2f}"
+        if chain_is_live and chain_signal.entry_price is not None else "Unavailable",
+    )
+    signal_cols[3].metric(
+        "Stop Loss",
+        f"Rs {chain_signal.stop_loss:.2f}"
+        if chain_is_live and chain_signal.stop_loss is not None else "Unavailable",
+    )
+    signal_cols[4].metric(
+        "Take Profit",
+        f"Rs {chain_signal.take_profit:.2f}"
+        if chain_is_live and chain_signal.take_profit is not None else "Unavailable",
+    )
+    signal_cols[5].metric("Global News", f"{global_news_score:+.2f}")
 
 
 # ------------------------------------------------------------
