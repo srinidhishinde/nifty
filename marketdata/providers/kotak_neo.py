@@ -110,6 +110,45 @@ class KotakNeoProvider(MarketDataProvider):
             ask=None,
         )
 
+    def _nearest_expiry(self, exchange: str, underlying: str) -> str:
+        """Resolve the nearest available option expiry from Neo."""
+        exchange_segment = self.normalize_exchange(exchange)
+        response = self.client.expiries(
+            exchange=exchange_segment,
+            underlying=underlying.upper(),
+            instrument_type="option",
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError("Kotak Neo expiry API returned an invalid response.")
+
+        expiries = response.get("expiries") or []
+        if not isinstance(expiries, list):
+            data = response.get("data")
+            if isinstance(data, dict):
+                expiries = data.get("expiries") or []
+
+        normalized = sorted(
+            str(value).strip()
+            for value in expiries
+            if str(value).strip()
+        )
+        if not normalized:
+            error = self._response_error(response)
+            raise RuntimeError(
+                f"Kotak Neo returned no available {underlying.upper()} option expiries"
+                + (f": {error}" if error else ".")
+            )
+
+        # The API documents ISO YYYY-MM-DD expiries sorted ascending.
+        # Choose the first expiry that is today or later.
+        today = date.today().isoformat()
+        future = [value for value in normalized if value >= today]
+        if not future:
+            raise RuntimeError(
+                f"Kotak Neo returned only expired {underlying.upper()} option expiries."
+            )
+        return future[0]
+
     def get_option_chain(
         self,
         underlying: str,
@@ -128,9 +167,13 @@ class KotakNeoProvider(MarketDataProvider):
         if count < 10 or count % 10 != 0:
             raise ValueError("Kotak Neo option-chain count must be a multiple of 10.")
 
-        # Neo accepts a nearest-expiry request when expiry is omitted. Keep
-        # that default for live NIFTY so we do not invent or cache an expiry.
-        request_expiry = str(expiry).strip() if expiry else None
+        # Resolve the expiry explicitly from Neo rather than relying on an
+        # implicit nearest-expiry default. This avoids "no market-data records"
+        # on accounts/SDK versions where the implicit expiry resolution is
+        # unreliable.
+        request_expiry = str(expiry).strip() if expiry else self._nearest_expiry(
+            exchange_segment, underlying
+        )
         response = self.client.option_chain(
             exchange=exchange_segment,
             underlying=underlying.upper(),
