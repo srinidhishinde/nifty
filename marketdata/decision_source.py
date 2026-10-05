@@ -103,8 +103,34 @@ def load_kotak_decision_snapshot(
         end = now.date()
         start = end - timedelta(days=max(3, int(history_days)))
 
+        instrument_upper = instrument.upper()
+        if instrument_upper != "NIFTY":
+            # Kotak's current historical-data endpoint does not support the
+            # mcx_fo exchange segment. A current MCX futures quote or contract
+            # resolution is not enough to manufacture the 60-bar 5m history
+            # required by the rule engine. Fail closed until a real SFeed/local
+            # MCX candle recorder supplies persisted completed bars.
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                (
+                    f"Kotak Neo historical candles are not available for {instrument_upper} "
+                    "via mcx_fo. Live MCX decisions require a real captured SFeed candle "
+                    "history; no synthetic/Yahoo fallback is permitted."
+                ),
+                now, None, [], "RED",
+                (
+                    "MCX historical candle feed unavailable",
+                    "Start the real Kotak SFeed MCX recorder before enabling this decision path.",
+                ),
+                None, None, 0,
+                _wait(
+                    f"Real MCX {instrument_upper} 5m candle history is unavailable.",
+                    now,
+                ),
+            )
+
         symbol, exchange, neosymbol = _history_request(
-            provider, instrument.upper(), timeframe, start, end
+            provider, instrument_upper, timeframe, start, end
         )
         candles = provider.get_historical_candles(
             symbol=symbol,
@@ -142,23 +168,6 @@ def load_kotak_decision_snapshot(
             )
 
         enriched = add_indicators(frame.copy())
-
-        # Only NIFTY has a live option-chain decision path today.
-        # MCX remains a real futures/candle decision, never a synthetic option trade.
-        if instrument.upper() != "NIFTY":
-            # MCX has no NIFTY-style CE/PE confirmation path. Even when
-            # the caller uses the NIFTY default config, force option confirmation
-            # off rather than manufacturing option evidence.
-            mcx_config = config or StrategyConfig(require_option_confirmation=False)
-            if mcx_config.require_option_confirmation:
-                mcx_config = replace(mcx_config, require_option_confirmation=False)
-            signal = _generate_signal_from_enriched(enriched, mcx_config)
-            return DecisionSnapshot(
-                "KOTAK_NEO", "LIVE", quality.status,
-                f"Kotak Neo live {instrument} futures decision source.",
-                now, enriched, [], quality.status, tuple(quality.reasons),
-                None, None, 0, signal,
-            )
 
         contracts = provider.get_option_chain(
             underlying="NIFTY",
