@@ -44,14 +44,20 @@ class KotakNeoProvider(MarketDataProvider):
         if not isinstance(response, dict):
             return "Kotak Neo returned an invalid response."
 
-        if response.get("stat") == "Ok" or str(response.get("status", "")).lower() in {"ok", "success"}:
+        explicit_status = str(response.get("stat", "") or "").strip().lower()
+        explicit_status_alt = str(response.get("status", "") or "").strip().lower()
+        if explicit_status in {"not_ok", "error", "failed"} or explicit_status_alt in {"error", "failed"}:
+            # Never treat a payload-bearing error response as successful market
+            # data. Broker diagnostics take precedence over a non-empty data key.
+            pass
+        elif explicit_status == "ok" or explicit_status_alt in {"ok", "success"}:
             return ""
-
-        # Current Neo market-data success responses contain a populated data
-        # object. Do not convert a valid payload into a false error.
-        data = response.get("data")
-        if isinstance(data, dict) and data:
-            return ""
+        else:
+            # Some current Neo market-data success responses omit stat/status
+            # but contain a populated data object.
+            data = response.get("data")
+            if isinstance(data, dict) and data:
+                return ""
 
         # Preserve the broker's actual diagnostic. The previous implementation
         # collapsed every no-data response into the same generic message, which
