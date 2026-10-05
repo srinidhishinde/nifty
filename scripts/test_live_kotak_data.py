@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from broker.kotak_neo import KotakNeoBroker
 from config.settings import settings
+from marketdata.kotak_live import FiveMinuteCandleBuilder, LiveTick, stream_kotak_sfeed
 from marketdata.providers.kotak_neo import KotakNeoProvider
 
 
@@ -37,65 +38,39 @@ def _print_result(name: str, ok: bool, detail: str) -> None:
 
 
 async def stream_live_data(client: Any, mcx_token: str, seconds: int) -> tuple[bool, dict[str, int]]:
-    from neo_api_client.websocket.feed import SFeedIndex, SFeedScrip, WsToken
-
-    counts = {"nifty": 0, "crudeoil": 0}
     latest: dict[str, Any] = {}
+    builder = FiveMinuteCandleBuilder()
+    completed: list[dict[str, Any]] = []
 
-    async with client.create_websocket() as ws:
-        tokens = [
-            WsToken("nse_cm", "Nifty 50"),
-            WsToken("mcx_fo", mcx_token),
-        ]
-        await ws.subscribe_scrips(tokens)
+    def on_tick(tick: LiveTick) -> None:
+        key = "crudeoil" if tick.exchange_segment == "mcx_fo" else "nifty"
+        latest[key] = (tick.trading_symbol, tick.ltp, tick.timestamp)
+        completed.extend(builder.update(tick))
 
-        deadline = asyncio.get_running_loop().time() + seconds
-        while asyncio.get_running_loop().time() < deadline:
-            remaining = max(0.1, deadline - asyncio.get_running_loop().time())
-            try:
-                async with asyncio.timeout(remaining):
-                    message = await ws.__anext__()
-            except (TimeoutError, StopAsyncIteration):
-                break
-
-            if isinstance(message, SFeedScrip):
-                segment = str(_field(message, "exchange_segment", "")).lower()
-                ltp = _field(message, "last_traded_price")
-                symbol = str(_field(message, "trading_symbol", "") or "")
-                if segment == "mcx_fo":
-                    counts["crudeoil"] += 1
-                    latest["crudeoil"] = (symbol, ltp, _field(message, "timestamp"))
-                elif segment == "nse_cm":
-                    counts["nifty"] += 1
-                    latest["nifty"] = (symbol, ltp, _field(message, "timestamp"))
-            elif isinstance(message, SFeedIndex):
-                counts["nifty"] += 1
-                latest["nifty"] = (
-                    str(_field(message, "trading_symbol", "") or "Nifty 50"),
-                    _field(message, "last_traded_price"),
-                    _field(message, "timestamp"),
-                )
-
-        await ws.unsubscribe_scrips(tokens)
+    counts = await stream_kotak_sfeed(client, [mcx_token], seconds, on_tick)
+    completed.extend(builder.flush_completed(datetime.now().astimezone()))
 
     for key in ("nifty", "crudeoil"):
         value = latest.get(key)
+        count = counts["mcx"] if key == "crudeoil" else counts["nifty"]
         if value:
-            print(f"  {key.upper():9s} {value[0]} LTP={value[1]} ts={value[2]} messages={counts[key]}")
+            print(f"  {key.upper():9s} {value[0]} LTP={value[1]} ts={value[2]} messages={count}")
         else:
             print(f"  {key.upper():9s} no live SFeed message received; messages=0")
 
-    return all(counts.values()), counts
+    print(f"  COMPLETED 5m candles={len(completed)}")
+    ok = counts["nifty"] > 0 and counts["mcx"] > 0
+    return ok, {"nifty": counts["nifty"], "crudeoil": counts["mcx"]}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only Kotak Neo live data test.")
     parser.add_argument("--totp", required=True, help="Current 6-digit Kotak TOTP. Never logged or persisted.")
-    parser.add_argument("--seconds", type=int, default=15, help="Live SFeed observation window (5-60 seconds).")
+    parser.add_argument("--seconds", type=int, default=15, help="Live SFeed observation window (5-86400 seconds).")
     args = parser.parse_args()
 
-    if not 5 <= args.seconds <= 60:
-        parser.error("--seconds must be between 5 and 60.")
+    if not 5 <= args.seconds <= 86_400:
+        parser.error("--seconds must be between 5 and 86400.")
     if not args.totp.isdigit() or len(args.totp) != 6:
         parser.error("--totp must be exactly six digits.")
 

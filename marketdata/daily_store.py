@@ -41,6 +41,17 @@ class DailyMarketStore:
         folder = self.directory(instrument, day)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{instrument.upper()}_ohlcv.csv"
+        if path.exists():
+            existing = pd.read_csv(path)
+            if "timestamp" in existing.columns:
+                existing["timestamp"] = pd.to_datetime(existing["timestamp"], errors="coerce")
+                out = pd.concat([existing, out], ignore_index=True)
+                out = (
+                    out.dropna(subset=["timestamp"])
+                    .sort_values("timestamp")
+                    .drop_duplicates("timestamp", keep="last")
+                    .reset_index(drop=True)
+                )
         out.to_csv(path, index=False)
         return path
 
