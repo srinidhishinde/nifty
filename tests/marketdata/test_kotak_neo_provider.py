@@ -164,3 +164,23 @@ def test_option_contract_strike_is_numeric():
         oi_change=1.0,
     )
     assert isinstance(contract.strike, float)
+
+
+def test_daily_store_loader_uses_only_captured_partitions(tmp_path):
+    from datetime import date
+    from marketdata.daily_store import DailyMarketStore, load_captured_candles
+
+    store = DailyMarketStore(tmp_path)
+    frame = pd.DataFrame({
+        "timestamp": ["2026-10-01 09:15:00", "2026-10-01 09:20:00"],
+        "open": [25000, 25001],
+        "high": [25002, 25003],
+        "low": [24999, 25000],
+        "close": [25001, 25002],
+        "volume": [100, 120],
+    })
+    store.save_candles("NIFTY", frame, date(2026, 10, 1))
+    loaded, source = load_captured_candles("NIFTY", root=tmp_path)
+    assert source == "KOTAK_CAPTURED"
+    assert len(loaded) == 2
+    assert set(loaded["data_source"]) == {"KOTAK_CAPTURED"}
