@@ -1030,33 +1030,35 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                 "ML is advisory only. A trade still requires the canonical rule, "
                 "data-quality, EV, risk, and execution gates."
             )
-            signal_journal.append_decision(
-                instrument=instrument,
-                timeframe=decision_timeframe,
-                source="KOTAK_NEO",
-                status=str(
-                    getattr(st.session_state.get("kotak_decision_snapshot"), "status", "UNKNOWN")
-                    if not isinstance(st.session_state.get("kotak_decision_snapshot"), dict)
-                    else st.session_state["kotak_decision_snapshot"].get("status", "UNKNOWN")
-                ),
-                direction=str(first.stronger_side),
-                confidence=max(float(first.final_ce), float(first.final_pe)),
-                reliability=max(float(first.final_ce), float(first.final_pe)),
-                regime=regime.name,
-                pcr=(
-                    getattr(st.session_state.get("kotak_decision_snapshot"), "pcr_oi", None)
-                    if not isinstance(st.session_state.get("kotak_decision_snapshot"), dict)
-                    else st.session_state["kotak_decision_snapshot"].get("pcr_oi")
-                ),
-                imbalance_ratio=(micro or {}).get("imbalance_ratio") if isinstance(micro, dict) else None,
-                aggressor=(micro or {}).get("aggressor", "") if isinstance(micro, dict) else "",
-                micro_weight=(micro or {}).get("micro_weight") if isinstance(micro, dict) else None,
-                threshold=(micro or {}).get("imbalance_trigger") if isinstance(micro, dict) else None,
-                ml_ce=float(first.ml_ce),
-                ml_pe=float(first.ml_pe),
-                rule_ce=float(first.rule_ce),
-                rule_pe=float(first.rule_pe),
-            )
+            # Streamlit reruns are frequent. Journal a Kotak snapshot only once,
+            # while still allowing every genuinely new 5m/15m decision to be stored.
+            snapshot_key = str(snapshot.timestamp) if snapshot is not None else ""
+            last_journal_key = st.session_state.get("last_signal_journal_key")
+            if snapshot_key and snapshot_key != last_journal_key:
+                signal_journal.append_decision(
+                    instrument=instrument,
+                    timeframe=decision_timeframe,
+                    source="KOTAK_NEO",
+                    status=str(snapshot.status),
+                    direction=str(first.stronger_side),
+                    confidence=max(float(first.final_ce), float(first.final_pe)),
+                    reliability=max(float(first.final_ce), float(first.final_pe)),
+                    reason="; ".join(canonical_signal.reasons),
+                    regime=regime.name,
+                    pcr=snapshot.pcr_oi,
+                    imbalance_ratio=(micro or {}).get("imbalance_ratio") if isinstance(micro, dict) else None,
+                    aggressor=(micro or {}).get("aggressor", "") if isinstance(micro, dict) else "",
+                    micro_weight=(micro or {}).get("micro_weight") if isinstance(micro, dict) else None,
+                    threshold=(micro or {}).get("imbalance_trigger") if isinstance(micro, dict) else None,
+                    ml_ce=float(first.ml_ce),
+                    ml_pe=float(first.ml_pe),
+                    rule_ce=float(first.rule_ce),
+                    rule_pe=float(first.rule_pe),
+                    entry=float(prediction_frame.iloc[-1]["close"]) if prediction_frame is not None else None,
+                    stop_loss=float(canonical_signal.stop_loss) if canonical_signal.stop_loss > 0 else None,
+                    target=float(canonical_signal.target) if canonical_signal.target > 0 else None,
+                )
+                st.session_state["last_signal_journal_key"] = snapshot_key
         except Exception as exc:
             st.warning(f"Ensemble calculation unavailable: {exc}")
     else:
