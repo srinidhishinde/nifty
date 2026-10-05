@@ -75,3 +75,53 @@ class DailyMarketStore:
         import json
         path.write_text(json.dumps(metadata, indent=2, default=str), encoding="utf-8")
         return path
+
+
+def load_captured_candles(
+    instrument: str,
+    start: date | None = None,
+    end: date | None = None,
+    root: str | Path | None = None,
+) -> tuple[pd.DataFrame, str]:
+    """Load only persisted broker-capture OHLCV partitions.
+
+    This deliberately ignores Yahoo and synthetic datasets. A caller receives
+    an explicit provenance label so UI/backtest code cannot silently mix sources.
+    """
+    store = DailyMarketStore(root)
+    base = store.root / instrument.upper()
+    if not base.exists():
+        return pd.DataFrame(), "KOTAK_CAPTURED"
+
+    frames: list[pd.DataFrame] = []
+    for path in sorted(base.glob("*/" + f"{instrument.upper()}_ohlcv.csv")):
+        try:
+            day = date.fromisoformat(path.parent.name)
+        except ValueError:
+            continue
+        if start and day < start:
+            continue
+        if end and day > end:
+            continue
+        frame = pd.read_csv(path)
+        required = {"timestamp", "open", "high", "low", "close", "volume"}
+        if not required.issubset(frame.columns):
+            continue
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
+        for column in ["open", "high", "low", "close", "volume"]:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        frame = frame.dropna(subset=list(required))
+        if not frame.empty:
+            frame["data_source"] = "KOTAK_CAPTURED"
+            frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame(), "KOTAK_CAPTURED"
+
+    combined = (
+        pd.concat(frames, ignore_index=True)
+        .sort_values("timestamp")
+        .drop_duplicates("timestamp")
+        .reset_index(drop=True)
+    )
+    return combined, "KOTAK_CAPTURED"
