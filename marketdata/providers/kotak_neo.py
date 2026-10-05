@@ -43,23 +43,37 @@ class KotakNeoProvider(MarketDataProvider):
     def _response_error(response: Any) -> str:
         if not isinstance(response, dict):
             return "Kotak Neo returned an invalid response."
+
         if response.get("stat") == "Ok" or str(response.get("status", "")).lower() in {"ok", "success"}:
             return ""
-        # Current Neo market-data success responses may contain only a
-        # populated data payload (the option-chain docs show no stat field).
-        # Treat a non-empty data object as success rather than inventing an
-        # error for an otherwise valid response.
+
+        # Current Neo market-data success responses contain a populated data
+        # object. Do not convert a valid payload into a false error.
         data = response.get("data")
         if isinstance(data, dict) and data:
             return ""
-        if response.get("errMsg"):
-            return str(response["errMsg"])
+
+        # Preserve the broker's actual diagnostic. The previous implementation
+        # collapsed every no-data response into the same generic message, which
+        # made it impossible to distinguish an expired/invalid expiry, a rate
+        # limit, a session issue, or genuine absence of market data.
+        code = response.get("stCode") or response.get("code") or response.get("statusCode")
+        message = response.get("errMsg") or response.get("desc")
         errors = response.get("error")
         if isinstance(errors, list) and errors:
             first = errors[0]
-            if isinstance(first, dict) and first.get("message"):
-                return str(first["message"])
-            return str(first)
+            if isinstance(first, dict):
+                code = first.get("code") or code
+                message = first.get("message") or message
+            elif first:
+                message = str(first)
+
+        if code and message:
+            return f"{message} (code {code})"
+        if message:
+            return str(message)
+        if code:
+            return f"Market-data request failed (code {code})"
         return "Kotak Neo returned no market-data records."
 
     def get_quote(self, symbol: str, exchange: str) -> Quote:
