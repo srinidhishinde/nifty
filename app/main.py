@@ -789,7 +789,16 @@ decision_cols[3].metric(
 if "kotak_decision_snapshot" not in st.session_state:
     st.session_state["kotak_decision_snapshot"] = None
 
-if decision_refresh or st.session_state["kotak_decision_snapshot"] is None:
+cached_snapshot = st.session_state["kotak_decision_snapshot"]
+snapshot_connection_mismatch = (
+    cached_snapshot is not None
+    and (
+        (cached_snapshot.status == "RED" and neo_status.connected)
+        or (cached_snapshot.status != "RED" and not neo_status.connected)
+    )
+)
+
+if decision_refresh or cached_snapshot is None or snapshot_connection_mismatch:
     snapshot = load_kotak_decision_snapshot(
         neo_broker,
         instrument=instrument,
@@ -799,7 +808,7 @@ if decision_refresh or st.session_state["kotak_decision_snapshot"] is None:
     )
     st.session_state["kotak_decision_snapshot"] = snapshot
 else:
-    snapshot = st.session_state["kotak_decision_snapshot"]
+    snapshot = cached_snapshot
 
 prediction_frame = snapshot.frame if snapshot is not None else None
 prediction_source = "Kotak Neo production decision data" if snapshot and snapshot.frame is not None else None
