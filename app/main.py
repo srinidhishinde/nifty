@@ -1572,7 +1572,10 @@ if contracts:
         spot=spot,
     )
 else:
-    chain_df = pd.DataFrame()
+    chain_df = pd.DataFrame(columns=[
+        "Strike", "CE LTP", "CE Volume", "CE OI", "CE OI Chg", "CE IV", "CE Score",
+        "PE LTP", "PE Volume", "PE OI", "PE OI Chg", "PE IV", "PE Score", "ATM",
+    ])
 
 if contracts:
     chain_signal, chain_signal_rows = generate_option_chain_signal(
@@ -1788,7 +1791,7 @@ def highlight_atm(
     return styles
 
 
-if not live_contracts:
+if environment == "RESEARCH" and not live_contracts:
     st.caption("RESEARCH DATA — deterministic synthetic option chain; not a broker feed.")
 
 st.markdown("#### Option Chain — Trade Plan")
@@ -1935,11 +1938,8 @@ st.subheader(
     "Signal Reasons"
 )
 
-for reason in signal.reasons:
-
-    st.write(
-        f"- {reason}"
-    )
+for reason in (signal.reasons if environment == "RESEARCH" else canonical_signal.reasons):
+    st.write(f"- {reason}")
 
 
 st.divider()
