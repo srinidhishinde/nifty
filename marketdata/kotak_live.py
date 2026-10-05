@@ -210,6 +210,9 @@ async def stream_kotak_sfeed(
 
     counts = {"nifty": 0, "mcx": 0, "invalid": 0}
     async with client.create_websocket() as ws:
+        # The SDK documents subscribe_index() for indices and
+        # subscribe_scrips() for contracts. Keep the NIFTY index feed isolated
+        # so a bad MCX subscription cannot mask it.
         await ws.subscribe_index([nifty_token])
         await ws.subscribe_scrips(mcx)
         try:
