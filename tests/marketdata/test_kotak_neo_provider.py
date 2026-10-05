@@ -222,3 +222,28 @@ def test_daily_store_loader_uses_only_captured_partitions(tmp_path):
     assert source == "KOTAK_CAPTURED"
     assert len(loaded) == 2
     assert set(loaded["data_source"]) == {"KOTAK_CAPTURED"}
+
+
+def test_daily_store_save_candles_appends_and_deduplicates(tmp_path):
+    from datetime import date
+    from marketdata.daily_store import DailyMarketStore, load_captured_candles
+
+    store = DailyMarketStore(tmp_path)
+    first = pd.DataFrame({
+        "timestamp": ["2026-10-01 09:15:00"],
+        "open": [25000], "high": [25002], "low": [24999],
+        "close": [25001], "volume": [100],
+    })
+    second = pd.DataFrame({
+        "timestamp": ["2026-10-01 09:20:00", "2026-10-01 09:20:00"],
+        "open": [25001, 25001], "high": [25003, 25004], "low": [25000, 25000],
+        "close": [25002, 25003], "volume": [120, 130],
+    })
+
+    store.save_candles("NIFTY", first, date(2026, 10, 1))
+    store.save_candles("NIFTY", second, date(2026, 10, 1))
+
+    loaded, source = load_captured_candles("NIFTY", root=tmp_path)
+    assert source == "KOTAK_CAPTURED"
+    assert len(loaded) == 2
+    assert loaded.iloc[-1]["close"] == 25003
