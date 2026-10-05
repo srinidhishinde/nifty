@@ -1500,8 +1500,8 @@ if instrument == "NIFTY" and authenticated:
     )
     if not market_open:
         st.info(
-            "NIFTY market is currently closed. Live option-chain polling is paused; "
-            "the research chain below is clearly labelled and is not live data."
+            "NIFTY market is currently closed. Live option-chain polling is paused. "
+            "Synthetic contracts are shown only when Environment is RESEARCH."
         )
     else:
         try:
@@ -1520,7 +1520,9 @@ if instrument == "NIFTY" and authenticated:
         except Exception as exc:
             st.warning(
                 f"Live NIFTY option-chain unavailable: {exc}. "
-                "Showing clearly labelled research data instead."
+                + ("Showing clearly labelled research data instead."
+                   if environment == "RESEARCH"
+                   else f"{environment} mode remains WAIT; no synthetic fallback is used.")
             )
 elif instrument != "NIFTY":
     st.info(
@@ -1535,7 +1537,7 @@ else:
 st.subheader("Option Chain")
 st.caption(
     "Live Kotak Neo data is shown when connected. "
-    "Synthetic data is never substituted for a failed live request."
+    "Synthetic option data is permitted only in RESEARCH environment; PAPER never substitutes a failed broker request."
 )
 
 chain_col1, chain_col2, chain_col3 = st.columns(3)
