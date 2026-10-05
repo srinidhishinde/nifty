@@ -126,16 +126,29 @@ class FiveMinuteCandleBuilder:
         if timeframe != "5min":
             raise ValueError("FiveMinuteCandleBuilder currently supports only 5min.")
         self._states: dict[str, _CandleState] = {}
+        self._last_cumulative_volume: dict[str, float] = {}
 
     @staticmethod
     def _key(tick: LiveTick) -> str:
         return f"{tick.exchange_segment}|{tick.instrument_token}"
+
+    def _volume_delta(self, tick: LiveTick) -> float:
+        if tick.volume is None:
+            return 0.0
+        key = self._key(tick)
+        current = max(float(tick.volume), 0.0)
+        previous = self._last_cumulative_volume.get(key)
+        self._last_cumulative_volume[key] = current
+        if previous is None:
+            return 0.0
+        return current if current < previous else current - previous
 
     def update(self, tick: LiveTick) -> list[dict[str, Any]]:
         bucket = pd.Timestamp(tick.timestamp).floor("5min")
         key = self._key(tick)
         state = self._states.get(key)
         completed: list[dict[str, Any]] = []
+        volume_delta = self._volume_delta(tick)
 
         if state is not None and bucket > state.bucket:
             completed.append(self._to_row(state))
