@@ -12,9 +12,10 @@ def tick(segment, token, symbol, ts, price, volume=10, oi=None):
         exchange_segment=segment,
         instrument_token=token,
         trading_symbol=symbol,
-        timestamp=ts,
+        last_update_time=ts,
+        last_trade_time=None,
         last_traded_price=price,
-        volume=volume,
+        volume_traded_today=volume,
         open_interest=oi,
     )
 
