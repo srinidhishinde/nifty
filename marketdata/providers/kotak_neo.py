@@ -68,6 +68,11 @@ class KotakNeoProvider(MarketDataProvider):
             elif first:
                 message = str(first)
 
+        fault = response.get("fault")
+        if isinstance(fault, dict):
+            code = fault.get("code") or code
+            message = fault.get("message") or message
+
         if code and message:
             return f"{message} (code {code})"
         if message:
@@ -75,6 +80,41 @@ class KotakNeoProvider(MarketDataProvider):
         if code:
             return f"Market-data request failed (code {code})"
         return "Kotak Neo returned no market-data records."
+
+    def resolve_nifty_index_neosymbol(self, index_name: str = "Nifty 50") -> str:
+        """Resolve the current NIFTY index Neo symbol from Kotak's scrip master."""
+        rows = self.client.search_scrip(
+            exchange_segment="nse_cm",
+            symbol=index_name,
+            expiry="",
+            option_type="",
+            strike_price="",
+        )
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError(
+                f"Kotak Neo scrip master returned no NSE cash instrument for '{index_name}'."
+            )
+
+        target = index_name.strip().upper()
+        candidates = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            token = str(row.get("pSymbol") or "").strip()
+            segment = str(row.get("pExchSeg") or "nse_cm").strip().lower()
+            name = str(row.get("pSymbolName") or "").strip()
+            if not token or segment != "nse_cm":
+                continue
+            score = 0 if name.upper() == target else 1
+            candidates.append((score, token, name))
+
+        if not candidates:
+            raise RuntimeError(
+                f"Kotak Neo scrip master returned no valid nse_cm token for '{index_name}'."
+            )
+
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return f"nse_cm|{candidates[0][1]}"
 
     def get_quote(self, symbol: str, exchange: str) -> Quote:
         raise NotImplementedError(
@@ -417,11 +457,17 @@ class KotakNeoProvider(MarketDataProvider):
         # Historical API requires an exchange-segment|instrument-token Neo symbol.
         # Keep this explicit/configured rather than guessing an index token.
         from config.settings import settings
-        neosymbol = neosymbol or (settings.neo_nifty_neosymbol if symbol.lower().replace(" ", "") in {"nifty50", "nifty"} else symbol)
+        is_nifty_index = symbol.lower().replace(" ", "") in {"nifty50", "nifty"}
+        if is_nifty_index:
+            neosymbol = neosymbol or settings.neo_nifty_neosymbol
+            if not neosymbol:
+                neosymbol = self.resolve_nifty_index_neosymbol("Nifty 50")
+        else:
+            neosymbol = neosymbol or symbol
+
         if not neosymbol:
             raise RuntimeError(
-                "NEO_NIFTY_NEOSYMBOL is not configured. "
-                "Set it from the current Kotak Neo scrip master (for example nse_cm|<token>)."
+                f"Kotak Neo historical-data instrument is not configured for '{symbol}'."
             )
         response = self.client.historical_data(
             neosymbol=neosymbol,
