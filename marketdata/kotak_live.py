@@ -213,7 +213,8 @@ async def stream_kotak_sfeed(
         # Kotak documents Nifty 50 as a valid scrip/LTP subscription. Using
         # the same Scrip feed as MCX gives the capture layer one normalized
         # message type and avoids depending on the separate index decoder.
-        tokens = [nifty_token, *mcx]\n        await ws.subscribe_scrips(tokens)
+        tokens = [nifty_token, *mcx]
+        await ws.subscribe_scrips(tokens)
         await ws.subscribe_exchange()\n        counts["subscription_count"] = int(getattr(ws, "subscription_count", 0) or 0)
 
         def _on_raw(_raw: str | bytes) -> None:
