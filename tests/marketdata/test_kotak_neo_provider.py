@@ -115,29 +115,33 @@ class FakeNiftyScripNeo(FakeHistoricalNeo):
         }]
 
 
-def test_nifty_historical_ignores_stale_configured_neosymbol():
-    client = FakeNiftyScripNeo()
+def test_nifty_historical_is_explicitly_unsupported_without_fallback():
+    client = FakeHistoricalNeo()
+    try:
+        KotakNeoProvider(client).get_historical_candles(
+            symbol="NIFTY",
+            exchange="NSE",
+            timeframe="5m",
+            start=date(2026, 9, 25),
+            end=date(2026, 10, 5),
+            neosymbol="nse_cm|26000",
+        )
+    except RuntimeError as exc:
+        assert "does not support NIFTY index candles" in str(exc)
+    else:
+        raise AssertionError("NIFTY historical candles must fail closed")
+    assert client.calls == []
+
+
+def test_kotak_historical_interval_uses_neo_format():
+    client = FakeHistoricalNeo()
     KotakNeoProvider(client).get_historical_candles(
         symbol="RELIANCE",
         exchange="NSE",
         timeframe="5m",
         start=date(2026, 9, 25),
         end=date(2026, 10, 5),
-        neosymbol="nse_cm|26000",
-    )
-    assert client.search_calls
-    assert client.calls[0]["neosymbol"] == "nse_cm|99999"
-
-
-def test_kotak_historical_interval_uses_neo_format():
-    client = FakeHistoricalNeo()
-    KotakNeoProvider(client).get_historical_candles(
-        symbol="NIFTY",
-        exchange="NSE",
-        timeframe="5m",
-        start=date(2026, 9, 25),
-        end=date(2026, 10, 5),
-        neosymbol="nse_cm|26000",
+        neosymbol="nse_cm|2885",
     )
     assert client.calls[0]["interval"] == "5min"
 
