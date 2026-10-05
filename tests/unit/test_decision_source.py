@@ -62,32 +62,15 @@ def test_option_data_is_required_for_ce_pe(monkeypatch):
     assert "option-chain" in snapshot.signal.reasons[0]
 
 
-def test_mcx_uses_real_futures_candles_without_option_chain(monkeypatch):
+def test_mcx_historical_decision_is_blocked_without_real_candle_feed(monkeypatch):
     class Provider:
         def __init__(self, client):
             pass
 
-        def resolve_mcx_futures(self, symbol):
-            assert symbol == "CRUDEOIL"
-            return {
-                "trading_symbol": "CRUDEOIL26OCTFUT",
-                "neosymbol": "mcx_fo|12345",
-            }
-
-        def get_historical_candles(self, **kwargs):
-            assert kwargs["neosymbol"] == "mcx_fo|12345"
-            ts = pd.date_range("2026-10-01 09:15", periods=80, freq="5min", tz="Asia/Kolkata")
-            return [
-                type("Candle", (), {
-                    "timestamp": t, "open": 6500.0, "high": 6510.0,
-                    "low": 6490.0, "close": 6505.0, "volume": 1000.0
-                })()
-                for t in ts
-            ]
-
     monkeypatch.setattr("marketdata.decision_source.KotakNeoProvider", Provider)
     snapshot = load_kotak_decision_snapshot(_Connected(), instrument="CRUDEOIL")
     assert snapshot.source == "KOTAK_NEO"
+    assert snapshot.status == "RED"
     assert snapshot.option_count == 0
-    assert snapshot.quality_status != "RED"
-    assert "futures decision source" in snapshot.message
+    assert snapshot.signal.direction == "WAIT"
+    assert "MCX historical candle feed unavailable" in snapshot.quality_reasons
