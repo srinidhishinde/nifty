@@ -1034,12 +1034,20 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                 instrument=instrument,
                 timeframe=decision_timeframe,
                 source="KOTAK_NEO",
-                status=str(getattr(st.session_state.get("kotak_decision_snapshot"), "status", "UNKNOWN")),
+                status=str(
+                    getattr(st.session_state.get("kotak_decision_snapshot"), "status", "UNKNOWN")
+                    if not isinstance(st.session_state.get("kotak_decision_snapshot"), dict)
+                    else st.session_state["kotak_decision_snapshot"].get("status", "UNKNOWN")
+                ),
                 direction=str(first.stronger_side),
                 confidence=max(float(first.final_ce), float(first.final_pe)),
                 reliability=max(float(first.final_ce), float(first.final_pe)),
                 regime=regime.name,
-                pcr=getattr(st.session_state.get("kotak_decision_snapshot"), "pcr_oi", None),
+                pcr=(
+                    getattr(st.session_state.get("kotak_decision_snapshot"), "pcr_oi", None)
+                    if not isinstance(st.session_state.get("kotak_decision_snapshot"), dict)
+                    else st.session_state["kotak_decision_snapshot"].get("pcr_oi")
+                ),
                 imbalance_ratio=(micro or {}).get("imbalance_ratio") if isinstance(micro, dict) else None,
                 aggressor=(micro or {}).get("aggressor", "") if isinstance(micro, dict) else "",
                 micro_weight=(micro or {}).get("micro_weight") if isinstance(micro, dict) else None,
