@@ -927,6 +927,25 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
             "Only real Kotak/news values are supplied. Missing derivative fields are not synthesized."
         )
 
+    # Current global news is a point-in-time value. It must never be copied
+    # across historical rows and used as a training feature, because that would
+    # leak present information into the past. Keep it for the latest prediction
+    # only; historical ML training uses only features actually present per row.
+    ml_training_input = ml_input.copy()
+    for _leaky_column in ("SENTIMENT", "SENTIMENT_CHANGE", "NEWS_COUNT"):
+        if _leaky_column in ml_training_input.columns:
+            ml_training_input[_leaky_column] = np.nan
+
+    ml_context_key = (
+        instrument.upper(),
+        decision_timeframe,
+        str(snapshot.timestamp) if snapshot is not None else "",
+    )
+    if st.session_state.get("ml_context_key") != ml_context_key:
+        st.session_state.pop("final_ml_result", None)
+        st.session_state.pop("final_ml_artifacts", None)
+        st.session_state["ml_context_key"] = ml_context_key
+
     train_col, status_col = st.columns([1, 3])
     train_clicked = train_col.button(
         "Train / Retrain ML", type="primary", width="stretch", key="final_ml_train"
@@ -935,13 +954,16 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
         try:
             with st.spinner("Training advisory models on the available Kotak decision dataset..."):
                 ml_result, ml_artifacts = train_ml(
-                    ml_input,
-                    MLConfig(window_days=min(90, int(decision_history_days)), refresh_minutes=5),
+                    ml_training_input,
+                    MLConfig(window_days=90, refresh_minutes=5),
                     model_dir="models/ml_advisory",
                 )
             st.session_state["final_ml_result"] = ml_result
             st.session_state["final_ml_artifacts"] = ml_artifacts
-            st.success("ML models trained separately from the Rule Engine.")
+            st.success(
+                "ML advisory models trained. Historical current-news values were excluded "
+                "from training to prevent temporal leakage."
+            )
         except Exception as exc:
             st.error(f"ML training failed: {exc}")
 
@@ -1008,7 +1030,7 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
             regime, ensemble_rows = build_ensemble(
                 ml_input,
                 ml_predictions,
-                StrategyConfig(require_option_confirmation=True),
+                StrategyConfig(require_option_confirmation=(instrument.upper() == "NIFTY")),
                 micro=micro,
             )
             rcols = st.columns(4)
@@ -1054,9 +1076,9 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                     timeframe=decision_timeframe,
                     source="KOTAK_NEO",
                     status=str(snapshot.status),
-                    direction=str(first.stronger_side),
-                    confidence=max(float(first.final_ce), float(first.final_pe)),
-                    reliability=max(float(first.final_ce), float(first.final_pe)),
+                    direction=str(canonical_signal.direction if canonical_signal.valid else "WAIT"),
+                    confidence=max(float(first.final_ce), float(first.final_pe)) if canonical_signal.valid else 0.0,
+                    reliability=max(float(first.final_ce), float(first.final_pe)) if canonical_signal.valid else 0.0,
                     reason="; ".join(canonical_signal.reasons),
                     regime=regime.name,
                     pcr=snapshot.pcr_oi,
@@ -1068,9 +1090,9 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                     ml_pe=float(first.ml_pe),
                     rule_ce=float(first.rule_ce),
                     rule_pe=float(first.rule_pe),
-                    entry=float(prediction_frame.iloc[-1]["close"]) if prediction_frame is not None else None,
-                    stop_loss=float(canonical_signal.stop_loss) if canonical_signal.stop_loss > 0 else None,
-                    target=float(canonical_signal.target) if canonical_signal.target > 0 else None,
+                    entry=float(prediction_frame.iloc[-1]["close"]) if prediction_frame is not None and canonical_signal.valid else None,
+                    stop_loss=float(canonical_signal.stop_loss) if canonical_signal.valid and canonical_signal.stop_loss > 0 else None,
+                    target=float(canonical_signal.target) if canonical_signal.valid and canonical_signal.target > 0 else None,
                 )
                 st.session_state["last_signal_journal_key"] = snapshot_key
         except Exception as exc:
