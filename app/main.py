@@ -956,7 +956,7 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                 ml_result, ml_artifacts = train_ml(
                     ml_training_input,
                     MLConfig(window_days=90, refresh_minutes=5),
-                    model_dir="models/ml_advisory",
+                    model_dir=f"models/ml_advisory/{instrument.upper()}_{decision_timeframe}",
                 )
             st.session_state["final_ml_result"] = ml_result
             st.session_state["final_ml_artifacts"] = ml_artifacts
@@ -1026,7 +1026,7 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                         spread_width=float(latest.get("spread", 0) or 0),
                         volatility_band=volatility_band,
                     )
-                    micro["micro_weight"] = AdaptiveMicroWeight().update(volatility_band)
+                    micro["micro_weight"] = AdaptiveMicroWeight().load()
             regime, ensemble_rows = build_ensemble(
                 ml_input,
                 ml_predictions,
