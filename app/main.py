@@ -1520,7 +1520,9 @@ if instrument == "NIFTY" and authenticated:
             if not live_contracts:
                 st.warning(
                     "Kotak Neo returned no NIFTY option contracts. "
-                    "The research chain is shown separately."
+                    + ("A clearly labelled research chain is available only in RESEARCH mode."
+                       if environment == "RESEARCH"
+                       else f"{environment} mode remains WAIT; no synthetic fallback is used.")
                 )
         except Exception as exc:
             st.warning(
