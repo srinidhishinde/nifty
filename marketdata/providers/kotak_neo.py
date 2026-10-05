@@ -250,11 +250,11 @@ class KotakNeoProvider(MarketDataProvider):
 
         contracts: list[OptionContract] = []
         for item in calls:
-            contract = self._parse_option(item, underlying, exchange_segment, "CE", expiry)
+            contract = self._parse_option(item, underlying, exchange_segment, "CE", request_expiry)
             if contract:
                 contracts.append(contract)
         for item in puts:
-            contract = self._parse_option(item, underlying, exchange_segment, "PE", expiry)
+            contract = self._parse_option(item, underlying, exchange_segment, "PE", request_expiry)
             if contract:
                 contracts.append(contract)
 
