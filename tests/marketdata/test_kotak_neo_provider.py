@@ -2,6 +2,9 @@ from marketdata.providers.kotak_neo import KotakNeoProvider
 
 
 class FakeNeo:
+    def expiries(self, **kwargs):
+        return {"expiries": ["2026-10-08", "2026-10-15"]}
+
     def option_chain(self, **kwargs):
         return {
             "data": {
