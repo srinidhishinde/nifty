@@ -208,13 +208,25 @@ async def stream_kotak_sfeed(
     if not mcx:
         raise ValueError("At least one MCX token is required.")
 
-    counts = {"nifty": 0, "mcx": 0, "invalid": 0}
+    counts = {"nifty": 0, "mcx": 0, "invalid": 0, "raw": 0, "market_status": 0}
     async with client.create_websocket() as ws:
-        # The SDK documents subscribe_index() for indices and
-        # subscribe_scrips() for contracts. Keep the NIFTY index feed isolated
-        # so a bad MCX subscription cannot mask it.
-        await ws.subscribe_index([nifty_token])
-        await ws.subscribe_scrips(mcx)
+        # Kotak documents Nifty 50 as a valid scrip/LTP subscription. Using
+        # the same Scrip feed as MCX gives the capture layer one normalized
+        # message type and avoids depending on the separate index decoder.
+        await ws.subscribe_scrips([nifty_token, *mcx])
+        await ws.subscribe_exchange()
+
+        def _on_raw(_raw: str | bytes) -> None:
+            counts["raw"] += 1
+
+        def _on_error(_error: Exception) -> None:
+            counts["invalid"] += 1
+
+        def _on_connect() -> None:
+            return None
+
+        ws.on_raw = _on_raw
+        ws.on_error = _on_error
         try:
             async with asyncio.timeout(seconds):
                 async for message in ws:
@@ -231,7 +243,7 @@ async def stream_kotak_sfeed(
             pass
         finally:
             try:
-                await ws.unsubscribe_index([nifty_token])
+                await ws.unsubscribe_exchange()
             finally:
-                await ws.unsubscribe_scrips(mcx)
+                await ws.unsubscribe_scrips([nifty_token, *mcx])
     return counts
