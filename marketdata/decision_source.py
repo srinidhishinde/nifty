@@ -29,6 +29,15 @@ class DecisionSnapshot:
     signal: StrategySignal
 
 
+_MCX_SYMBOLS = {
+    "CRUDEOIL": "CRUDEOIL",
+    "NATURALGAS": "NATURALGAS",
+    "COPPER": "COPPER",
+    "SILVER": "SILVER",
+    "GOLD": "GOLD",
+}
+
+
 def _option_features(contracts: list[Any]) -> tuple[float | None, float | None]:
     calls = [x for x in contracts if getattr(x, "option_type", "") == "CE"]
     puts = [x for x in contracts if getattr(x, "option_type", "") == "PE"]
@@ -41,9 +50,26 @@ def _option_features(contracts: list[Any]) -> tuple[float | None, float | None]:
     return pcr_oi, pcr_volume
 
 
-def _wait(message: str, timestamp: pd.Timestamp, frame: pd.DataFrame | None = None,
-          quality_status: str = "RED", quality_reasons: tuple[str, ...] = ()) -> StrategySignal:
+def _wait(
+    message: str,
+    timestamp: pd.Timestamp,
+    frame: pd.DataFrame | None = None,
+    quality_status: str = "RED",
+    quality_reasons: tuple[str, ...] = (),
+) -> StrategySignal:
     return StrategySignal("WAIT", (), (message,), 0.0, 0.0, 0.0, 0.0, False)
+
+
+def _history_request(provider: KotakNeoProvider, instrument: str, timeframe: str, start: date, end: date) -> tuple[str, str, str | None]:
+    if instrument == "NIFTY":
+        return "Nifty 50", "NSE", None
+
+    symbol = _MCX_SYMBOLS.get(instrument)
+    if symbol is None:
+        raise RuntimeError(f"Live instrument mapping is not configured for {instrument}.")
+
+    contract = provider.resolve_mcx_futures(symbol)
+    return contract["trading_symbol"] or symbol, "MCX_FO", contract["neosymbol"]
 
 
 def load_kotak_decision_snapshot(
@@ -56,10 +82,12 @@ def load_kotak_decision_snapshot(
     option_expiry: str | None = None,
     config: StrategyConfig | None = None,
 ) -> DecisionSnapshot:
-    """Build the production decision input strictly from Kotak Neo.
+    """Build the production decision input strictly from real Kotak Neo data.
 
-    This function deliberately has no Yahoo fallback. If Kotak is unavailable,
-    the production decision remains WAIT.
+    NIFTY uses real index candles plus a real NSE option chain.
+    MCX instruments use the nearest non-expired Kotak futures contract and
+    real futures candles; no synthetic option chain is created.
+    Yahoo is never a live fallback.
     """
     now = pd.Timestamp.now(tz="Asia/Kolkata")
 
@@ -72,23 +100,19 @@ def load_kotak_decision_snapshot(
 
     try:
         provider = KotakNeoProvider(broker.client)
-
-        if instrument != "NIFTY":
-            return DecisionSnapshot(
-                "KOTAK_NEO", "LIVE", "RED",
-                f"Production decision adapter currently requires NIFTY; {instrument} is not wired for live candles.",
-                now, None, [], "RED", ("Live non-NIFTY candle mapping is not configured",), None, None, 0,
-                _wait("Live instrument mapping unavailable", now),
-            )
-
         end = now.date()
         start = end - timedelta(days=max(3, int(history_days)))
+
+        symbol, exchange, neosymbol = _history_request(
+            provider, instrument.upper(), timeframe, start, end
+        )
         candles = provider.get_historical_candles(
-            symbol="Nifty 50",
-            exchange="NSE",
+            symbol=symbol,
+            exchange=exchange,
             timeframe=timeframe,
             start=start,
             end=end,
+            neosymbol=neosymbol,
         )
         rows = [{
             "timestamp": x.timestamp,
@@ -101,12 +125,13 @@ def load_kotak_decision_snapshot(
         frame = pd.DataFrame(rows)
 
         if frame.empty:
-            raise RuntimeError("Kotak Neo returned no completed NIFTY candles.")
+            raise RuntimeError(f"Kotak Neo returned no completed {instrument} candles.")
 
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True).dt.tz_convert("Asia/Kolkata")
         frame = frame.sort_values("timestamp").drop_duplicates("timestamp").reset_index(drop=True)
 
-        quality = assess_ohlcv(frame, expected_minutes=5 if timeframe == "5m" else 15)
+        expected_minutes = 5 if timeframe == "5m" else 15
+        quality = assess_ohlcv(frame, expected_minutes=expected_minutes)
         if quality.status == "RED" or len(frame) < 60:
             reason = " | ".join(quality.reasons) or "insufficient completed candles"
             return DecisionSnapshot(
@@ -118,7 +143,20 @@ def load_kotak_decision_snapshot(
 
         enriched = add_indicators(frame.copy())
 
-        # Option-chain data is mandatory for an actual CE/PE decision.
+        # Only NIFTY has a live option-chain decision path today.
+        # MCX remains a real futures/candle decision, never a synthetic option trade.
+        if instrument.upper() != "NIFTY":
+            signal = _generate_signal_from_enriched(
+                enriched,
+                config or StrategyConfig(require_option_confirmation=False),
+            )
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", quality.status,
+                f"Kotak Neo live {instrument} futures decision source.",
+                now, enriched, [], quality.status, tuple(quality.reasons),
+                None, None, 0, signal,
+            )
+
         contracts = provider.get_option_chain(
             underlying="NIFTY",
             exchange="NSE_FO",
@@ -129,7 +167,11 @@ def load_kotak_decision_snapshot(
         pcr_oi, pcr_volume = _option_features(contracts)
 
         if not contracts or pcr_oi is None:
-            signal = _wait("Live option-chain/OI data is unavailable; CE/PE trade is blocked.", now, enriched)
+            signal = _wait(
+                "Live option-chain/OI data is unavailable; CE/PE trade is blocked.",
+                now,
+                enriched,
+            )
         else:
             enriched["PCR_OI"] = pcr_oi
             enriched["PCR"] = pcr_oi
