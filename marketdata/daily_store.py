@@ -47,11 +47,25 @@ class DailyMarketStore:
     def save_option_chain(self, instrument: str, frame: pd.DataFrame, session_date: date | None = None) -> Path:
         if frame.empty:
             raise ValueError("Cannot persist an empty option-chain frame.")
+        required = {"Strike", "option_type"}
+        missing = required - set(frame.columns)
+        if missing:
+            raise ValueError(f"Missing required option-chain columns: {sorted(missing)}")
+
+        out = frame.copy()
+        out["Strike"] = pd.to_numeric(out["Strike"], errors="coerce")
+        out["option_type"] = out["option_type"].astype(str).str.upper().str.strip()
+        out = out.dropna(subset=["Strike"])
+        out = out[out["option_type"].isin({"CE", "PE"})]
+        if out.empty:
+            raise ValueError("No valid CE/PE option-chain rows remain after normalization.")
+        out["Strike"] = out["Strike"].astype("float64")
+
         day = session_date or pd.Timestamp.now(tz="Asia/Kolkata").date()
         folder = self.directory(instrument, day)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{instrument.upper()}_option_chain.csv"
-        frame.to_csv(path, index=False)
+        out.to_csv(path, index=False)
         return path
 
     def save_metadata(self, instrument: str, session_date: date, metadata: dict) -> Path:
