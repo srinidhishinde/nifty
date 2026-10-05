@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any
 
@@ -146,10 +146,13 @@ def load_kotak_decision_snapshot(
         # Only NIFTY has a live option-chain decision path today.
         # MCX remains a real futures/candle decision, never a synthetic option trade.
         if instrument.upper() != "NIFTY":
-            signal = _generate_signal_from_enriched(
-                enriched,
-                config or StrategyConfig(require_option_confirmation=False),
-            )
+            # MCX has no NIFTY-style CE/PE confirmation path. Even when
+            # the caller uses the NIFTY default config, force option confirmation
+            # off rather than manufacturing option evidence.
+            mcx_config = config or StrategyConfig(require_option_confirmation=False)
+            if mcx_config.require_option_confirmation:
+                mcx_config = replace(mcx_config, require_option_confirmation=False)
+            signal = _generate_signal_from_enriched(enriched, mcx_config)
             return DecisionSnapshot(
                 "KOTAK_NEO", "LIVE", quality.status,
                 f"Kotak Neo live {instrument} futures decision source.",
