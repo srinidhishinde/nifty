@@ -151,7 +151,7 @@ class FiveMinuteCandleBuilder:
                 high=tick.ltp,
                 low=tick.ltp,
                 close=tick.ltp,
-                volume=tick.volume or 0.0,
+                volume=volume_delta,
                 open_interest=tick.open_interest,
                 ticks=1,
             )
@@ -159,7 +159,7 @@ class FiveMinuteCandleBuilder:
             state.high = max(state.high, tick.ltp)
             state.low = min(state.low, tick.ltp)
             state.close = tick.ltp
-            state.volume += tick.volume or 0.0
+            state.volume += volume_delta
             state.open_interest = tick.open_interest
             state.ticks += 1
         return completed
@@ -208,13 +208,13 @@ async def stream_kotak_sfeed(
     if not mcx:
         raise ValueError("At least one MCX token is required.")
 
-    counts = {"nifty": 0, "mcx": 0, "invalid": 0, "raw": 0, "market_status": 0}
+    counts = {"nifty": 0, "mcx": 0, "invalid": 0, "raw": 0, "market_status": 0, "decoded": 0, "errors": 0, "subscription_count": 0}
     async with client.create_websocket() as ws:
         # Kotak documents Nifty 50 as a valid scrip/LTP subscription. Using
         # the same Scrip feed as MCX gives the capture layer one normalized
         # message type and avoids depending on the separate index decoder.
-        await ws.subscribe_scrips([nifty_token, *mcx])
-        await ws.subscribe_exchange()
+        tokens = [nifty_token, *mcx]\n        await ws.subscribe_scrips(tokens)
+        await ws.subscribe_exchange()\n        counts["subscription_count"] = int(getattr(ws, "subscription_count", 0) or 0)
 
         def _on_raw(_raw: str | bytes) -> None:
             counts["raw"] += 1
@@ -245,5 +245,5 @@ async def stream_kotak_sfeed(
             try:
                 await ws.unsubscribe_exchange()
             finally:
-                await ws.unsubscribe_scrips([nifty_token, *mcx])
+                await ws.unsubscribe_scrips(tokens)
     return counts
