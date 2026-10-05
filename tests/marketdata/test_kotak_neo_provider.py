@@ -145,3 +145,22 @@ def test_kotak_explicit_error_payload_is_not_treated_as_success():
         "fault": {"code": 422, "message": "Invalid interval value"},
     })
     assert "Invalid interval value" in error
+
+
+def test_option_contract_strike_is_numeric():
+    contract = OptionContract(
+        symbol="NIFTY25OCT25000CE",
+        exchange="nse_fo",
+        underlying="NIFTY",
+        expiry="2026-10-25",
+        strike=25000.0,
+        option_type="CE",
+        instrument_token="nse_fo|123",
+        ltp=100.0,
+        bid=99.0,
+        ask=101.0,
+        volume=10.0,
+        open_interest=20.0,
+        oi_change=1.0,
+    )
+    assert isinstance(contract.strike, float)
