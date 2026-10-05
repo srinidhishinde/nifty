@@ -91,3 +91,14 @@ def test_volume_traded_today_is_supported_as_cumulative_volume():
     )
     assert result is not None
     assert result.volume == 1000
+
+
+def test_candle_builder_converts_cumulative_volume_to_delta():
+    builder = FiveMinuteCandleBuilder()
+    a = normalize_sfeed_message(tick("mcx_fo", "123", "CRUDEOIL26OCT", "2026-10-05T10:01:00+05:30", 7000, 1000))
+    b = normalize_sfeed_message(tick("mcx_fo", "123", "CRUDEOIL26OCT", "2026-10-05T10:02:00+05:30", 7002, 1015))
+    c2 = normalize_sfeed_message(tick("mcx_fo", "123", "CRUDEOIL26OCT", "2026-10-05T10:06:00+05:30", 7001, 1030))
+    assert builder.update(a) == []
+    assert builder.update(b) == []
+    completed = builder.update(c2)
+    assert completed[0]["volume"] == 15
