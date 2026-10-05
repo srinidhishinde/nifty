@@ -2495,11 +2495,11 @@ st.divider()
 st.subheader("Historical Rule Backtest")
 st.caption(
     "Choose the role of the uploaded data explicitly. Spot/index OHLCV validates signal quality; "
-    "contract-specific futures OHLCV is required for executable ₹1 lakh P&L."
+    "contract-specific futures OHLCV is required for executable P&L."
 )
 backtest_mode = st.radio(
     "Backtest data role",
-    ["NIFTY Spot / Index — Signal Research", "NIFTY Futures — Executable ₹1 lakh P&L"],
+    ["NIFTY Spot / Index — Signal Research", "NIFTY Futures — Executable P&L"],
     horizontal=True,
     key="backtest_data_role",
 )
@@ -2705,7 +2705,7 @@ if bt_data is not None:
                                 st.info(
                                     "SIGNAL RESEARCH MODE: this CSV is treated as NIFTY spot/index OHLCV. "
                                     "Signals and outcomes are measured in index points/R, not futures rupees. "
-                                    "Upload contract-specific NIFTY futures OHLCV for executable ₹1 lakh P&L."
+                                    "Upload contract-specific NIFTY futures OHLCV for executable P&L."
                                 )
                                 st.markdown("#### Signal research funnel")
                                 rf = st.columns(6)
