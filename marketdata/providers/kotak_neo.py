@@ -296,10 +296,17 @@ class KotakNeoProvider(MarketDataProvider):
                         expiry = datetime.fromisoformat(str(expiry_raw)).replace(tzinfo=None)
                     except ValueError:
                         expiry = None
+            # Never select an already-expired futures contract. If Neo cannot
+            # parse an expiry, keep it only as a last-resort candidate after
+            # dated contracts so a valid current contract always wins.
+            if expiry is not None and expiry.date() < datetime.now().date():
+                continue
             candidates.append((expiry or datetime.max, token, trading_symbol, name, row))
 
         if not candidates:
-            raise RuntimeError(f"MCX scrip master returned no futures rows for '{requested}'.")
+            raise RuntimeError(
+                f"MCX scrip master returned no current/future futures contract for '{requested}'."
+            )
         candidates.sort(key=lambda item: item[0])
         expiry, token, trading_symbol, name, row = candidates[0]
         return {
