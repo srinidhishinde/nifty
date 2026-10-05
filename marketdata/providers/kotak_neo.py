@@ -478,15 +478,20 @@ class KotakNeoProvider(MarketDataProvider):
         end: date,
         neosymbol: str | None = None,
     ) -> List[Candle]:
-        # Historical API requires an exchange-segment|instrument-token Neo symbol.
-        # Keep this explicit/configured rather than guessing an index token.
+        # Kotak's historical endpoint accepts exchange-segment|instrument-token
+        # for tradable instruments such as NSE equities, but the live NIFTY index
+        # instrument (nse_cm|26000) is rejected by the historical backend with
+        # HTTP 422 "Invalid neosymbol". Do not rotate/substitute the index token,
+        # fabricate candles, or silently fall back to Yahoo. NIFTY 5-minute
+        # decision candles must come from the Kotak live market-data capture.
         is_nifty_index = symbol.lower().replace(" ", "") in {"nifty50", "nifty"}
         if is_nifty_index:
-            # Kotak rotates the scrip master. Never trust a persisted NIFTY token
-            # such as nse_cm|26000 for historical requests.
-            neosymbol = self.resolve_nifty_index_neosymbol("Nifty 50")
-        else:
-            neosymbol = neosymbol or symbol
+            raise RuntimeError(
+                "Kotak Neo historical API does not support NIFTY index candles "
+                "(nse_cm|26000). Use the Kotak live market-data capture for "
+                "NIFTY decision candles; no synthetic/Yahoo fallback is allowed."
+            )
+        neosymbol = neosymbol or symbol
 
         if not neosymbol:
             raise RuntimeError(
