@@ -132,3 +132,16 @@ def test_kotak_historical_daily_interval_uses_neo_format():
         neosymbol="nse_cm|26000",
     )
     assert client.calls[0]["interval"] == "D"
+
+
+def test_kotak_explicit_error_payload_is_not_treated_as_success():
+    class ErrorNeo:
+        pass
+
+    provider = KotakNeoProvider(ErrorNeo())
+    error = provider._response_error({
+        "status": "ERROR",
+        "data": {"stale": "payload"},
+        "fault": {"code": 422, "message": "Invalid interval value"},
+    })
+    assert "Invalid interval value" in error
