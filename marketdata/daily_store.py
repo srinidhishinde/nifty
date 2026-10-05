@@ -33,7 +33,7 @@ class DailyMarketStore:
 
         out = frame.copy()
         out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce")
-        out = out.dropna(subset=["timestamp"]).sort_values("timestamp").drop_duplicates("timestamp")
+        out = out.dropna(subset=["timestamp"]).sort_values("timestamp").drop_duplicates("timestamp", keep="last")
         if out.empty:
             raise ValueError("No valid timestamps remain after normalization.")
 
