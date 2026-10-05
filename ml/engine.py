@@ -144,7 +144,18 @@ def train(raw, cfg=MLConfig(), model_dir=None):
         )
     f=build_features(d); candidates=[x for x in BASE if x in f.columns and f[x].notna().any()]
     if not candidates: raise ValueError("No usable ML features are available")
-    X=f[candidates].copy(); selected=drop_correlated(X,cfg.correlation_threshold)
+    X=f[candidates].copy()
+    # Feature selection is itself a learned preprocessing step. Determine the
+    # correlation filter from the chronological training portion only; using
+    # the complete dataset would let future/test observations influence model
+    # construction.
+    feature_train_end=max(1, int(len(X) * (1 - cfg.test_fraction)))
+    selected=drop_correlated(
+        X.iloc[:feature_train_end],
+        cfg.correlation_threshold,
+    )
+    if not selected:
+        raise ValueError("No usable ML features remain after training-only correlation filtering")
     results={}; artifacts={}
     for h in cfg.horizons_minutes:
         bars=max(1,round(h/cfg.refresh_minutes)); future=d.close.shift(-bars)/d.close-1
