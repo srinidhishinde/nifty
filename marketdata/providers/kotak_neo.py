@@ -483,9 +483,22 @@ class KotakNeoProvider(MarketDataProvider):
             raise RuntimeError(
                 f"Kotak Neo historical-data instrument is not configured for '{symbol}'."
             )
+        interval_map = {
+            "1m": "1minute",
+            "3m": "3minute",
+            "5m": "5min",
+            "10m": "10minute",
+            "15m": "15min",
+            "30m": "30minute",
+            "60m": "60minute",
+            "1h": "60minute",
+            "1d": "day",
+            "1D": "day",
+        }
+        request_interval = interval_map.get(str(timeframe).strip(), str(timeframe).strip())
         response = self.client.historical_data(
             neosymbol=neosymbol,
-            interval=timeframe,
+            interval=request_interval,
             from_date=start.isoformat(),
             to_date=end.isoformat(),
         )
