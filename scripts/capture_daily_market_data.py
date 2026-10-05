@@ -70,8 +70,11 @@ def main() -> int:
         capture_instrument(provider, store, "NIFTY", session_date)
 
     if settings.capture_mcx_enabled:
-        for symbol in [s.strip().upper() for s in settings.mcx_capture_symbols.split(",") if s.strip()]:
-            capture_instrument(provider, store, symbol, session_date)
+        raise SystemExit(
+            "MCX daily historical capture is disabled: Kotak Neo's historical-data "
+            "endpoint does not support mcx_fo. Use the real Kotak SFeed MCX recorder "
+            "once enabled; this collector will not manufacture MCX candles."
+        )
 
     return 0
 
