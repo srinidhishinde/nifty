@@ -1195,10 +1195,15 @@ if neo_status.connected:
         provider = KotakNeoProvider(neo_broker.client)
         if instrument == "NIFTY":
             spot = provider.get_index_quote("Nifty 50").ltp
+        elif prediction_frame is not None and not prediction_frame.empty:
+            # MCX live decisions are built from the resolved Kotak futures contract.
+            # Use its latest completed candle for the underlying display rather than
+            # showing zero or fabricating a synthetic MCX price.
+            spot = float(prediction_frame.iloc[-1]["close"])
         else:
             st.info(
-                f"Live underlying quote integration for {instrument} is not wired yet; "
-                "no synthetic price is used for live mode."
+                f"Live {instrument} underlying is unavailable because the canonical "
+                "Kotak Neo decision frame is not ready."
             )
     except Exception as exc:
         st.error(f"Live underlying quote request failed: {exc}")
