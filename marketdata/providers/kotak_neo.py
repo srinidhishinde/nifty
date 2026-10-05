@@ -227,13 +227,12 @@ class KotakNeoProvider(MarketDataProvider):
         if count < 10 or count % 10 != 0:
             raise ValueError("Kotak Neo option-chain count must be a multiple of 10.")
 
-        # Resolve the expiry explicitly from Neo rather than relying on an
-        # implicit nearest-expiry default. This avoids "no market-data records"
-        # on accounts/SDK versions where the implicit expiry resolution is
-        # unreliable.
-        request_expiry = str(expiry).strip() if expiry else self._nearest_expiry(
-            exchange_segment, underlying
-        )
+        # Kotak's current SDK/API supports omitting expiry and will resolve
+        # the nearest available expiry server-side. Prefer that path for live
+        # polling because it avoids an unnecessary expiry API dependency and
+        # avoids rejecting a valid chain when the expiry endpoint is temporarily
+        # unavailable. If the caller supplied an expiry, preserve it exactly.
+        request_expiry = str(expiry).strip() if expiry else None
         response = self.client.option_chain(
             exchange=exchange_segment,
             underlying=underlying.upper(),
@@ -254,13 +253,18 @@ class KotakNeoProvider(MarketDataProvider):
                 "Check the underlying, exchange segment and expiry."
             )
 
+        resolved_expiry = request_expiry
+        if not resolved_expiry:
+            common_data = data.get("common_data") or {}
+            resolved_expiry = common_data.get("expiryDt") or common_data.get("expiry")
+
         contracts: list[OptionContract] = []
         for item in calls:
-            contract = self._parse_option(item, underlying, exchange_segment, "CE", request_expiry)
+            contract = self._parse_option(item, underlying, exchange_segment, "CE", resolved_expiry)
             if contract:
                 contracts.append(contract)
         for item in puts:
-            contract = self._parse_option(item, underlying, exchange_segment, "PE", request_expiry)
+            contract = self._parse_option(item, underlying, exchange_segment, "PE", resolved_expiry)
             if contract:
                 contracts.append(contract)
 
