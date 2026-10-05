@@ -132,6 +132,22 @@ class KotakNeoBroker:
             ):
                 login_response = {}
 
+            login_errors = login_response.get("error") if isinstance(login_response, dict) else None
+            if login_errors:
+                message = "Kotak Neo TOTP login failed."
+                if isinstance(login_errors, list) and login_errors:
+                    first_error = login_errors[0]
+                    if isinstance(first_error, dict):
+                        code = str(first_error.get("code", "") or "").strip()
+                        api_message = str(first_error.get("message", "") or "").strip()
+                        if code == "10506" or "invalid totp" in api_message.lower():
+                            message = "Kotak Neo rejected the TOTP (10506: Invalid TOTP). Generate a fresh 6-digit TOTP and submit it before it expires."
+                        elif api_message:
+                            message = f"Kotak Neo TOTP login failed: {api_message}"
+                self.connected = False
+                self.last_error = message
+                return NeoConnection(connected=False, message=message)
+
             login_data = (
                 login_response.get(
                     "data",
@@ -139,6 +155,11 @@ class KotakNeoBroker:
                 )
                 or {}
             )
+
+            if not login_data:
+                return self._failure(
+                    "Kotak Neo TOTP login did not return a valid authentication session."
+                )
 
             # --------------------------------------------------
             # Step 2: MPIN validation
