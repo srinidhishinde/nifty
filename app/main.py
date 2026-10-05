@@ -1769,7 +1769,21 @@ display_df = chain_df[visible_columns].copy()
 # frames used Max Gain % / Max Loss %, while the current engine exposes
 # Target Gain % / Stop Risk %.  Missing premium-derived values must remain
 # unavailable rather than being fabricated.
-plan = chain_signal_rows.copy()
+# Signal rows can be returned as a DataFrame by the research/live
+# generator or as a plain list of dictionaries. Normalize once at the UI
+# boundary so an empty/blocked PAPER chain can never crash the dashboard.
+if isinstance(chain_signal_rows, pd.DataFrame):
+    plan = chain_signal_rows.copy()
+elif isinstance(chain_signal_rows, list):
+    plan = pd.DataFrame(chain_signal_rows)
+elif chain_signal_rows is None:
+    plan = pd.DataFrame()
+else:
+    try:
+        plan = pd.DataFrame(chain_signal_rows)
+    except (TypeError, ValueError):
+        plan = pd.DataFrame()
+
 for column in [
     "Side", "Strike", "Signal", "Confidence",
     "Entry Price", "Stop Loss", "Take Profit",
