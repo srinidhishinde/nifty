@@ -1,0 +1,174 @@
+"""Read-only Kotak Neo live market-data smoke test.
+
+Authenticates with the existing broker adapter, resolves the current MCX
+futures contract from the scrip master, validates REST quotes, then consumes
+a bounded SFeed WebSocket window for NIFTY 50 and MCX CRUDEOIL.
+
+This script NEVER places an order and NEVER prints credentials.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+from datetime import datetime
+from typing import Any
+
+from broker.kotak_neo import KotakNeoBroker
+from config.settings import settings
+from marketdata.providers.kotak_neo import KotakNeoProvider
+
+
+def _field(obj: Any, name: str, default: Any = None) -> Any:
+    value = getattr(obj, name, default)
+    return default if value is None else value
+
+
+def _print_result(name: str, ok: bool, detail: str) -> None:
+    print(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+
+async def stream_live_data(client: Any, mcx_token: str, seconds: int) -> tuple[bool, dict[str, int]]:
+    from neo_api_client.websocket.feed import SFeedIndex, SFeedScrip, WsToken
+
+    counts = {"nifty": 0, "crudeoil": 0}
+    latest: dict[str, Any] = {}
+
+    async with client.create_websocket() as ws:
+        tokens = [
+            WsToken("nse_cm", "Nifty 50"),
+            WsToken("mcx_fo", mcx_token),
+        ]
+        await ws.subscribe_scrips(tokens)
+
+        deadline = asyncio.get_running_loop().time() + seconds
+        while asyncio.get_running_loop().time() < deadline:
+            remaining = max(0.1, deadline - asyncio.get_running_loop().time())
+            try:
+                async with asyncio.timeout(remaining):
+                    message = await ws.__anext__()
+            except (TimeoutError, StopAsyncIteration):
+                break
+
+            if isinstance(message, SFeedScrip):
+                segment = str(_field(message, "exchange_segment", "")).lower()
+                ltp = _field(message, "last_traded_price")
+                symbol = str(_field(message, "trading_symbol", "") or "")
+                if segment == "mcx_fo":
+                    counts["crudeoil"] += 1
+                    latest["crudeoil"] = (symbol, ltp, _field(message, "timestamp"))
+                elif segment == "nse_cm":
+                    counts["nifty"] += 1
+                    latest["nifty"] = (symbol, ltp, _field(message, "timestamp"))
+            elif isinstance(message, SFeedIndex):
+                counts["nifty"] += 1
+                latest["nifty"] = (
+                    str(_field(message, "trading_symbol", "") or "Nifty 50"),
+                    _field(message, "last_traded_price"),
+                    _field(message, "timestamp"),
+                )
+
+        await ws.unsubscribe_scrips(tokens)
+
+    for key in ("nifty", "crudeoil"):
+        value = latest.get(key)
+        if value:
+            print(f"  {key.upper():9s} {value[0]} LTP={value[1]} ts={value[2]} messages={counts[key]}")
+        else:
+            print(f"  {key.upper():9s} no live SFeed message received; messages=0")
+
+    return all(counts.values()), counts
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Read-only Kotak Neo live data test.")
+    parser.add_argument("--totp", required=True, help="Current 6-digit Kotak TOTP. Never logged or persisted.")
+    parser.add_argument("--seconds", type=int, default=15, help="Live SFeed observation window (5-60 seconds).")
+    args = parser.parse_args()
+
+    if not 5 <= args.seconds <= 60:
+        parser.error("--seconds must be between 5 and 60.")
+    if not args.totp.isdigit() or len(args.totp) != 6:
+        parser.error("--totp must be exactly six digits.")
+
+    if not settings.neo_consumer_key or not settings.neo_mobile or not settings.neo_ucc or not settings.neo_mpin:
+        print("[FAIL] Configuration: NEO_CONSUMER_KEY, NEO_MOBILE, NEO_UCC and NEO_MPIN must be configured.")
+        return 2
+
+    broker = KotakNeoBroker()
+    connection = broker.authenticate(args.totp)
+    if not connection.connected:
+        print(f"[FAIL] Authentication: {connection.message}")
+        return 1
+
+    print(f"[PASS] Authentication: connected to Kotak Neo ({connection.base_url or 'prod'})")
+
+    provider = KotakNeoProvider(broker.client)
+    failures = 0
+
+    # Current NIFTY index quote through Kotak REST.
+    try:
+        quote = provider.get_index_quote("Nifty 50")
+        ok = quote.ltp > 0
+        _print_result("NIFTY REST quote", ok, f"LTP={quote.ltp:.2f}")
+        failures += not ok
+    except Exception as exc:
+        _print_result("NIFTY REST quote", False, str(exc))
+        failures += 1
+
+    # Resolve the current CRUDEOIL futures contract; never hardcode its token.
+    try:
+        contract = provider.resolve_mcx_futures("CRUDEOIL")
+        print(
+            "[PASS] MCX contract resolution: "
+            f"{contract['trading_symbol']} token={contract['instrument_token']} "
+            f"expiry={contract['expiry']} lot={contract['lot_size']}"
+        )
+    except Exception as exc:
+        _print_result("MCX CRUDEOIL contract resolution", False, str(exc))
+        broker.logout()
+        return 1
+
+    # Current MCX quote through Kotak REST.
+    try:
+        quote = provider.get_mcx_quote(contract)
+        ok = quote["ltp"] > 0
+        _print_result("MCX CRUDEOIL REST quote", ok, f"{contract['trading_symbol']} LTP={quote['ltp']:.2f}")
+        failures += not ok
+    except Exception as exc:
+        _print_result("MCX CRUDEOIL REST quote", False, str(exc))
+        failures += 1
+
+    # Historical MCX is intentionally NOT called: Kotak documents mcx_fo
+    # historical candles as unavailable. Live SFeed is the production path.
+    print("[INFO] MCX 5m historical API check: SKIPPED by design (mcx_fo unsupported).")
+
+    try:
+        live_ok, counts = asyncio.run(
+            stream_live_data(
+                broker.client,
+                contract["instrument_token"],
+                args.seconds,
+            )
+        )
+        _print_result(
+            "SFeed live stream",
+            live_ok,
+            f"NIFTY messages={counts['nifty']}, CRUDEOIL messages={counts['crudeoil']}",
+        )
+        failures += not live_ok
+    except Exception as exc:
+        _print_result("SFeed live stream", False, str(exc))
+        failures += 1
+    finally:
+        broker.logout()
+
+    print()
+    print("LIVE DATA TEST:", "PASSED" if failures == 0 else "FAILED")
+    print("Order submission: NOT ATTEMPTED")
+    return 0 if failures == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
