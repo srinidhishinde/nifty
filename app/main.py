@@ -1217,10 +1217,14 @@ if neo_status.connected:
         provider = KotakNeoProvider(neo_broker.client)
         if instrument == "NIFTY":
             spot = provider.get_index_quote("Nifty 50").ltp
+        elif instrument in {"CRUDEOIL", "NATURALGAS", "COPPER", "SILVER", "GOLD"}:
+            # A current MCX futures quote is safe for display/context only. It
+            # must not be mistaken for the completed 5m candle history required
+            # by the canonical decision engine.
+            contract = provider.resolve_mcx_futures(instrument)
+            quote = provider.get_mcx_quote(contract)
+            spot = float(quote["ltp"])
         elif prediction_frame is not None and not prediction_frame.empty:
-            # MCX live decisions are built from the resolved Kotak futures contract.
-            # Use its latest completed candle for the underlying display rather than
-            # showing zero or fabricating a synthetic MCX price.
             spot = float(prediction_frame.iloc[-1]["close"])
         else:
             st.info(
@@ -1230,7 +1234,7 @@ if neo_status.connected:
     except Exception as exc:
         st.error(f"Live underlying quote request failed: {exc}")
 
-if spot is None and not neo_status.connected:
+if spot is None and environment == "RESEARCH":
     spot_rng = random.Random(f"spot:{instrument}:{seed}")
     base_spot = {
         "NIFTY": 25040.0,
@@ -1243,7 +1247,10 @@ if spot is None and not neo_status.connected:
     spot = base_spot + spot_rng.uniform(-100, 100)
 
 if spot is None:
-    spot = 0.0
+    st.warning(
+        f"{environment} underlying price is unavailable for {instrument}. "
+        "No synthetic price is used outside RESEARCH."
+    )
 
 
 # ============================================================
@@ -1445,7 +1452,7 @@ m1, m2, m3, m4 = st.columns(4)
 
 m1.metric(
     "Spot",
-    f"{spot:,.2f}",
+    "Unavailable" if spot is None else f"{spot:,.2f}",
 )
 
 m2.metric(
