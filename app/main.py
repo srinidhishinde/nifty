@@ -1991,54 +1991,38 @@ st.divider()
 
 
 # ============================================================
-# Research chart
+# Price chart
 # ============================================================
 
 st.subheader(
-    "Research Price Chart"
+    "Research Price Chart" if environment == "RESEARCH" else "Kotak Neo Price Chart"
 )
 
-chart_rng = np.random.default_rng(
-    int(seed)
-)
+if environment == "RESEARCH":
+    chart_rng = np.random.default_rng(int(seed))
+    dates = pd.date_range(end=pd.Timestamp.now(), periods=100, freq="5min")
+    prices = spot + np.cumsum(chart_rng.normal(0, 10, 100))
+    chart_df = pd.DataFrame({"timestamp": dates, "close": prices})
+    st.caption("Synthetic research chart — not broker market data.")
+elif prediction_frame is not None and not prediction_frame.empty:
+    chart_df = prediction_frame[["timestamp", "close"]].tail(300).copy()
+    st.caption("Real candles from the canonical Kotak Neo decision frame.")
+else:
+    chart_df = pd.DataFrame(columns=["timestamp", "close"])
+    st.info("No price chart is shown because no decision-ready Kotak Neo candles are available.")
 
-dates = pd.date_range(
-    end=pd.Timestamp.now(),
-    periods=100,
-    freq="5min",
-)
-
-prices = (
-    spot
-    + np.cumsum(
-        chart_rng.normal(
-            0,
-            10,
-            100,
+if not chart_df.empty:
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=chart_df["timestamp"],
+            y=chart_df["close"],
+            mode="lines",
+            name="Close",
         )
     )
-)
-
-fig = go.Figure()
-
-fig.add_trace(
-    go.Scatter(
-        x=dates,
-        y=prices,
-        mode="lines",
-        name="Price",
-    )
-)
-
-fig.update_layout(
-    height=450,
-    template="plotly_dark",
-)
-
-st.plotly_chart(
-    fig,
-    width="stretch",
-)
+    fig.update_layout(height=450, template="plotly_dark")
+    st.plotly_chart(fig, width="stretch")
 
 
 st.divider()
