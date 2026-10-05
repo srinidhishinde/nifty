@@ -1365,6 +1365,51 @@ st.divider()
 # Market context
 # ============================================================
 
+if environment != "RESEARCH" and prediction_frame is not None and not prediction_frame.empty:
+    latest = prediction_frame.iloc[-1]
+    ema9 = float(latest.get("EMA9", np.nan))
+    ema21 = float(latest.get("EMA21", np.nan))
+    rsi = float(latest.get("RSI", np.nan))
+    vwap_dev = float(latest.get("VWAP_DEV", np.nan))
+    atr_pct = float(latest.get("ATR_PCT", np.nan))
+    live_trend = (
+        "BULLISH" if np.isfinite(ema9) and np.isfinite(ema21) and ema9 > ema21
+        else "BEARISH" if np.isfinite(ema9) and np.isfinite(ema21) and ema9 < ema21
+        else "NEUTRAL"
+    )
+    live_momentum = (
+        "POSITIVE" if np.isfinite(rsi) and rsi >= 55
+        else "NEGATIVE" if np.isfinite(rsi) and rsi <= 45
+        else "NEUTRAL"
+    )
+    live_price_vs_vwap = (
+        "ABOVE" if np.isfinite(vwap_dev) and vwap_dev > 0
+        else "BELOW" if np.isfinite(vwap_dev) and vwap_dev < 0
+        else "AT"
+    )
+    live_volatility = (
+        "HIGH" if np.isfinite(atr_pct) and atr_pct >= 0.025
+        else "NORMAL" if np.isfinite(atr_pct) and atr_pct >= 0.01
+        else "LOW"
+    )
+    context = SimpleNamespace(
+        trend=live_trend,
+        momentum=live_momentum,
+        price_vs_vwap=live_price_vs_vwap,
+        volatility_regime=live_volatility,
+    )
+    st.caption("Market context is derived from the canonical Kotak Neo decision frame.")
+elif environment != "RESEARCH":
+    context = SimpleNamespace(
+        trend="UNAVAILABLE",
+        momentum="UNAVAILABLE",
+        price_vs_vwap="UNAVAILABLE",
+        volatility_regime="UNAVAILABLE",
+    )
+    st.caption("Live market context is unavailable because the canonical Kotak Neo decision frame is blocked.")
+else:
+    st.caption("Research context is synthetic and is available only in RESEARCH environment.")
+
 st.subheader(
     "Market Context"
 )
