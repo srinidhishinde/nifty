@@ -620,8 +620,16 @@ environment = st.sidebar.selectbox(
         "BACKTEST",
         "UAT",
         "PAPER",
+        "LIVE",
     ],
 )
+
+if environment == "LIVE" and not settings.live_trading_allowed():
+    st.sidebar.warning(
+        "LIVE selected, but live order submission is LOCKED. "
+        "Set LIVE_TRADING_ENABLED=true, PAPER_TRADING=false and ALLOW_ORDER_SUBMISSION=true "
+        "after completing broker/risk/UAT validation. LIVE never bypasses data-quality or strategy gates."
+    )
 
 seed = st.sidebar.number_input(
     "Research Seed",
