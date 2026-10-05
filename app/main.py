@@ -907,7 +907,7 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
     with st.expander("Model input coverage", expanded=False):
         st.dataframe(
             pd.DataFrame(coverage_rows, columns=["Feature group", "Coverage", "Status"]),
-            use_container_width=True, hide_index=True
+            width="stretch", hide_index=True
         )
         st.caption(
             "Only real Kotak/news values are supplied. Missing derivative fields are not synthesized."
@@ -950,7 +950,7 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
             }
             for h, m in ml_result.horizons.items()
         ])
-        st.dataframe(train_table, use_container_width=True, hide_index=True)
+        st.dataframe(train_table, width="stretch", hide_index=True)
 
     ml_predictions = []
     if ml_artifacts:
@@ -1013,7 +1013,7 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                 }
                 for x in ensemble_rows
             ])
-            st.dataframe(ensemble_table, use_container_width=True, hide_index=True)
+            st.dataframe(ensemble_table, width="stretch", hide_index=True)
 
             first = ensemble_rows[0]
             if first.final_ce < 55 and first.final_pe < 55:
@@ -1094,7 +1094,7 @@ with st.expander("Trading system health & safety gates", expanded=False):
         ["Execution", "LOCKED" if not settings.live_trading_allowed() else "ENABLED", "Separate broker safety gate"],
         ["Yahoo", "RESEARCH ONLY", "No production fallback"],
     ], columns=["Layer", "Status", "Safety"])
-    st.dataframe(health, use_container_width=True, hide_index=True)
+    st.dataframe(health, width="stretch", hide_index=True)
 
 # ============================================================
 # Dashboard ChatGPT assistant
