@@ -1828,6 +1828,28 @@ if "Stop Risk %" not in plan.columns:
 plan["Target Gain %"] = pd.to_numeric(plan["Target Gain %"], errors="coerce")
 plan["Stop Risk %"] = pd.to_numeric(plan["Stop Risk %"], errors="coerce")
 
+# Canonicalize the join key before *any* merge. Neo option payloads,
+# research generators and older CSV/Yahoo artifacts can represent Strike as
+# strings, ints or floats. Pandas refuses an object/float merge and silently
+# coercing only one side is unsafe.
+def _normalize_strike_column(frame: pd.DataFrame, *, required: bool = False) -> pd.DataFrame:
+    frame = frame.copy()
+    if "Strike" not in frame.columns:
+        if required:
+            raise ValueError("Option-chain data is missing required Strike column.")
+        return frame
+    frame["Strike"] = pd.to_numeric(frame["Strike"], errors="coerce")
+    frame = frame.dropna(subset=["Strike"]).copy()
+    frame["Strike"] = frame["Strike"].astype("float64")
+    return frame
+
+display_df = _normalize_strike_column(display_df, required=True)
+plan = _normalize_strike_column(plan, required=True)
+
+# Remove duplicate join keys from the plan. One CE/PE trade-plan row per
+# strike is the UI contract; duplicates otherwise create Cartesian expansion.
+plan = plan.drop_duplicates(subset=["Side", "Strike"], keep="last").reset_index(drop=True)
+
 # Backward-compatible display aliases for any downstream UI/test code that
 # still expects the previous names.
 plan["Max Gain %"] = plan["Target Gain %"]
