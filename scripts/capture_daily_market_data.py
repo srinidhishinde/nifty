@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+import pandas as pd
 
 from broker.kotak_neo import KotakNeoBroker
 from config.settings import settings
@@ -89,9 +91,16 @@ def main() -> int:
                 if instrument == "CRUDEOIL" and not want_mcx:
                     continue
 
-                frame = __import__("pandas").DataFrame([candle])
+                frame = pd.DataFrame([candle])
                 session_date = candle["timestamp"].date()
                 store.save_candles(instrument, frame, session_date)
+                store.save_metadata(instrument, session_date, {
+                    "source": "KOTAK_NEO_SFEED",
+                    "instrument": instrument,
+                    "timeframe": "5m",
+                    "status": "CAPTURED",
+                    "rows": 1,
+                })
                 counts["candles"] += 1
 
         tokens = [mcx_contract["instrument_token"]] if want_mcx else []
@@ -113,7 +122,6 @@ def main() -> int:
                 continue
             if instrument == "CRUDEOIL" and not want_mcx:
                 continue
-            import pandas as pd
             store.save_candles(instrument, pd.DataFrame([candle]), candle["timestamp"].date())
             counts["candles"] += 1
 
