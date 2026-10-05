@@ -20,18 +20,42 @@ def _v(row,names,default=None):
             except (TypeError,ValueError):pass
     return default
 def _option_flow_rules(row):
-    pcr=_v(row,("PCR_OI","pcr_oi","PCR")); pce=_v(row,("PCE","pce")); delta=_v(row,("NET_DELTA","net_delta","DELTA_EXPOSURE")); gamma=_v(row,("GAMMA_EXPOSURE","gamma_exposure","NET_GAMMA"))
-    if pcr is None or pce is None:return []
-    if pcr>1.05 and pce>1.05:
-        extra=[]
-        if delta is not None and delta>0:extra.append("positive delta exposure")
-        if gamma is not None and gamma>0:extra.append("positive gamma exposure")
-        return [RuleSignal("option_flow_confirmation","BUY",f"PCR/PCE bullish confirmation{(' with '+', '.join(extra)) if extra else ''}",1.35)]
-    if pcr<0.95 and pce<0.95:
-        extra=[]
-        if delta is not None and delta<0:extra.append("negative delta exposure")
-        if gamma is not None and gamma<0:extra.append("negative gamma exposure")
-        return [RuleSignal("option_flow_confirmation","SELL",f"PCR/PCE bearish confirmation{(' with '+', '.join(extra)) if extra else ''}",1.35)]
+    # Use real option-chain ratios when available.  Older code required a
+    # non-existent PCE field, which silently disabled option confirmation on
+    # live Kotak snapshots even though PCR/OI and PCR/volume were present.
+    pcr = _v(row, ("PCR_OI", "pcr_oi", "PCR"))
+    pcr_volume = _v(row, ("PCR_VOLUME", "pcr_volume"))
+    pce = _v(row, ("PCE", "pce"))
+    delta = _v(row, ("NET_DELTA", "net_delta", "DELTA_EXPOSURE"))
+    gamma = _v(row, ("GAMMA_EXPOSURE", "gamma_exposure", "NET_GAMMA"))
+
+    confirmation = pce if pce is not None else pcr_volume
+    if pcr is None or confirmation is None:
+        return []
+
+    if pcr > 1.05 and confirmation > 1.05:
+        extra = []
+        if delta is not None and delta > 0:
+            extra.append("positive delta exposure")
+        if gamma is not None and gamma > 0:
+            extra.append("positive gamma exposure")
+        label = "PCR/OI + PCR/volume" if pce is None else "PCR/PCE"
+        return [RuleSignal("option_flow_confirmation", "BUY",
+                            f"{label} bullish confirmation"
+                            f"{(' with ' + ', '.join(extra)) if extra else ''}",
+                            1.35)]
+
+    if pcr < 0.95 and confirmation < 0.95:
+        extra = []
+        if delta is not None and delta < 0:
+            extra.append("negative delta exposure")
+        if gamma is not None and gamma < 0:
+            extra.append("negative gamma exposure")
+        label = "PCR/OI + PCR/volume" if pce is None else "PCR/PCE"
+        return [RuleSignal("option_flow_confirmation", "SELL",
+                            f"{label} bearish confirmation"
+                            f"{(' with ' + ', '.join(extra)) if extra else ''}",
+                            1.35)]
     return []
 def evaluate_rules(row:pd.Series,previous:pd.Series|None=None,config:StrategyConfig|None=None)->list[RuleSignal]:
     c=config or StrategyConfig(); close=_v(row,("close",))
