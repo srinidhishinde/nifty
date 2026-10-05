@@ -98,6 +98,37 @@ class FakeHistoricalNeo:
         return {"status": "success", "data": {"candles": []}}
 
 
+
+
+class FakeNiftyScripNeo(FakeHistoricalNeo):
+    def __init__(self):
+        super().__init__()
+        self.search_calls = []
+
+    def search_scrip(self, **kwargs):
+        self.search_calls.append(kwargs)
+        return [{
+            "pSymbol": "99999",
+            "pExchSeg": "nse_cm",
+            "pSymbolName": "NIFTY",
+            "pTrdSymbol": "NIFTY",
+        }]
+
+
+def test_nifty_historical_ignores_stale_configured_neosymbol():
+    client = FakeNiftyScripNeo()
+    KotakNeoProvider(client).get_historical_candles(
+        symbol="RELIANCE",
+        exchange="NSE",
+        timeframe="5m",
+        start=date(2026, 9, 25),
+        end=date(2026, 10, 5),
+        neosymbol="nse_cm|26000",
+    )
+    assert client.search_calls
+    assert client.calls[0]["neosymbol"] == "nse_cm|99999"
+
+
 def test_kotak_historical_interval_uses_neo_format():
     client = FakeHistoricalNeo()
     KotakNeoProvider(client).get_historical_candles(
@@ -114,7 +145,7 @@ def test_kotak_historical_interval_uses_neo_format():
 def test_kotak_historical_interval_preserves_supported_neo_value():
     client = FakeHistoricalNeo()
     KotakNeoProvider(client).get_historical_candles(
-        symbol="NIFTY",
+        symbol="RELIANCE",
         exchange="NSE",
         timeframe="15min",
         start=date(2026, 9, 25),
@@ -127,7 +158,7 @@ def test_kotak_historical_interval_preserves_supported_neo_value():
 def test_kotak_historical_daily_interval_uses_neo_format():
     client = FakeHistoricalNeo()
     KotakNeoProvider(client).get_historical_candles(
-        symbol="NIFTY",
+        symbol="RELIANCE",
         exchange="NSE",
         timeframe="1d",
         start=date(2026, 9, 25),
