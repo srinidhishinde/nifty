@@ -128,10 +128,13 @@ class KotakNeoProvider(MarketDataProvider):
         if count < 10 or count % 10 != 0:
             raise ValueError("Kotak Neo option-chain count must be a multiple of 10.")
 
+        # Neo accepts a nearest-expiry request when expiry is omitted. Keep
+        # that default for live NIFTY so we do not invent or cache an expiry.
+        request_expiry = str(expiry).strip() if expiry else None
         response = self.client.option_chain(
             exchange=exchange_segment,
             underlying=underlying.upper(),
-            expiry=expiry,
+            expiry=request_expiry,
             instrument_type="option",
             count=count,
         )
