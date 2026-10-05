@@ -1611,7 +1611,7 @@ with chain_col3:
 
     st.metric(
         "Underlying",
-        f"{spot:,.2f}",
+        "Unavailable" if spot is None else f"{spot:,.2f}",
     )
 
 
@@ -1657,7 +1657,7 @@ else:
         )
 
 chain_is_live = bool(live_contracts)
-if contracts:
+if contracts and spot is not None:
     chain_df = build_option_chain_dataframe(
         contracts=contracts,
         spot=spot,
@@ -1668,7 +1668,7 @@ else:
         "PE LTP", "PE Volume", "PE OI", "PE OI Chg", "PE IV", "PE Score", "ATM",
     ])
 
-if contracts:
+if contracts and spot is not None:
     chain_signal, chain_signal_rows = generate_option_chain_signal(
         contracts,
         spot=spot,
@@ -1710,7 +1710,7 @@ if chain_signal is not None:
 # 2 ATM + 5 OTM selection
 # ------------------------------------------------------------
 
-if strike_view == "2 ATM + 5 OTM":
+if strike_view == "2 ATM + 5 OTM" and spot is not None and not chain_df.empty:
 
     strikes = sorted(
         chain_df["Strike"]
@@ -2162,21 +2162,29 @@ if option_csv is not None:
                     "Score": analyze_option(contract).score,
                 })
             snapshot_df = pd.DataFrame(snapshot_rows).sort_values(["Strike", "Side"])
-            option_signal, signal_rows = generate_option_chain_signal(
-                snapshot_contracts, spot=spot, global_news_score=global_news_score
-            )
-            snapshot_df = snapshot_df.merge(
-                signal_rows[["Side","Strike","Signal","Confidence","Entry Price","Stop Loss","Take Profit","Target Gain %","Stop Risk %","Global News"]],
-                on=["Side","Strike"], how="left"
-            )
+            if spot is None:
+                st.warning(
+                    "Underlying spot is unavailable; option-chain signal levels "
+                    "cannot be calculated without a real underlying price."
+                )
+                option_signal, signal_rows = None, pd.DataFrame()
+            else:
+                option_signal, signal_rows = generate_option_chain_signal(
+                    snapshot_contracts, spot=spot, global_news_score=global_news_score
+                )
+            if not signal_rows.empty:
+                snapshot_df = snapshot_df.merge(
+                    signal_rows[["Side","Strike","Signal","Confidence","Entry Price","Stop Loss","Take Profit","Target Gain %","Stop Risk %","Global News"]],
+                    on=["Side","Strike"], how="left"
+                )
             st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
             st.dataframe(snapshot_df, width="stretch", hide_index=True)
             oc = st.columns(8)
-            oc[0].metric("Signal", option_signal.direction)
-            oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%")
-            oc[2].metric("Entry", "Unavailable" if option_signal.entry_price is None else f"Rs {option_signal.entry_price:.2f}")
-            oc[3].metric("Stop Loss", "Unavailable" if option_signal.stop_loss is None else f"Rs {option_signal.stop_loss:.2f}")
-            oc[4].metric("Take Profit", "Unavailable" if option_signal.take_profit is None else f"Rs {option_signal.take_profit:.2f}")
+            oc[0].metric("Signal", option_signal.direction if option_signal is not None else "WAIT")
+            oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%" if option_signal is not None else "N/A")
+            oc[2].metric("Entry", "Unavailable" if option_signal is None or option_signal.entry_price is None else f"Rs {option_signal.entry_price:.2f}")
+            oc[3].metric("Stop Loss", "Unavailable" if option_signal is None or option_signal.stop_loss is None else f"Rs {option_signal.stop_loss:.2f}")
+            oc[4].metric("Take Profit", "Unavailable" if option_signal is None or option_signal.take_profit is None else f"Rs {option_signal.take_profit:.2f}")
             oc[5].metric("Target Gain", "N/A")
             oc[6].metric("Stop Risk", "N/A")
             oc[7].metric("Global News", f"{global_news_score:+.2f}")
@@ -2564,19 +2572,26 @@ elif run_demo:
         periods=800,
         freq="5min",
     )
-    volatility = max(abs(float(spot)) * 0.0008, 1.0)
-    base = float(spot) + np.cumsum(
-        rng.normal(0, volatility, len(bt_ts))
-    )
-    bt_data = pd.DataFrame({
-        "timestamp": bt_ts,
-        "open": base,
-        "high": base + rng.uniform(0, volatility * 2, len(bt_ts)),
-        "low": base - rng.uniform(0, volatility * 2, len(bt_ts)),
-        "close": base + rng.normal(0, volatility * 0.6, len(bt_ts)),
-        "volume": rng.integers(10000, 100000, len(bt_ts)),
-    })
-    bt_source = "Synthetic demo data"
+    if spot is None:
+        st.error(
+            "Synthetic demo requires an available underlying price. "
+            "No placeholder price is used outside RESEARCH."
+        )
+        bt_data = None
+    else:
+        volatility = max(abs(float(spot)) * 0.0008, 1.0)
+        base = float(spot) + np.cumsum(
+            rng.normal(0, volatility, len(bt_ts))
+        )
+        bt_data = pd.DataFrame({
+            "timestamp": bt_ts,
+            "open": base,
+            "high": base + rng.uniform(0, volatility * 2, len(bt_ts)),
+            "low": base - rng.uniform(0, volatility * 2, len(bt_ts)),
+            "close": base + rng.normal(0, volatility * 0.6, len(bt_ts)),
+            "volume": rng.integers(10000, 100000, len(bt_ts)),
+        })
+        bt_source = "Synthetic demo data"
 
 if bt_data is not None:
     try:
