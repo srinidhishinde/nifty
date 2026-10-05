@@ -73,7 +73,7 @@ def normalize_sfeed_message(message: Any) -> LiveTick | None:
     token = str(getattr(message, "instrument_token", "") or "").strip()
     symbol = str(getattr(message, "trading_symbol", "") or "").strip()
     ltp = _number(getattr(message, "last_traded_price", None))
-    timestamp = _timestamp(getattr(message, "timestamp", None))
+    timestamp = _timestamp(getattr(message, "last_update_time", None) or getattr(message, "last_trade_time", None) or getattr(message, "timestamp", None))
 
     if not segment or not token or ltp is None or ltp <= 0 or timestamp is None:
         return None
@@ -84,7 +84,7 @@ def normalize_sfeed_message(message: Any) -> LiveTick | None:
     instrument = "NIFTY" if is_nifty else symbol or token
 
     volume = _number(
-        getattr(message, "volume", None)
+        getattr(message, "volume_traded_today", None) if getattr(message, "volume_traded_today", None) is not None else getattr(message, "volume", None)
         or getattr(message, "total_volume", None)
         or getattr(message, "volume_trade_for_the_day", None)
     )
