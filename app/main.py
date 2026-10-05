@@ -673,6 +673,11 @@ if neo_connect:
     else:
         connection = neo_broker.authenticate(neo_totp)
         st.session_state["neo_authenticated"] = connection.connected
+        # Authentication changes the production data source state. Any
+        # previous RED/WAIT snapshot may have been generated while Neo was
+        # disconnected, so it must never survive a new authentication attempt.
+        st.session_state["kotak_decision_snapshot"] = None
+        st.session_state.pop("last_signal_journal_key", None)
         if connection.connected:
             st.sidebar.success(connection.message)
         else:
