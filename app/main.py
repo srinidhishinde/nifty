@@ -1563,13 +1563,23 @@ chain_signal, chain_signal_rows = generate_option_chain_signal(
     spot=spot,
     global_news_score=global_news_score,
 )
+
+# A synthetic research chain may be useful for UI/research smoke tests, but it
+# must never produce an apparently executable live trade plan.
+chain_is_live = bool(live_contracts)
+if not chain_is_live:
+    st.warning(
+        "RESEARCH DATA ONLY — this option chain is synthetic and is not a broker feed. "
+        "Signal, confidence, entry, stop and target below are not trade instructions."
+    )
+
 st.markdown("#### Option-chain signal levels")
 signal_cols = st.columns(6)
-signal_cols[0].metric("Signal", chain_signal.direction)
-signal_cols[1].metric("Confidence", f"{chain_signal.confidence:.1f}%")
-signal_cols[2].metric("Entry", "Unavailable" if chain_signal.entry_price is None else f"Rs {chain_signal.entry_price:.2f}")
-signal_cols[3].metric("Stop Loss", "Unavailable" if chain_signal.stop_loss is None else f"Rs {chain_signal.stop_loss:.2f}")
-signal_cols[4].metric("Take Profit", "Unavailable" if chain_signal.take_profit is None else f"Rs {chain_signal.take_profit:.2f}")
+signal_cols[0].metric("Signal", chain_signal.direction if chain_is_live else "RESEARCH")
+signal_cols[1].metric("Confidence", f"{chain_signal.confidence:.1f}%" if chain_is_live else "N/A")
+signal_cols[2].metric("Entry", ("Unavailable" if chain_signal.entry_price is None else f"Rs {chain_signal.entry_price:.2f}") if chain_is_live else "Unavailable")
+signal_cols[3].metric("Stop Loss", ("Unavailable" if chain_signal.stop_loss is None else f"Rs {chain_signal.stop_loss:.2f}") if chain_is_live else "Unavailable")
+signal_cols[4].metric("Take Profit", ("Unavailable" if chain_signal.take_profit is None else f"Rs {chain_signal.take_profit:.2f}") if chain_is_live else "Unavailable")
 signal_cols[5].metric("Global News", f"{global_news_score:+.2f}")
 
 
