@@ -119,3 +119,16 @@ def test_kotak_historical_interval_preserves_supported_neo_value():
         neosymbol="nse_cm|26000",
     )
     assert client.calls[0]["interval"] == "15min"
+
+
+def test_kotak_historical_daily_interval_uses_neo_format():
+    client = FakeHistoricalNeo()
+    KotakNeoProvider(client).get_historical_candles(
+        symbol="NIFTY",
+        exchange="NSE",
+        timeframe="1d",
+        start=date(2026, 9, 25),
+        end=date(2026, 10, 5),
+        neosymbol="nse_cm|26000",
+    )
+    assert client.calls[0]["interval"] == "D"
