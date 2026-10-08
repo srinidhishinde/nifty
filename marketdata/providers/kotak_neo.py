@@ -209,6 +209,57 @@ class KotakNeoProvider(MarketDataProvider):
             )
         return future[0]
 
+    def resolve_option_underlying(self, underlying: str, exchange: str) -> str:
+        """Resolve Kotak's canonical option-chain underlying name.
+
+        Kotak option_chain() expects the underlying to match pSymbolName in
+        the current scrip master. MCX display names can differ from that API
+        identifier, so resolve the broker name instead of guessing.
+        """
+        requested = str(underlying or "").strip().upper()
+        if not requested:
+            raise ValueError("Option-chain underlying cannot be empty.")
+
+        exchange_segment = self.normalize_exchange(exchange)
+        aliases = [requested]
+        if exchange_segment == "mcx_fo":
+            aliases.extend({
+                "CRUDEOIL": ["CRUDEOIL", "CRUDEOILM"],
+                "CRUDEOILM": ["CRUDEOILM", "CRUDEOIL"],
+            }.get(requested, []))
+
+        seen = set()
+        candidates = []
+        for alias in aliases:
+            alias = str(alias).strip().upper()
+            if not alias or alias in seen:
+                continue
+            seen.add(alias)
+            rows = self.client.search_scrip(
+                exchange_segment=exchange_segment,
+                symbol=alias,
+                expiry="",
+                option_type="",
+                strike_price="",
+            )
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                segment = str(row.get("pExchSeg") or exchange_segment).strip().lower()
+                name = str(row.get("pSymbolName") or "").strip().upper()
+                if segment == exchange_segment and name:
+                    exact = 0 if name == requested else 1
+                    candidates.append((exact, name))
+
+        if not candidates:
+            raise RuntimeError(
+                f"Kotak Neo scrip master returned no {exchange_segment} option underlying for '{requested}'."
+            )
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return candidates[0][1]
+
     def get_option_chain(
         self,
         underlying: str,
