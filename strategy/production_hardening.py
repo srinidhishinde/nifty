@@ -445,6 +445,10 @@ def safe_risk_quantity(
     stop: float,
     lot_size: float,
     max_notional_fraction: float = 0.10,
+    available_margin: float | None = None,
+    margin_per_lot: float | None = None,
+    current_exposure: float = 0.0,
+    max_exposure_fraction: float = 0.10,
 ) -> int:
     if (
         equity <= 0 or risk_fraction <= 0 or entry <= 0 or stop <= 0
