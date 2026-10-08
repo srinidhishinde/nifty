@@ -347,17 +347,37 @@ class KotakNeoProvider(MarketDataProvider):
         The scrip master is the broker's canonical instrument source, so use
         pTrdSymbol keyed by pSymbol before trusting a numeric strike payload.
         """
-        try:
-            rows = self.client.search_scrip(
-                exchange_segment=exchange,
-                symbol=str(underlying).upper(),
-                expiry=str(expiry or ""),
-                option_type="",
-                strike_price="",
-            )
-        except Exception:
-            return {}
-        if not isinstance(rows, list):
+        # Neo's scrip-master endpoint is inconsistent about the expiry
+        # format accepted by search_scrip(). The option-chain API may return
+        # ISO expiry while search_scrip expects a different representation.
+        # Query the underlying without an expiry first so token -> canonical
+        # pTrdSymbol reconciliation cannot silently disappear.
+        rows = []
+        attempts = [
+            (str(underlying).upper(), ""),
+            (str(underlying).upper(), str(expiry or "")),
+        ]
+        seen_attempts = set()
+        for symbol_query, expiry_query in attempts:
+            key = (symbol_query, expiry_query)
+            if key in seen_attempts:
+                continue
+            seen_attempts.add(key)
+            try:
+                result = self.client.search_scrip(
+                    exchange_segment=exchange,
+                    symbol=symbol_query,
+                    expiry=expiry_query,
+                    option_type="",
+                    strike_price="",
+                )
+            except Exception:
+                continue
+            if isinstance(result, list):
+                rows.extend(result)
+            if rows:
+                break
+        if not rows:
             return {}
         mapping: dict[str, str] = {}
         for row in rows:
