@@ -552,6 +552,7 @@ class KotakNeoProvider(MarketDataProvider):
         canonical_symbol = (canonical_symbols or {}).get(str(neo_symbol).strip())
         if not canonical_symbol and "|" in str(neo_symbol):
             canonical_symbol = (canonical_symbols or {}).get(str(neo_symbol).split("|")[-1])
+        identity_verified = bool(canonical_symbol)
         if canonical_symbol:
             symbol = canonical_symbol
         if not symbol or not neo_symbol:
@@ -644,6 +645,8 @@ class KotakNeoProvider(MarketDataProvider):
             vega=vega,
             gamma=gamma,
             ltp_change_pct=ltp_change_pct,
+            identity_verified=identity_verified,
+            scrip_master_hash=__import__("hashlib").sha256(str(canonical_symbol or "").encode("utf-8")).hexdigest(),
         )
 
     def _enrich_quotes(self, contracts: list[OptionContract]) -> None:
