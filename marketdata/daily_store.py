@@ -7,6 +7,7 @@ from typing import Iterable
 import pandas as pd
 
 from config.settings import settings
+from strategy.market_specs import validate_option_strike
 
 
 class DailyMarketStore:
@@ -142,18 +143,14 @@ class DailyMarketStore:
         symbol = str(row.get("symbol") or "").upper()
         match = re.search(r"(\\d+(?:\\.\\d+)?)(CE|PE)$", symbol)
         symbol_strike = float(match.group(1)) if match else 0.0
-        if instrument.upper() == "NIFTY":
-            if symbol_strike > 0:
-                # Broker symbol is authoritative when the stored strike field is corrupt.
-                strike = symbol_strike
-            if strike <= 0 or strike > 100000 or abs((strike / 50.0) - round(strike / 50.0)) > 1e-9:
-                return None
-        elif strike <= 0:
-            if symbol_strike > 0:
-                strike = symbol_strike
-            else:
-                return None
-        return strike
+        try:
+            return validate_option_strike(
+                instrument,
+                strike,
+                symbol_strike=symbol_strike if symbol_strike > 0 else None,
+            )
+        except (TypeError, ValueError):
+            return None
 
     def load_latest_option_chain_snapshot(
         self,
