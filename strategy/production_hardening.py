@@ -375,12 +375,22 @@ def live_permission(evidence: DecisionEvidence, *, config_enabled: bool = False,
 
 
 def ml_validation_ok(artifact: Any) -> bool:
+    """Require an immutable, reproducible ML certification artifact."""
     if not artifact:
         return False
-    if isinstance(artifact, Mapping):
-        required = ("validation", "out_of_sample", "walk_forward", "leakage_audit")
-        return all(bool(artifact.get(k)) for k in required)
-    return all(bool(getattr(artifact, key, False)) for key in ("validation", "out_of_sample", "walk_forward", "leakage_audit"))
+    data = artifact if isinstance(artifact, Mapping) else {k: getattr(artifact, k, None) for k in ("validation","out_of_sample","walk_forward","leakage_audit","model_version","feature_schema_hash","training_start","training_end","artifact_hash","sample_count","oos_sample_count")}
+    required = ("validation", "out_of_sample", "walk_forward", "leakage_audit", "model_version", "feature_schema_hash", "training_start", "training_end", "artifact_hash")
+    if not all(bool(data.get(k)) for k in required):
+        return False
+    try:
+        if int(data.get("sample_count", 0)) <= 0 or int(data.get("oos_sample_count", 0)) <= 0:
+            return False
+        start, end = as_ist_timestamp(data["training_start"]), as_ist_timestamp(data["training_end"])
+        if start is None or end is None or start >= end:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def runtime_clock_ok(
