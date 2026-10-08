@@ -123,6 +123,22 @@ def load_kotak_decision_snapshot(
         )
         pcr_oi, pcr_volume = _option_features(contracts)
 
+        # Option-chain availability is an independent hard gate. Do this
+        # before candle history so the UI/test result explains the actual
+        # CE/PE blocker instead of masking it behind candle readiness.
+        if not contracts:
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                f"Real {instrument_upper} option-chain data is unavailable.",
+                now, None, [], "RED",
+                (f"{instrument_upper} option-chain data unavailable",),
+                None, None, 0,
+                _wait(
+                    f"Real {instrument_upper} option-chain data is unavailable; CE/PE trade is blocked.",
+                    now,
+                ),
+            )
+
         # Live decision candles come only from the persisted Kotak SFeed
         # recorder. This is the common path for NIFTY and MCX; no historical
         # API, Yahoo data, or synthetic candles are allowed here.
