@@ -23,6 +23,7 @@ def test_live_loop_runs_one_cycle(monkeypatch):
         lambda: options,
         lambda: 25000,
         interval_seconds=0,
+        capital=100000.0,
     )
     result = loop.run_once()
 

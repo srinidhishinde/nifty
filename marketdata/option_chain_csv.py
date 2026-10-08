@@ -4,6 +4,7 @@ import re
 import pandas as pd
 
 from features.option_chain import OptionContract
+from strategy.market_specs import validate_option_strike
 
 _FIELD_MAP = {
     "calls built up": ("CE", "built_up"), "calls vega": ("CE", "vega"), "calls theta": ("CE", "theta"),
@@ -34,7 +35,7 @@ def parse_option_chain_csv(dataframe: pd.DataFrame) -> list[OptionContract]:
 
     for _, row in dataframe.iterrows():
         try:
-            strike = float(row[strike_column])
+            strike = validate_option_strike("NIFTY", float(row[strike_column]))
         except (TypeError, ValueError):
             continue
 
@@ -142,8 +143,10 @@ def parse_nse_option_chain_export(
 
     contracts: list[OptionContract] = []
     for _, row in dataframe.iloc[2:].iterrows():
-        strike = _numeric_export_value(row.iloc[_NSE_EXPORT_HEADERS["strike"]])
-        if strike <= 0:
+        raw_strike = _numeric_export_value(row.iloc[_NSE_EXPORT_HEADERS["strike"]])
+        try:
+            strike = validate_option_strike("NIFTY", raw_strike)
+        except (TypeError, ValueError):
             continue
 
         ce_ltp = _numeric_export_value(row.iloc[_NSE_EXPORT_HEADERS["ce_ltp"]])

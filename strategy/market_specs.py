@@ -53,3 +53,27 @@ class FuturesContractSpec:
 def validate_futures_contract_spec(spec: FuturesContractSpec) -> None:
     if not spec.instrument or spec.lot_size <= 0 or spec.point_value <= 0 or spec.tick_size <= 0 or spec.margin_per_lot <= 0:
         raise ValueError("Futures contract specification requires positive instrument, lot_size, point_value, tick_size and margin_per_lot")
+
+
+def validate_option_strike(
+    instrument: str,
+    strike: float,
+    *,
+    symbol_strike: float | None = None,
+) -> float:
+    """Validate a broker option strike without silently rescaling it.
+
+    The broker contract identifier is authoritative when it contains a strike,
+    but an obviously impossible NIFTY value is rejected rather than divided by
+    the strike interval. This prevents malformed payloads/CSV columns from
+    becoming tradable prices.
+    """
+    name = str(instrument or "").strip().upper()
+    value = float(symbol_strike if symbol_strike and symbol_strike > 0 else strike)
+    if value <= 0:
+        raise ValueError(f"Invalid {name} option strike: {value}")
+    if name == "NIFTY":
+        step = OPTION_STRIKE_INTERVALS["NIFTY"]
+        if value > 100_000 or abs((value / step) - round(value / step)) > 1e-9:
+            raise ValueError(f"Invalid NIFTY option strike: {value}")
+    return value
