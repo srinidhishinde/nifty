@@ -64,7 +64,14 @@ class KotakNeoProvider(MarketDataProvider):
         # made it impossible to distinguish an expired/invalid expiry, a rate
         # limit, a session issue, or genuine absence of market data.
         code = response.get("stCode") or response.get("code") or response.get("statusCode")
-        message = response.get("errMsg") or response.get("desc")
+        message = (
+            response.get("errMsg")
+            or response.get("emsg")
+            or response.get("message")
+            or response.get("msg")
+            or response.get("desc")
+            or response.get("errorMessage")
+        )
         errors = response.get("error")
         if isinstance(errors, list) and errors:
             first = errors[0]
@@ -284,6 +291,16 @@ class KotakNeoProvider(MarketDataProvider):
         # avoids rejecting a valid chain when the expiry endpoint is temporarily
         # unavailable. If the caller supplied an expiry, preserve it exactly.
         request_expiry = str(expiry).strip() if expiry else None
+        # Prefer an explicit broker-provided expiry for live requests. This
+        # avoids relying on server-side nearest-expiry inference and gives us
+        # a precise diagnostic when the selected expiry is unavailable.
+        if request_expiry is None:
+            try:
+                request_expiry = self._nearest_expiry(exchange_segment, underlying)
+            except Exception:
+                # Keep the SDK-documented omitted-expiry path as a fallback
+                # when the separate expiry endpoint is temporarily unavailable.
+                request_expiry = None
         # MCX option-chain requests must use the broker's canonical
         # pSymbolName (for example CRUDEOIL/CRUDEOILM), not the UI label
         # blindly. This prevents valid MCX option chains from being rejected
@@ -302,7 +319,11 @@ class KotakNeoProvider(MarketDataProvider):
         )
         error = self._response_error(response)
         if error:
-            raise RuntimeError(f"Kotak Neo option-chain error: {error}")
+            raise RuntimeError(
+                f"Kotak Neo option-chain error: {error}; "
+                f"exchange={exchange_segment} underlying={request_underlying} "
+                f"expiry={request_expiry or 'server-default'} count={count}"
+            )
 
         data = self._response_data(response)
         calls = data.get("call") or []
@@ -455,6 +476,13 @@ class KotakNeoProvider(MarketDataProvider):
                     volume=contract.volume,
                     open_interest=contract.open_interest,
                     oi_change=contract.oi_change,
+                    implied_volatility=contract.implied_volatility,
+                    built_up=contract.built_up,
+                    delta=contract.delta,
+                    theta=contract.theta,
+                    vega=contract.vega,
+                    gamma=contract.gamma,
+                    ltp_change_pct=contract.ltp_change_pct,
                 )
 
     def resolve_mcx_futures(self, symbol: str) -> dict:
