@@ -73,6 +73,57 @@ def test_kotak_option_chain_normalizes_current_response():
     assert all(x.bid is not None and x.ask is not None for x in chain)
 
 
+
+def test_mcx_option_chain_uses_canonical_scrip_master_underlying():
+    class FakeMCXNeo(FakeNeo):
+        def __init__(self):
+            self.search_calls = []
+            self.option_calls = []
+
+        def search_scrip(self, **kwargs):
+            self.search_calls.append(kwargs)
+            return [{
+                "pSymbol": "569999",
+                "pExchSeg": "mcx_fo",
+                "pSymbolName": "CRUDEOILM",
+                "pTrdSymbol": "CRUDEOILM26OCTFUT",
+            }]
+
+        def option_chain(self, **kwargs):
+            self.option_calls.append(kwargs)
+            return {
+                "data": {
+                    "common_data": {"unlSymbol": "CRUDEOILM"},
+                    "call": [{
+                        "instrument": {
+                            "neoSymbol": "mcx_fo|700001",
+                            "symbol": "CRUDEOILM26OCT8800CE",
+                            "strikePrice": "8800",
+                            "expiryDt": "2026-10-26",
+                        },
+                        "quote": {"ltp": "100", "volume": 10},
+                        "openInterest": {"current": 20, "change": 1},
+                    }],
+                    "put": [],
+                },
+            }
+
+    client = FakeMCXNeo()
+    chain = KotakNeoProvider(client).get_option_chain(
+        underlying="CRUDEOIL",
+        exchange="MCX",
+        count=40,
+        enrich_quotes=False,
+    )
+
+    assert len(chain) == 1
+    assert chain[0].underlying == "CRUDEOIL"
+    assert client.option_calls[0]["exchange"] == "mcx_fo"
+    assert client.option_calls[0]["underlying"] == "CRUDEOILM"
+    assert client.search_calls[0]["exchange_segment"] == "mcx_fo"
+
+
+
 def test_option_chain_success_payload_without_stat_is_accepted():
     chain = KotakNeoProvider(FakeNeo()).get_option_chain(
         underlying="NIFTY",
