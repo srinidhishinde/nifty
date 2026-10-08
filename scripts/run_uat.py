@@ -91,7 +91,7 @@ def main():
 
     print()
 
-    if failed:
+    if failed or empty:
         print("UAT STATUS: FAILED")
         print()
         print("Failed test suites:")
@@ -101,7 +101,7 @@ def main():
 
     print("UAT STATUS: PASSED")
     if empty:
-        print("WARNING: Empty test suites are not production evidence.")
+        print("UAT STATUS: FAILED — required test suites were empty; empty suites are not production evidence.")
 
 
 if __name__ == "__main__":
