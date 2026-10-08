@@ -195,16 +195,14 @@ class DailyMarketStore:
         else:
             cutoff = cutoff.tz_convert("Asia/Kolkata")
 
-        # Immutable timestamped archives are first-class recovery sources.
-        # The latest pointer is only a convenience cache and may be overwritten.
-        # Only immutable timestamped archives are considered canonical
-        # recovery sources. The latest pointer is deliberately excluded so a
-        # partial overwrite cannot masquerade as a historical snapshot.
-        candidates = []
-        for path in base.glob("*/" + f"{instrument.upper()}_option_chain_*.csv"):
-            if path.name.endswith("_latest.csv"):
-                continue
-            candidates.append(path)
+        # Prefer immutable timestamped archives. The latest pointer is a
+        # recovery fallback only when no archive is available: the writer
+        # commits the archive before updating this pointer, so a crash during
+        # capture does not make an incomplete pointer outrank a completed file.
+        candidates = list(base.glob("*/" + f"{instrument.upper()}_option_chain_*.csv"))
+        archives = [path for path in candidates if not path.name.endswith("_latest.csv")]
+        if archives:
+            candidates = archives
         newest: tuple[pd.Timestamp, Path, pd.DataFrame] | None = None
 
         for path in candidates:
