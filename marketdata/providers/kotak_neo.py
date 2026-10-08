@@ -385,6 +385,14 @@ class KotakNeoProvider(MarketDataProvider):
             common_data = data.get("common_data") or {}
             resolved_expiry = common_data.get("expiryDt") or common_data.get("expiry")
 
+        # Current Kotak responses may return calls/puts as dicts keyed by
+        # contract rather than lists. Normalize only the container shape here;
+        # contract parsing remains unchanged.
+        if isinstance(calls, dict):
+            calls = list(calls.values())
+        if isinstance(puts, dict):
+            puts = list(puts.values())
+
         contracts: list[OptionContract] = []
         for item in calls:
             contract = self._parse_option(item, underlying, exchange_segment, "CE", resolved_expiry)
