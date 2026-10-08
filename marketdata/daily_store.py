@@ -136,22 +136,35 @@ class DailyMarketStore:
 
     @staticmethod
     def _normalise_option_strike(instrument: str, row: dict) -> float | None:
-        """Validate/recover strikes; never scale an ambiguous value silently."""
+        """Validate/recover strikes; never scale an ambiguous value silently.
+
+        Persisted broker snapshots contain an explicit numeric ``strike``.
+        That value must be authoritative when valid. A generic suffix regex can
+        misread NIFTY symbols such as ``NIFTY26O1320250CE`` by treating the
+        expiry/day digits as part of the strike, so symbol parsing is only a
+        fallback when the explicit strike is missing/invalid.
+        """
         import re
+
         raw = row.get("strike", row.get("Strike"))
         try:
             strike = float(raw)
         except (TypeError, ValueError):
             strike = 0.0
+
+        try:
+            return validate_option_strike(instrument, strike)
+        except (TypeError, ValueError):
+            pass
+
         symbol = str(row.get("symbol") or "").upper()
         match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", symbol)
-        symbol_strike = float(match.group(1)) if match else 0.0
+        if not match:
+            return None
+
         try:
-            return validate_option_strike(
-                instrument,
-                strike,
-                symbol_strike=symbol_strike if symbol_strike > 0 else None,
-            )
+            symbol_strike = float(match.group(1))
+            return validate_option_strike(instrument, symbol_strike)
         except (TypeError, ValueError):
             return None
 
