@@ -130,6 +130,31 @@ class DailyMarketStore:
         frame.to_csv(path, index=False)
         return path
 
+    @staticmethod
+    def _normalise_option_strike(instrument: str, row: dict) -> float | None:
+        """Validate/recover strikes; never scale an ambiguous value silently."""
+        import re
+        raw = row.get("strike", row.get("Strike"))
+        try:
+            strike = float(raw)
+        except (TypeError, ValueError):
+            strike = 0.0
+        symbol = str(row.get("symbol") or "").upper()
+        match = re.search(r"(\\d+(?:\\.\\d+)?)(CE|PE)$", symbol)
+        symbol_strike = float(match.group(1)) if match else 0.0
+        if instrument.upper() == "NIFTY":
+            if symbol_strike > 0:
+                # Broker symbol is authoritative when the stored strike field is corrupt.
+                strike = symbol_strike
+            if strike <= 0 or strike > 100000 or abs((strike / 50.0) - round(strike / 50.0)) > 1e-9:
+                return None
+        elif strike <= 0:
+            if symbol_strike > 0:
+                strike = symbol_strike
+            else:
+                return None
+        return strike
+
     def load_latest_option_chain_snapshot(
         self,
         instrument: str,
@@ -184,16 +209,17 @@ class DailyMarketStore:
 
                 if stamp > cutoff:
                     continue
-                if "strike" in frame.columns:
-                    frame["strike"] = pd.to_numeric(frame["strike"], errors="coerce")
-                elif "Strike" in frame.columns:
-                    frame["strike"] = pd.to_numeric(frame["Strike"], errors="coerce")
-                else:
-                    continue
                 if "option_type" not in frame.columns:
                     continue
                 frame["option_type"] = frame["option_type"].astype(str).str.upper().str.strip()
-                frame = frame[frame["option_type"].isin({"CE", "PE"})].dropna(subset=["strike"])
+                frame = frame[frame["option_type"].isin({"CE", "PE"})].copy()
+                if frame.empty:
+                    continue
+                frame["strike"] = [
+                    self._normalise_option_strike(instrument, row)
+                    for row in frame.to_dict("records")
+                ]
+                frame = frame.dropna(subset=["strike"])
                 if frame.empty:
                     continue
                 if newest is None or stamp > newest[0]:
