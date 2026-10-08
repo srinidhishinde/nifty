@@ -1571,6 +1571,10 @@ st.divider()
 # ============================================================
 
 authenticated = neo_status.connected
+# Always initialize the displayed option-chain container before any environment
+# branch. Streamlit executes this module during test collection, so a missing
+# initialization here becomes an import-time NameError.
+contracts: list[OptionContract] = []
 live_contracts: list[OptionContract] = []
 
 # The option-chain display is independent from the canonical trade decision:
