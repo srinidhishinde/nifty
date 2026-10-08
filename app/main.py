@@ -1569,7 +1569,11 @@ if authenticated and chain_config:
                 underlying=chain_underlying,
                 exchange=chain_exchange,
                 count=chain_count,
-                # The option-chain endpoint already contains broker LTP/OI/volume/analytics.\n                # Do not trigger the separate <=50-symbol quote/depth API here; it can\n                # fail independently and incorrectly make a valid live chain appear empty.\n                enrich_quotes=False,\n            )
+                # The option-chain endpoint already contains broker LTP/OI/volume/analytics.
+                # Do not trigger the separate <=50-symbol quote/depth API here; it can
+                # fail independently and incorrectly make a valid live chain appear empty.
+                enrich_quotes=False,
+            )
             if not live_contracts:
                 st.warning(
                     f"Kotak Neo returned no live {instrument} option contracts. "
