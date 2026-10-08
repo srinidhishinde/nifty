@@ -219,6 +219,8 @@ def load_kotak_decision_snapshot(
             if instrument_upper == "NIFTY":
                 underlying_quote = provider.get_index_quote("Nifty 50")
                 underlying_ts = pd.Timestamp(underlying_quote.timestamp)
+                if getattr(underlying_quote, "timestamp_source", "BROKER") != "BROKER":
+                    raise RuntimeError("NIFTY underlying quote lacks authoritative broker timestamp.")
             else:
                 mcx_contract = provider.resolve_mcx_futures(_MCX_SYMBOLS[instrument_upper])
                 underlying_quote = provider.get_mcx_quote(mcx_contract)
