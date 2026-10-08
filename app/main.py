@@ -1494,6 +1494,11 @@ st.divider()
 # CE / WAIT / PE decision view
 # ============================================================
 
+# Keep broker candidate variables defined in every environment. The Streamlit
+# module executes top-to-bottom during import, including RESEARCH/test runs.
+best_ce = None
+best_pe = None
+
 if environment == "RESEARCH":
     st.subheader("Research CE / WAIT / PE")
     st.caption(
