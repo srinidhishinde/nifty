@@ -128,10 +128,34 @@ def _fit(X,y,c):
 
 def train(raw, cfg=MLConfig(), model_dir=None):
     d=rolling_window(raw,cfg.window_days)
-    if len(d)<cfg.min_rows: raise ValueError(f"90-day window has only {len(d)} rows; need {cfg.min_rows}")
+    if len(d)<cfg.min_rows:
+        raise ValueError(
+            f"{cfg.window_days}-day training window has only {len(d)} rows; "
+            f"need at least {cfg.min_rows}"
+        )
+    # Live decision frames are commonly only 3–30 days. Do not present a
+    # short-window fit as a robust 90-day advisory model.
+    unique_days = pd.to_datetime(d["timestamp"], errors="coerce").dt.date.nunique()
+    minimum_training_days = min(cfg.window_days, 20)
+    if unique_days < minimum_training_days:
+        raise ValueError(
+            f"ML training blocked: only {unique_days} calendar days are available; "
+            f"need at least {minimum_training_days} days of history."
+        )
     f=build_features(d); candidates=[x for x in BASE if x in f.columns and f[x].notna().any()]
     if not candidates: raise ValueError("No usable ML features are available")
-    X=f[candidates].copy(); selected=drop_correlated(X,cfg.correlation_threshold)
+    X=f[candidates].copy()
+    # Feature selection is itself a learned preprocessing step. Determine the
+    # correlation filter from the chronological training portion only; using
+    # the complete dataset would let future/test observations influence model
+    # construction.
+    feature_train_end=max(1, int(len(X) * (1 - cfg.test_fraction)))
+    selected=drop_correlated(
+        X.iloc[:feature_train_end],
+        cfg.correlation_threshold,
+    )
+    if not selected:
+        raise ValueError("No usable ML features remain after training-only correlation filtering")
     results={}; artifacts={}
     for h in cfg.horizons_minutes:
         bars=max(1,round(h/cfg.refresh_minutes)); future=d.close.shift(-bars)/d.close-1

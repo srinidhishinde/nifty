@@ -25,18 +25,23 @@ class LiveSignalLoop:
     fetch_options: Callable[[], list]
     spot_provider: Callable[[], float]
     interval_seconds: int = 30
-    capital: float = 100000.0
+    capital: float | None = None
     _last_signal_key: tuple | None = field(default=None, init=False)
     on_signal: Callable[[dict], None] | None = None
     running: bool = field(default=False, init=False)
 
     def run_once(self) -> dict:
+        if self.capital is None or float(self.capital) <= 0:
+            raise ValueError(
+                "LiveSignalLoop requires explicit account capital; "
+                "no default capital is permitted."
+            )
         candles = self.fetch_candles()
         spot = float(self.spot_provider())
         news = fetch_global_news()
         ai = generate_ai_signal(
             candles,
-            capital=self.capital,
+            capital=float(self.capital),
             global_news_score=news.sentiment,
         )
         option_signal, _ = generate_option_chain_signal(

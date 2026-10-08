@@ -52,3 +52,15 @@ class OptionContract:
     volume: float = 0.0
     open_interest: float = 0.0
     oi_change: float = 0.0
+
+    # Optional derivatives fields populated when the broker supplies them.
+    # Keeping these fields optional preserves compatibility with OHLCV-only
+    # consumers while allowing the live option chain to feed the strategy
+    # analyzer without an unsafe model conversion at the broker boundary.
+    implied_volatility: float = 0.0
+    built_up: str = ""
+    delta: Optional[float] = None
+    theta: Optional[float] = None
+    vega: Optional[float] = None
+    gamma: Optional[float] = None
+    ltp_change_pct: float = 0.0

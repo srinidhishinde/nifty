@@ -10,8 +10,8 @@ class OptionContract:
     strike: float
     option_type: OptionType
     ltp: float
-    bid: float
-    ask: float
+    bid: float | None
+    ask: float | None
     volume: float
     open_interest: float
     oi_change: float
@@ -47,7 +47,15 @@ def analyze_option(contract: OptionContract) -> OptionAnalysis:
     elif volume_oi_ratio < 0.1: score -= 5; reasons.append("Low volume relative to open interest")
     if contract.implied_volatility > 40: score -= 10; reasons.append("Elevated implied volatility")
     elif 0 < contract.implied_volatility < 15: score += 5; reasons.append("Relatively low implied volatility")
-    if contract.ltp > 0 and contract.ask >= contract.bid >= 0:
+    # Kotak option-chain payloads may omit bid/ask for illiquid contracts.
+    # Missing quotes must not crash analytics or make the whole chain unusable.
+    if (
+        contract.ltp is not None
+        and contract.ltp > 0
+        and contract.ask is not None
+        and contract.bid is not None
+        and contract.ask >= contract.bid >= 0
+    ):
         spread_pct = ((contract.ask - contract.bid) / contract.ltp) * 100
         if spread_pct <= 1: score += 5; reasons.append("Tight bid/ask spread")
         elif spread_pct >= 5: score -= 10; reasons.append("Wide bid/ask spread")

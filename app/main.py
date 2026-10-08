@@ -1,5 +1,14 @@
 ﻿import random
+import sys
+from pathlib import Path
 from types import SimpleNamespace
+
+# Streamlit executes this file with app/ as the script directory. Add the
+# repository root so top-level packages (strategy, broker, marketdata, etc.)
+# resolve the same way they do under pytest and normal Python execution.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import pandas as pd
@@ -620,8 +629,16 @@ environment = st.sidebar.selectbox(
         "BACKTEST",
         "UAT",
         "PAPER",
+        "LIVE",
     ],
 )
+
+if environment == "LIVE" and not settings.live_trading_allowed():
+    st.sidebar.warning(
+        "LIVE selected, but live order submission is LOCKED. "
+        "Set LIVE_TRADING_ENABLED=true, PAPER_TRADING=false and ALLOW_ORDER_SUBMISSION=true "
+        "after completing broker/risk/UAT validation. LIVE never bypasses data-quality or strategy gates."
+    )
 
 seed = st.sidebar.number_input(
     "Research Seed",
@@ -631,17 +648,18 @@ seed = st.sidebar.number_input(
     step=1,
 )
 
-(
-    context,
-    ce,
-    pe,
-    signal,
-    ml_probability,
-) = build_research_signal(
-    instrument=instrument,
-    timeframe=timeframe,
-    seed=int(seed),
+# Research compatibility placeholders. The active dashboard decision path
+# below is always driven by Kotak/persisted real data; synthetic research
+# selectors are not used for PAPER/UAT/LIVE decisions.
+context = SimpleNamespace(
+    trend="UNAVAILABLE",
+    momentum="UNAVAILABLE",
+    price_vs_vwap="UNAVAILABLE",
+    volatility_regime="UNAVAILABLE",
 )
+ce = pe = None
+signal = SimpleNamespace(ce_score=0.0, pe_score=0.0, edge=0.0, decision="WAIT")
+ml_probability = None
 
 
 
@@ -673,6 +691,11 @@ if neo_connect:
     else:
         connection = neo_broker.authenticate(neo_totp)
         st.session_state["neo_authenticated"] = connection.connected
+        # Authentication changes the production data source state. Any
+        # previous RED/WAIT snapshot may have been generated while Neo was
+        # disconnected, so it must never survive a new authentication attempt.
+        st.session_state["kotak_decision_snapshot"] = None
+        st.session_state.pop("last_signal_journal_key", None)
         if connection.connected:
             st.sidebar.success(connection.message)
         else:
@@ -784,7 +807,16 @@ decision_cols[3].metric(
 if "kotak_decision_snapshot" not in st.session_state:
     st.session_state["kotak_decision_snapshot"] = None
 
-if decision_refresh or st.session_state["kotak_decision_snapshot"] is None:
+cached_snapshot = st.session_state["kotak_decision_snapshot"]
+snapshot_connection_mismatch = (
+    cached_snapshot is not None
+    and (
+        (cached_snapshot.status == "RED" and neo_status.connected)
+        or (cached_snapshot.status != "RED" and not neo_status.connected)
+    )
+)
+
+if decision_refresh or cached_snapshot is None or snapshot_connection_mismatch:
     snapshot = load_kotak_decision_snapshot(
         neo_broker,
         instrument=instrument,
@@ -794,7 +826,7 @@ if decision_refresh or st.session_state["kotak_decision_snapshot"] is None:
     )
     st.session_state["kotak_decision_snapshot"] = snapshot
 else:
-    snapshot = st.session_state["kotak_decision_snapshot"]
+    snapshot = cached_snapshot
 
 prediction_frame = snapshot.frame if snapshot is not None else None
 prediction_source = "Kotak Neo production decision data" if snapshot and snapshot.frame is not None else None
@@ -913,6 +945,25 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
             "Only real Kotak/news values are supplied. Missing derivative fields are not synthesized."
         )
 
+    # Current global news is a point-in-time value. It must never be copied
+    # across historical rows and used as a training feature, because that would
+    # leak present information into the past. Keep it for the latest prediction
+    # only; historical ML training uses only features actually present per row.
+    ml_training_input = ml_input.copy()
+    for _leaky_column in ("SENTIMENT", "SENTIMENT_CHANGE", "NEWS_COUNT"):
+        if _leaky_column in ml_training_input.columns:
+            ml_training_input[_leaky_column] = np.nan
+
+    ml_context_key = (
+        instrument.upper(),
+        decision_timeframe,
+        str(snapshot.timestamp) if snapshot is not None else "",
+    )
+    if st.session_state.get("ml_context_key") != ml_context_key:
+        st.session_state.pop("final_ml_result", None)
+        st.session_state.pop("final_ml_artifacts", None)
+        st.session_state["ml_context_key"] = ml_context_key
+
     train_col, status_col = st.columns([1, 3])
     train_clicked = train_col.button(
         "Train / Retrain ML", type="primary", width="stretch", key="final_ml_train"
@@ -921,13 +972,16 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
         try:
             with st.spinner("Training advisory models on the available Kotak decision dataset..."):
                 ml_result, ml_artifacts = train_ml(
-                    ml_input,
-                    MLConfig(window_days=min(90, int(decision_history_days)), refresh_minutes=5),
-                    model_dir="models/ml_advisory",
+                    ml_training_input,
+                    MLConfig(window_days=90, refresh_minutes=5),
+                    model_dir=f"models/ml_advisory/{instrument.upper()}_{decision_timeframe}",
                 )
             st.session_state["final_ml_result"] = ml_result
             st.session_state["final_ml_artifacts"] = ml_artifacts
-            st.success("ML models trained separately from the Rule Engine.")
+            st.success(
+                "ML advisory models trained. Historical current-news values were excluded "
+                "from training to prevent temporal leakage."
+            )
         except Exception as exc:
             st.error(f"ML training failed: {exc}")
 
@@ -990,11 +1044,11 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                         spread_width=float(latest.get("spread", 0) or 0),
                         volatility_band=volatility_band,
                     )
-                    micro["micro_weight"] = AdaptiveMicroWeight().update(volatility_band)
+                    micro["micro_weight"] = AdaptiveMicroWeight().load()
             regime, ensemble_rows = build_ensemble(
                 ml_input,
                 ml_predictions,
-                StrategyConfig(require_option_confirmation=True),
+                StrategyConfig(require_option_confirmation=(instrument.upper() == "NIFTY")),
                 micro=micro,
             )
             rcols = st.columns(4)
@@ -1040,9 +1094,9 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                     timeframe=decision_timeframe,
                     source="KOTAK_NEO",
                     status=str(snapshot.status),
-                    direction=str(first.stronger_side),
-                    confidence=max(float(first.final_ce), float(first.final_pe)),
-                    reliability=max(float(first.final_ce), float(first.final_pe)),
+                    direction=str(canonical_signal.direction if canonical_signal.valid else "WAIT"),
+                    confidence=max(float(first.final_ce), float(first.final_pe)) if canonical_signal.valid else 0.0,
+                    reliability=max(float(first.final_ce), float(first.final_pe)) if canonical_signal.valid else 0.0,
                     reason="; ".join(canonical_signal.reasons),
                     regime=regime.name,
                     pcr=snapshot.pcr_oi,
@@ -1054,9 +1108,9 @@ if prediction_frame is not None and snapshot is not None and prediction_quality.
                     ml_pe=float(first.ml_pe),
                     rule_ce=float(first.rule_ce),
                     rule_pe=float(first.rule_pe),
-                    entry=float(prediction_frame.iloc[-1]["close"]) if prediction_frame is not None else None,
-                    stop_loss=float(canonical_signal.stop_loss) if canonical_signal.stop_loss > 0 else None,
-                    target=float(canonical_signal.target) if canonical_signal.target > 0 else None,
+                    entry=float(prediction_frame.iloc[-1]["close"]) if prediction_frame is not None and canonical_signal.valid else None,
+                    stop_loss=float(canonical_signal.stop_loss) if canonical_signal.valid and canonical_signal.stop_loss > 0 else None,
+                    target=float(canonical_signal.target) if canonical_signal.valid and canonical_signal.target > 0 else None,
                 )
                 st.session_state["last_signal_journal_key"] = snapshot_key
         except Exception as exc:
@@ -1181,28 +1235,39 @@ if neo_status.connected:
         provider = KotakNeoProvider(neo_broker.client)
         if instrument == "NIFTY":
             spot = provider.get_index_quote("Nifty 50").ltp
+        elif instrument in {"CRUDEOIL", "NATURALGAS", "COPPER", "SILVER", "GOLD"}:
+            # A current MCX futures quote is safe for display/context only. It
+            # must not be mistaken for the completed 5m candle history required
+            # by the canonical decision engine.
+            contract = provider.resolve_mcx_futures(instrument)
+            quote = provider.get_mcx_quote(contract)
+            spot = float(quote["ltp"])
+        elif prediction_frame is not None and not prediction_frame.empty:
+            spot = float(prediction_frame.iloc[-1]["close"])
         else:
             st.info(
-                f"Live underlying quote integration for {instrument} is not wired yet; "
-                "no synthetic price is used for live mode."
+                f"Live {instrument} underlying is unavailable because the canonical "
+                "Kotak Neo decision frame is not ready."
             )
     except Exception as exc:
         st.error(f"Live underlying quote request failed: {exc}")
 
-if spot is None and not neo_status.connected:
-    spot_rng = random.Random(f"spot:{instrument}:{seed}")
-    base_spot = {
-        "NIFTY": 25040.0,
-        "CRUDEOIL": 6500.0,
-        "NATURALGAS": 300.0,
-        "COPPER": 950.0,
-        "SILVER": 95000.0,
-        "GOLD": 125000.0,
-    }.get(instrument, 25000.0)
-    spot = base_spot + spot_rng.uniform(-100, 100)
+if spot is None and environment == "RESEARCH":
+    from marketdata.daily_store import load_captured_candles
+    research_frame, _ = load_captured_candles(instrument.upper())
+    if not research_frame.empty:
+        latest_research = research_frame.sort_values("timestamp").iloc[-1]
+        spot = float(latest_research["close"])
+        st.caption(
+            "Research spot: latest persisted KOTAK_CAPTURED close at "
+            f"{latest_research['timestamp']}."
+        )
 
 if spot is None:
-    spot = 0.0
+    st.warning(
+        f"{environment} underlying price is unavailable for {instrument}. "
+        "No synthetic price is used outside RESEARCH."
+    )
 
 
 # ============================================================
@@ -1263,13 +1328,13 @@ regime_snapshot = classify_regime(pd.Series({
     "ADX": 20.0, "ATR_PCT": 0.01, "EMA_SPREAD": 1.0, "VWAP_DEV": 0.0,
 }), global_news_score)
 readiness = assess_readiness(
-    tests_passed=False,
-    warmup_ready=True,
+    tests_passed=False,  # Repository-local UAT must certify this; never hardcode PASS.
+    warmup_ready=bool(prediction_frame is not None and not prediction_frame.empty),
     risk_engine_ready=True,
-    ml_available=True,
+    ml_available=bool(st.session_state.get("final_ml_artifacts")),
     live_order_enabled=settings.live_trading_allowed(),
     realistic_backtest_available=True,
-    option_premium_history_available=False,
+    option_premium_history_available=bool(getattr(snapshot, "option_chain", ())) if snapshot is not None else False,
 )
 rc = st.columns(4)
 rc[0].metric("Readiness", f"{readiness.score:.0f}/100")
@@ -1351,6 +1416,51 @@ st.divider()
 # Market context
 # ============================================================
 
+if environment != "RESEARCH" and prediction_frame is not None and not prediction_frame.empty:
+    latest = prediction_frame.iloc[-1]
+    ema9 = float(latest.get("EMA9", np.nan))
+    ema21 = float(latest.get("EMA21", np.nan))
+    rsi = float(latest.get("RSI", np.nan))
+    vwap_dev = float(latest.get("VWAP_DEV", np.nan))
+    atr_pct = float(latest.get("ATR_PCT", np.nan))
+    live_trend = (
+        "BULLISH" if np.isfinite(ema9) and np.isfinite(ema21) and ema9 > ema21
+        else "BEARISH" if np.isfinite(ema9) and np.isfinite(ema21) and ema9 < ema21
+        else "NEUTRAL"
+    )
+    live_momentum = (
+        "POSITIVE" if np.isfinite(rsi) and rsi >= 55
+        else "NEGATIVE" if np.isfinite(rsi) and rsi <= 45
+        else "NEUTRAL"
+    )
+    live_price_vs_vwap = (
+        "ABOVE" if np.isfinite(vwap_dev) and vwap_dev > 0
+        else "BELOW" if np.isfinite(vwap_dev) and vwap_dev < 0
+        else "AT"
+    )
+    live_volatility = (
+        "HIGH" if np.isfinite(atr_pct) and atr_pct >= 0.025
+        else "NORMAL" if np.isfinite(atr_pct) and atr_pct >= 0.01
+        else "LOW"
+    )
+    context = SimpleNamespace(
+        trend=live_trend,
+        momentum=live_momentum,
+        price_vs_vwap=live_price_vs_vwap,
+        volatility_regime=live_volatility,
+    )
+    st.caption("Market context is derived from the canonical Kotak Neo decision frame.")
+elif environment != "RESEARCH":
+    context = SimpleNamespace(
+        trend="UNAVAILABLE",
+        momentum="UNAVAILABLE",
+        price_vs_vwap="UNAVAILABLE",
+        volatility_regime="UNAVAILABLE",
+    )
+    st.caption("Live market context is unavailable because the canonical Kotak Neo decision frame is blocked.")
+else:
+    st.caption("Research context is synthetic and is available only in RESEARCH environment.")
+
 st.subheader(
     "Market Context"
 )
@@ -1359,7 +1469,7 @@ m1, m2, m3, m4 = st.columns(4)
 
 m1.metric(
     "Spot",
-    f"{spot:,.2f}",
+    "Unavailable" if spot is None else f"{spot:,.2f}",
 )
 
 m2.metric(
@@ -1381,59 +1491,77 @@ st.divider()
 
 
 # ============================================================
-# CE / WAIT / PE
+# CE / WAIT / PE decision view
 # ============================================================
 
+# Keep broker candidate variables defined in every environment. The Streamlit
+# module executes top-to-bottom during import, including RESEARCH/test runs.
+best_ce = None
+best_pe = None
+
+if environment == "RESEARCH":
+    st.subheader("Research CE / WAIT / PE")
+    st.caption(
+        "Research uses the latest persisted real Kotak option-chain snapshot. "
+        "No synthetic selector is used. Trade direction is WAIT until real "
+        "market context and the option-chain engine produce a qualified signal."
+    )
+    ce_score = 0.0
+    pe_score = 0.0
+    wait_edge = 0.0
+    selected_side = "WAIT"
+else:
+    st.subheader(f"{instrument} CE / WAIT / PE")
+    st.caption(
+        "Real Kotak Neo CE/PE candidates remain visible in PAPER/UAT/LIVE. "
+        "They are read-only: the canonical signal, data-quality, risk and "
+        "execution gates control the decision."
+    )
+    broker_contracts = list(snapshot.option_chain) if snapshot is not None else []
+    ce_contracts = [x for x in broker_contracts if getattr(x, "option_type", "") == "CE"]
+    pe_contracts = [x for x in broker_contracts if getattr(x, "option_type", "") == "PE"]
+    ce_analyses = [analyze_option(x) for x in ce_contracts]
+    pe_analyses = [analyze_option(x) for x in pe_contracts]
+    best_ce = max(ce_analyses, key=lambda x: float(x.score)) if ce_analyses else None
+    best_pe = max(pe_analyses, key=lambda x: float(x.score)) if pe_analyses else None
+    ce_score = float(best_ce.score) if best_ce is not None else 0.0
+    pe_score = float(best_pe.score) if best_pe is not None else 0.0
+    wait_edge = abs(ce_score - pe_score)
+    selected_side = (
+        "CE" if canonical_signal.direction == "CE"
+        else "PE" if canonical_signal.direction == "PE"
+        else "WAIT"
+    )
+
 left, middle, right = st.columns(3)
-
 with left:
-
     st.subheader("CE")
-
-    st.metric(
-        "Score",
-        f"{signal.ce_score:.1f}",
-    )
-
-    if signal.decision == "CE":
-        st.success("Selected")
-    else:
-        st.write("Not selected")
-
-
+    st.metric("Candidate score", f"{ce_score:.1f}")
+    if selected_side == "CE":
+        st.success("Canonical side")
+    elif best_ce is not None:
+        st.write(f"Broker candidate · {getattr(best_ce, 'strike', '—')}")
 with middle:
-
     st.subheader("WAIT")
-
-    st.metric(
-        "Edge",
-        f"{signal.edge:.1f}",
-    )
-
-    if signal.decision == "WAIT":
-        st.warning(
-            "Insufficient confirmation"
-        )
+    st.metric("CE/PE edge", f"{wait_edge:.1f}")
+    if selected_side == "WAIT":
+        st.warning(f"Canonical decision: {canonical_signal.direction}")
     else:
-        st.write(
-            "Available when evidence conflicts"
-        )
-
-
+        st.write("Available when evidence conflicts")
 with right:
-
     st.subheader("PE")
+    st.metric("Candidate score", f"{pe_score:.1f}")
+    if selected_side == "PE":
+        st.success("Canonical side")
+    elif best_pe is not None:
+        st.write(f"Broker candidate · {getattr(best_pe, 'strike', '—')}")
 
-    st.metric(
-        "Score",
-        f"{signal.pe_score:.1f}",
+if environment != "RESEARCH":
+    st.info(
+        f"{environment} safety rule: CE/PE selection is read-only. "
+        "No manual selector can override the canonical signal, data-quality gate, "
+        "risk gate, or execution lock."
     )
-
-    if signal.decision == "PE":
-        st.success("Selected")
-    else:
-        st.write("Not selected")
-
 
 st.divider()
 
@@ -1443,53 +1571,190 @@ st.divider()
 # ============================================================
 
 authenticated = neo_status.connected
+# Always initialize the displayed option-chain container before any environment
+# branch. Streamlit executes this module during test collection, so a missing
+# initialization here becomes an import-time NameError.
+contracts: list[OptionContract] = []
 live_contracts: list[OptionContract] = []
 
-if instrument == "NIFTY" and authenticated:
-    now = pd.Timestamp.now()
-    market_open = (
-        now.weekday() < 5
-        and now.time() >= pd.Timestamp("09:15").time()
-        and now.time() <= pd.Timestamp("15:30").time()
-    )
-    if not market_open:
-        st.info(
-            "NIFTY market is currently closed. Live option-chain polling is paused; "
-            "the research chain below is clearly labelled and is not live data."
+# The option-chain display is independent from the canonical trade decision:
+# - OPEN market: poll Kotak now and display the current broker chain.
+# - CLOSED market: do not poll; display the latest Kotak snapshot already held
+#   by the decision source, explicitly labelled as the last snapshot.
+# - Never replace a failed broker chain with Yahoo or synthetic data.
+option_chain_config = {
+    "NIFTY": ("nse_fo", "NIFTY", 40),
+    "CRUDEOIL": ("mcx_fo", "CRUDEOIL", 40),
+    "NATURALGAS": ("mcx_fo", "NATURALGAS", 40),
+    "COPPER": ("mcx_fo", "COPPER", 40),
+    "SILVER": ("mcx_fo", "SILVER", 40),
+    "GOLD": ("mcx_fo", "GOLD", 40),
+}
+chain_config = option_chain_config.get(instrument)
+
+chain_market_open = False
+chain_status_label = "BROKER DATA UNAVAILABLE"
+chain_status_detail = ""
+
+if chain_config:
+    chain_exchange, chain_underlying, chain_count = chain_config
+    now = pd.Timestamp.now(tz="Asia/Kolkata")
+
+    # NSE index options: 09:15-15:30 IST.
+    # MCX commodity derivatives: 09:00-23:30 IST.
+    if instrument == "NIFTY":
+        chain_market_open = (
+            now.weekday() < 5
+            and pd.Timestamp("09:15").time() <= now.time() <= pd.Timestamp("15:30").time()
         )
     else:
+        chain_market_open = (
+            now.weekday() < 5
+            and pd.Timestamp("09:00").time() <= now.time() <= pd.Timestamp("23:30").time()
+        )
+
+    snapshot_contracts = (
+        list(snapshot.option_chain)
+        if snapshot is not None and getattr(snapshot, "option_chain", None)
+        else []
+    )
+
+    # Recover the newest persisted real Kotak chain as a UI failover cache.
+    # This survives Streamlit reruns/restarts and is never treated as current
+    # live data unless the broker refresh succeeds in this same run.
+    cached_chain_timestamp = None
+    try:
+        from marketdata.daily_store import DailyMarketStore
+        cached_chain_frame, cached_chain_timestamp = DailyMarketStore().load_latest_option_chain_snapshot(
+            instrument,
+            before=now,
+        )
+        if not cached_chain_frame.empty:
+            cached_contracts = []
+            for row in cached_chain_frame.to_dict("records"):
+                try:
+                    cached_contracts.append(
+                        OptionContract(
+                            symbol=str(row.get("symbol") or ""),
+                            expiry=str(row.get("expiry") or ""),
+                            strike=float(row.get("strike") or 0),
+                            option_type=str(row.get("option_type") or "").upper(),
+                            ltp=float(row.get("ltp") or 0),
+                            bid=float(row["bid"]) if pd.notna(row.get("bid")) else None,
+                            ask=float(row["ask"]) if pd.notna(row.get("ask")) else None,
+                            volume=float(row.get("volume") or 0),
+                            open_interest=float(row.get("open_interest") or 0),
+                            oi_change=float(row.get("oi_change") or 0),
+                            implied_volatility=float(row.get("implied_volatility") or 0),
+                            built_up=str(row.get("built_up") or ""),
+                            delta=float(row["delta"]) if pd.notna(row.get("delta")) else None,
+                            theta=float(row["theta"]) if pd.notna(row.get("theta")) else None,
+                            vega=float(row["vega"]) if pd.notna(row.get("vega")) else None,
+                            gamma=float(row["gamma"]) if pd.notna(row.get("gamma")) else None,
+                            ltp_change_pct=float(row.get("ltp_change_pct") or 0),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+            if cached_contracts:
+                # Prefer the in-memory decision snapshot when it is newer;
+                # otherwise recover the persisted real broker snapshot.
+                if not snapshot_contracts or snapshot is None or cached_chain_timestamp > snapshot.timestamp:
+                    snapshot_contracts = cached_contracts
+    except Exception:
+        # Cache recovery is deliberately best-effort. It must never make the
+        # broker/live path fail or introduce synthetic data.
+        cached_chain_timestamp = None
+
+    if chain_market_open and authenticated:
         try:
             provider = KotakNeoProvider(neo_broker.client)
             live_contracts = provider.get_option_chain(
-                underlying="NIFTY",
-                exchange="nse_fo",
-                count=40,
+                underlying=chain_underlying,
+                exchange=chain_exchange,
+                count=chain_count,
+                expiry=None,
+                # Refresh broker quotes so displayed LTP is current,
+                # not the option-chain snapshot's potentially stale quote.
                 enrich_quotes=True,
             )
-            if not live_contracts:
-                st.warning(
-                    "Kotak Neo returned no NIFTY option contracts. "
-                    "The research chain is shown separately."
+            if live_contracts:
+                # Persist only a successful real broker refresh. This becomes
+                # the fallback shown when the next refresh fails or the market
+                # is closed; it is never used to claim a live refresh succeeded.
+                persistence_error = None
+                try:
+                    from marketdata.daily_store import DailyMarketStore
+                    DailyMarketStore().save_option_chain_snapshot(
+                        instrument,
+                        live_contracts,
+                        captured_at=now,
+                    )
+                except Exception as exc:
+                    # Never hide a persistence failure. The live chain can be
+                    # displayed in-memory, but Research must not be told that
+                    # this refresh was captured if the durable write failed.
+                    persistence_error = str(exc)
+                chain_status_label = "LIVE KOTAK NEO"
+                if persistence_error:
+                    chain_status_detail = (
+                        f"{chain_status_detail} Persistence FAILED: {persistence_error}"
+                    )
+                chain_status_detail = (
+                    f"Current broker chain · {len(live_contracts)} contracts · "
+                    f"refreshed {now.strftime('%H:%M:%S IST')}"
                 )
+            else:
+                chain_status_label = "LIVE REFRESH EMPTY"
+                chain_status_detail = (
+                    "Kotak returned no option contracts. The trade path remains WAIT."
+                )
+                live_contracts = snapshot_contracts
         except Exception as exc:
-            st.warning(
-                f"Live NIFTY option-chain unavailable: {exc}. "
-                "Showing clearly labelled research data instead."
+            # A transient refresh failure must not destroy a valid broker snapshot.
+            # Never substitute synthetic/Yahoo data.
+            live_contracts = snapshot_contracts
+            chain_status_label = "LIVE REFRESH FAILED"
+            chain_status_detail = (
+                f"{exc}. Showing the last updated real Kotak snapshot."
+                if snapshot_contracts
+                else f"{exc}. No broker chain is available."
             )
-elif instrument != "NIFTY":
-    st.info(
-        "Live option-chain display is currently implemented for NIFTY. "
-        "MCX instruments use futures/spot market data rather than an option chain."
-    )
-else:
-    st.warning(
-        "Kotak Neo is not connected. Connect with TOTP to load live option-chain data."
-    )
+    elif chain_market_open and not authenticated:
+        live_contracts = snapshot_contracts
+        chain_status_label = "KOTAK NOT CONNECTED"
+        chain_status_detail = (
+            "Connect to Kotak Neo to refresh the current option chain."
+        )
+    else:
+        # Closed market: the chain is not considered "unavailable" merely
+        # because polling is paused. Show the most recent real Kotak snapshot.
+        live_contracts = snapshot_contracts
+        chain_status_label = "MARKET CLOSED"
+        chain_status_detail = (
+            "Live polling paused. "
+            + (
+                f"Showing the last updated real Kotak snapshot from "
+                f"{(cached_chain_timestamp or snapshot.timestamp).strftime('%Y-%m-%d %H:%M:%S %Z')}."
+                if snapshot_contracts and (cached_chain_timestamp is not None or snapshot is not None)
+                else "No Kotak option-chain snapshot is available yet."
+            )
+        )
+
+if environment != "RESEARCH":
+    if chain_status_label == "LIVE KOTAK NEO":
+        st.success(f"{chain_status_label} · {chain_status_detail}")
+    elif chain_status_label == "MARKET CLOSED":
+        st.info(f"{chain_status_label} · {chain_status_detail}")
+    elif live_contracts:
+        st.warning(f"{chain_status_label} · {chain_status_detail}")
+    else:
+        st.warning(f"{chain_status_label} · {chain_status_detail}")
 
 st.subheader("Option Chain")
 st.caption(
     "Live Kotak Neo data is shown when connected. "
-    "Synthetic data is never substituted for a failed live request."
+    "Synthetic option data is permitted only in RESEARCH environment; PAPER never substitutes a failed broker request."
 )
 
 chain_col1, chain_col2, chain_col3 = st.columns(3)
@@ -1519,7 +1784,7 @@ with chain_col3:
 
     st.metric(
         "Underlying",
-        f"{spot:,.2f}",
+        "Unavailable" if spot is None else f"{spot:,.2f}",
     )
 
 
@@ -1546,38 +1811,129 @@ if live_contracts:
         for x in live_contracts
     ]
 else:
-    contracts = build_research_option_chain(
-        instrument=instrument,
+    contracts = []
+    if environment == "RESEARCH":
+        from marketdata.daily_store import DailyMarketStore
+        research_frame, captured_at = DailyMarketStore().load_latest_option_chain_snapshot(
+            instrument.upper()
+        )
+        for row in research_frame.to_dict("records"):
+            try:
+                contracts.append(
+                    OptionContract(
+                        symbol=str(row.get("symbol") or ""),
+                        expiry=str(row.get("expiry") or ""),
+                        strike=float(row["strike"]),
+                        option_type=str(row.get("option_type") or "").upper(),
+                        ltp=float(row.get("ltp") or 0),
+                        bid=float(row["bid"]) if pd.notna(row.get("bid")) else None,
+                        ask=float(row["ask"]) if pd.notna(row.get("ask")) else None,
+                        volume=float(row.get("volume") or 0),
+                        open_interest=float(row.get("open_interest") or 0),
+                        oi_change=float(row.get("oi_change") or 0),
+                        implied_volatility=float(row.get("implied_volatility") or 0),
+                        built_up=str(row.get("built_up") or ""),
+                        delta=float(row["delta"]) if pd.notna(row.get("delta")) else None,
+                        theta=float(row["theta"]) if pd.notna(row.get("theta")) else None,
+                        vega=float(row["vega"]) if pd.notna(row.get("vega")) else None,
+                        gamma=float(row["gamma"]) if pd.notna(row.get("gamma")) else None,
+                        ltp_change_pct=float(row.get("ltp_change_pct") or 0),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+        if contracts:
+            stamp = captured_at.strftime("%Y-%m-%d %H:%M:%S %Z") if captured_at is not None else "timestamp unavailable"
+            st.success(
+                f"RESEARCH DATA — latest persisted real KOTAK_CAPTURED option chain "
+                f"({len(contracts)} contracts, captured {stamp})."
+            )
+        else:
+            st.warning(
+                "RESEARCH DATA UNAVAILABLE — no real captured option chain exists. "
+                "Synthetic option-chain data is disabled."
+            )
+    else:
+        st.warning(
+            f"No live {instrument} option-chain data is available. "
+            f"{environment} mode will not substitute synthetic contracts."
+        )
+
+chain_is_live = bool(live_contracts)
+if contracts and spot is not None:
+    chain_df = build_option_chain_dataframe(
+        contracts=contracts,
         spot=spot,
-        seed=int(seed),
-        strike_step=strike_step,
+    )
+else:
+    chain_df = pd.DataFrame(columns=[
+        "Strike", "CE LTP", "CE Volume", "CE OI", "CE OI Chg", "CE IV", "CE Score",
+        "PE LTP", "PE Volume", "PE OI", "PE OI Chg", "PE IV", "PE Score", "ATM",
+    ])
+
+# Only the current broker refresh is tradable in PAPER/UAT/LIVE.
+# A stale persisted snapshot may be displayed, but it can never generate a
+# fresh trade plan while the market is open.
+tradable_contracts = contracts
+if environment != "RESEARCH" and chain_market_open:
+    tradable_contracts = (
+        live_contracts
+        if chain_status_label == "LIVE KOTAK NEO" and live_contracts
+        else []
     )
 
-chain_df = build_option_chain_dataframe(
-    contracts=contracts,
-    spot=spot,
-)
+if tradable_contracts and spot is not None:
+    direction_hint = None
+    if environment != "RESEARCH" and canonical_signal.valid:
+        direction_hint = (
+            "CE" if canonical_signal.direction == "BUY"
+            else "PE" if canonical_signal.direction == "SELL"
+            else "WAIT"
+        )
+    chain_signal, chain_signal_rows = generate_option_chain_signal(
+        tradable_contracts,
+        spot=spot,
+        global_news_score=global_news_score,
+        direction_hint=direction_hint,
+        require_two_sided_quote=(environment != "RESEARCH"),
+    )
+else:
+    chain_signal, chain_signal_rows = None, []
 
-chain_signal, chain_signal_rows = generate_option_chain_signal(
-    contracts,
-    spot=spot,
-    global_news_score=global_news_score,
-)
-st.markdown("#### Option-chain signal levels")
-signal_cols = st.columns(6)
-signal_cols[0].metric("Signal", chain_signal.direction)
-signal_cols[1].metric("Confidence", f"{chain_signal.confidence:.1f}%")
-signal_cols[2].metric("Entry", "Unavailable" if chain_signal.entry_price is None else f"Rs {chain_signal.entry_price:.2f}")
-signal_cols[3].metric("Stop Loss", "Unavailable" if chain_signal.stop_loss is None else f"Rs {chain_signal.stop_loss:.2f}")
-signal_cols[4].metric("Take Profit", "Unavailable" if chain_signal.take_profit is None else f"Rs {chain_signal.take_profit:.2f}")
-signal_cols[5].metric("Global News", f"{global_news_score:+.2f}")
+if chain_signal is not None:
+    st.markdown("#### Option-chain signal levels")
+    signal_cols = st.columns(6)
+    signal_cols[0].metric(
+        "Signal",
+        chain_signal.direction if chain_is_live else "RESEARCH",
+    )
+    signal_cols[1].metric(
+        "Confidence",
+        f"{chain_signal.confidence:.1f}%" if chain_is_live else "N/A",
+    )
+    signal_cols[2].metric(
+        "Entry",
+        f"Rs {chain_signal.entry_price:.2f}"
+        if chain_is_live and chain_signal.entry_price is not None else "Unavailable",
+    )
+    signal_cols[3].metric(
+        "Stop Loss",
+        f"Rs {chain_signal.stop_loss:.2f}"
+        if chain_is_live and chain_signal.stop_loss is not None else "Unavailable",
+    )
+    signal_cols[4].metric(
+        "Take Profit",
+        f"Rs {chain_signal.take_profit:.2f}"
+        if chain_is_live and chain_signal.take_profit is not None else "Unavailable",
+    )
+    signal_cols[5].metric("Global News", f"{global_news_score:+.2f}")
 
 
 # ------------------------------------------------------------
 # 2 ATM + 5 OTM selection
 # ------------------------------------------------------------
 
-if strike_view == "2 ATM + 5 OTM":
+if strike_view == "2 ATM + 5 OTM" and spot is not None and not chain_df.empty:
 
     strikes = sorted(
         chain_df["Strike"]
@@ -1673,7 +2029,21 @@ display_df = chain_df[visible_columns].copy()
 # frames used Max Gain % / Max Loss %, while the current engine exposes
 # Target Gain % / Stop Risk %.  Missing premium-derived values must remain
 # unavailable rather than being fabricated.
-plan = chain_signal_rows.copy()
+# Signal rows can be returned as a DataFrame by the research/live
+# generator or as a plain list of dictionaries. Normalize once at the UI
+# boundary so an empty/blocked PAPER chain can never crash the dashboard.
+if isinstance(chain_signal_rows, pd.DataFrame):
+    plan = chain_signal_rows.copy()
+elif isinstance(chain_signal_rows, list):
+    plan = pd.DataFrame(chain_signal_rows)
+elif chain_signal_rows is None:
+    plan = pd.DataFrame()
+else:
+    try:
+        plan = pd.DataFrame(chain_signal_rows)
+    except (TypeError, ValueError):
+        plan = pd.DataFrame()
+
 for column in [
     "Side", "Strike", "Signal", "Confidence",
     "Entry Price", "Stop Loss", "Take Profit",
@@ -1688,6 +2058,28 @@ if "Stop Risk %" not in plan.columns:
 
 plan["Target Gain %"] = pd.to_numeric(plan["Target Gain %"], errors="coerce")
 plan["Stop Risk %"] = pd.to_numeric(plan["Stop Risk %"], errors="coerce")
+
+# Canonicalize the join key before *any* merge. Neo option payloads,
+# research generators and older CSV/Yahoo artifacts can represent Strike as
+# strings, ints or floats. Pandas refuses an object/float merge and silently
+# coercing only one side is unsafe.
+def _normalize_strike_column(frame: pd.DataFrame, *, required: bool = False) -> pd.DataFrame:
+    frame = frame.copy()
+    if "Strike" not in frame.columns:
+        if required:
+            raise ValueError("Option-chain data is missing required Strike column.")
+        return frame
+    frame["Strike"] = pd.to_numeric(frame["Strike"], errors="coerce")
+    frame = frame.dropna(subset=["Strike"]).copy()
+    frame["Strike"] = frame["Strike"].astype("float64")
+    return frame
+
+display_df = _normalize_strike_column(display_df, required=True)
+plan = _normalize_strike_column(plan, required=True)
+
+# Remove duplicate join keys from the plan. One CE/PE trade-plan row per
+# strike is the UI contract; duplicates otherwise create Cartesian expansion.
+plan = plan.drop_duplicates(subset=["Side", "Strike"], keep="last").reset_index(drop=True)
 
 # Backward-compatible display aliases for any downstream UI/test code that
 # still expects the previous names.
@@ -1749,8 +2141,8 @@ def highlight_atm(
     return styles
 
 
-if not live_contracts:
-    st.caption("RESEARCH DATA — deterministic synthetic option chain; not a broker feed.")
+if environment == "RESEARCH" and contracts:
+    st.caption("RESEARCH DATA — latest persisted real KOTAK_CAPTURED option chain. Synthetic option-chain data is disabled.")
 
 st.markdown("#### Option Chain — Trade Plan")
 st.caption("Entry / SL / TP and Max Gain are premium-based only when actual option LTP is available. Snapshot files containing only LTP-change % will show unavailable premium levels.")
@@ -1874,824 +2266,3 @@ with candidate_col2:
         st.write(
             f"LTP: Rs {best_pe_row['PE LTP']:.2f}"
         )
-
-        st.write(
-            f"OI: {best_pe_row['PE OI']:,.0f}"
-        )
-
-        st.write(
-            f"OI Change: "
-            f"{best_pe_row['PE OI Chg']:,.0f}"
-        )
-
-
-st.divider()
-
-
-# ============================================================
-# Signal reasons
-# ============================================================
-
-st.subheader(
-    "Signal Reasons"
-)
-
-for reason in signal.reasons:
-
-    st.write(
-        f"- {reason}"
-    )
-
-
-st.divider()
-
-
-# ============================================================
-# Research chart
-# ============================================================
-
-st.subheader(
-    "Research Price Chart"
-)
-
-chart_rng = np.random.default_rng(
-    int(seed)
-)
-
-dates = pd.date_range(
-    end=pd.Timestamp.now(),
-    periods=100,
-    freq="5min",
-)
-
-prices = (
-    spot
-    + np.cumsum(
-        chart_rng.normal(
-            0,
-            10,
-            100,
-        )
-    )
-)
-
-fig = go.Figure()
-
-fig.add_trace(
-    go.Scatter(
-        x=dates,
-        y=prices,
-        mode="lines",
-        name="Price",
-    )
-)
-
-fig.update_layout(
-    height=450,
-    template="plotly_dark",
-)
-
-st.plotly_chart(
-    fig,
-    width="stretch",
-)
-
-
-st.divider()
-
-
-# ============================================================
-# Option-chain CSV snapshot analysis
-# ============================================================
-
-st.subheader("Option-Chain Snapshot Import")
-st.caption(
-    "Your Calls/ Puts OI, IV, volume, delta, theta, vega and built-up export is an option-chain snapshot. "
-    "It is suitable for option-chain analysis, but it is not OHLCV candle history and cannot be used directly "
-    "for the seven-rule candle backtest."
-)
-
-option_csv = st.file_uploader(
-    "Upload option-chain snapshot CSV",
-    type=["csv"],
-    key="option_chain_csv",
-    help="Supports structured snapshots and NSE two-row option-chain exports.",
-)
-
-if option_csv is not None:
-    try:
-        option_snapshot = pd.read_csv(option_csv)
-        if is_nse_option_chain_export(option_snapshot):
-            snapshot_contracts = parse_nse_option_chain_export(option_snapshot)
-            st.success(f"NSE option-chain export detected: {len(snapshot_contracts):,} real CE/PE contracts.")
-        elif is_option_chain_snapshot(option_snapshot.columns):
-            snapshot_contracts = parse_option_chain_csv(option_snapshot)
-        else:
-            st.error("Unsupported option-chain format. Expected a structured snapshot or NSE two-row export.")
-            snapshot_contracts = []
-
-        if snapshot_contracts:
-            snapshot_rows = []
-            for contract in snapshot_contracts:
-                snapshot_rows.append({
-                    "Side": contract.option_type,
-                    "Strike": contract.strike,
-                    "LTP": contract.ltp,
-                    "LTP Change %": contract.ltp_change_pct,
-                    "Bid": contract.bid,
-                    "Ask": contract.ask,
-                    "Spread": max(0.0, contract.ask - contract.bid),
-                    "IV": contract.implied_volatility,
-                    "OI": contract.open_interest,
-                    "OI Change": contract.oi_change,
-                    "Volume": contract.volume,
-                    "Built Up": contract.built_up,
-                    "Delta": contract.delta,
-                    "Theta": contract.theta,
-                    "Vega": contract.vega,
-                    "Score": analyze_option(contract).score,
-                })
-            snapshot_df = pd.DataFrame(snapshot_rows).sort_values(["Strike", "Side"])
-            option_signal, signal_rows = generate_option_chain_signal(
-                snapshot_contracts, spot=spot, global_news_score=global_news_score
-            )
-            snapshot_df = snapshot_df.merge(
-                signal_rows[["Side","Strike","Signal","Confidence","Entry Price","Stop Loss","Take Profit","Target Gain %","Stop Risk %","Global News"]],
-                on=["Side","Strike"], how="left"
-            )
-            st.success(f"Loaded {len(snapshot_contracts):,} option contracts from {option_csv.name}.")
-            st.dataframe(snapshot_df, width="stretch", hide_index=True)
-            oc = st.columns(8)
-            oc[0].metric("Signal", option_signal.direction)
-            oc[1].metric("Confidence", f"{option_signal.confidence:.1f}%")
-            oc[2].metric("Entry", "Unavailable" if option_signal.entry_price is None else f"Rs {option_signal.entry_price:.2f}")
-            oc[3].metric("Stop Loss", "Unavailable" if option_signal.stop_loss is None else f"Rs {option_signal.stop_loss:.2f}")
-            oc[4].metric("Take Profit", "Unavailable" if option_signal.take_profit is None else f"Rs {option_signal.take_profit:.2f}")
-            oc[5].metric("Target Gain", "N/A")
-            oc[6].metric("Stop Risk", "N/A")
-            oc[7].metric("Global News", f"{global_news_score:+.2f}")
-            if all(contract.ltp <= 0 for contract in snapshot_contracts):
-                st.info("No usable option LTP is present. Premium entry/SL/TP are unavailable.")
-            elif all(contract.bid <= 0 or contract.ask <= 0 for contract in snapshot_contracts):
-                st.info("Option LTP is available, but bid/ask quality is incomplete; execution-quality checks remain unavailable.")
-            st.info("A single option-chain snapshot is context only. It is never used as OHLCV backtest input.")
-    except Exception as exc:
-        st.error(f"Option-chain snapshot import failed: {exc}")
-
-st.subheader("Historical Option-Chain Replay")
-st.caption("Replay requires timestamped option-chain snapshots. A single exported snapshot cannot be replayed because it has no time axis.")
-replay_file = st.file_uploader("Upload timestamped option-chain replay CSV", type=["csv"], key="option_replay_csv")
-if replay_file is not None:
-    try:
-        replay_df = pd.read_csv(replay_file)
-        snapshots = replay_option_chain_csv(replay_df)
-        st.success(f"Loaded {len(snapshots):,} timestamped option-chain snapshots.")
-        if snapshots:
-            st.dataframe(
-                pd.DataFrame({
-                    "Timestamp": [ts for ts, _ in snapshots],
-                    "Contracts": [len(cs) for _, cs in snapshots],
-                }),
-                width="stretch",
-                hide_index=True,
-            )
-    except Exception as exc:
-        st.error(f"Option-chain replay failed: {exc}")
-
-st.divider()
-
-# ============================================================
-# Global news + BTST + NIFTY 3:15-3:40 prediction
-# ============================================================
-
-st.subheader("Global News")
-news_cols = st.columns(3)
-news_cols[0].metric("Global News Sentiment", f"{global_news_score:+.2f}")
-news_cols[1].metric("Latest Global Headline", news_snapshot.headline[:80])
-news_cols[2].metric("Headlines Used", len(news_snapshot.headlines))
-if news_snapshot.headlines:
-    st.dataframe(
-        pd.DataFrame({"Global News": list(news_snapshot.headlines)}),
-        width="stretch",
-        hide_index=True,
-    )
-
-st.subheader("Buy Today, Sell Tomorrow")
-st.caption("Separate next-session strategy: buy today's close and sell tomorrow, with the same default 1.5% stop-loss discipline.")
-btst_file = st.file_uploader("Upload daily NIFTY OHLC CSV", type=["csv"], key="btst_csv")
-if btst_file is not None:
-    try:
-        btst_data = normalize_nifty_csv(pd.read_csv(btst_file))
-        btst = run_buy_today_sell_tomorrow(btst_data)
-        model_accuracy, model_rows = evaluate_next_day_accuracy(
-            btst_data,
-            global_news_score=global_news_score,
-        )
-        walk_forward = walk_forward_predict(btst_data)
-        bc = st.columns(6)
-        bc[0].metric("BTST Accuracy", f"{btst.accuracy_pct:.1f}%")
-        bc[1].metric("BTST Return", f"{btst.total_return_pct:.2f}%")
-        bc[2].metric("BTST Net P&L", f"Rs {btst.net_pnl:,.2f}")
-        bc[3].metric("Trades", len(btst.trades))
-        bc[4].metric("Rule Model Accuracy", f"{model_accuracy:.1f}%")
-        bc[5].metric("Walk-Forward ML Accuracy", f"{walk_forward.accuracy_pct:.1f}%")
-        if not btst.trades.empty:
-            st.dataframe(btst.trades, width="stretch", hide_index=True)
-        st.markdown("#### Rule prediction accuracy")
-        st.dataframe(model_rows, width="stretch", hide_index=True)
-        st.markdown("#### Walk-forward ML prediction")
-        st.dataframe(walk_forward.predictions, width="stretch", hide_index=True)
-    except Exception as exc:
-        st.error(f"BTST analysis failed: {exc}")
-
-st.subheader("NIFTY Prediction — 3:15–3:40")
-st.caption("Requires intraday timestamped candles. Daily OHLC exports cannot produce this window and are therefore not converted into a false intraday prediction.")
-intraday_file = st.file_uploader("Upload NIFTY intraday CSV", type=["csv"], key="nifty_prediction_csv")
-if intraday_file is not None:
-    try:
-        intraday = pd.read_csv(intraday_file)
-        prediction = predict_315_340(intraday, global_news_score=global_news_score)
-        pc = st.columns(6)
-        pc[0].metric("Prediction", prediction.prediction)
-        pc[1].metric("Confidence", f"{prediction.confidence:.1f}%")
-        pc[2].metric("Reference", "N/A" if prediction.reference_price is None else f"{prediction.reference_price:.2f}")
-        pc[3].metric("Target", "N/A" if prediction.target is None else f"{prediction.target:.2f}")
-        pc[4].metric("Stop Loss", "N/A" if prediction.stop_loss is None else f"{prediction.stop_loss:.2f}")
-        pc[5].metric("Global News", f"{prediction.global_news_score:+.2f}")
-        prediction_table = pd.DataFrame([{
-            "Prediction": prediction.prediction,
-            "Confidence": prediction.confidence,
-            "Reference": prediction.reference_price,
-            "Target": prediction.target,
-            "Stop Loss": prediction.stop_loss,
-            "Global News": prediction.global_news_score,
-        }])
-        st.dataframe(prediction_table, width="stretch", hide_index=True)
-        st.write(prediction.reason)
-    except Exception as exc:
-        st.error(f"NIFTY prediction failed: {exc}")
-
-st.divider()
-
-# ============================================================
-# Advanced decision workspace
-# ============================================================
-
-st.subheader("Advanced Decision Workspace")
-st.caption("A transparent research cockpit: higher-timeframe regime → setup → option-chain evidence → risk → execution. No synthetic chain is used for trade recommendations.")
-
-workspace_tabs = st.tabs(["Closing Session 15:15–15:40", "BTST Option Chain", "Data Quality"])
-
-with workspace_tabs[0]:
-    st.markdown("**NIFTY derivatives closing-session engine**")
-    st.caption("Research window for the final 25 minutes. This is not the cash-market closing auction (CAS); derivatives have their own normal-market close.")
-    closing_file = st.file_uploader("Upload NIFTY intraday candles", type=["csv"], key="closing_session_csv")
-    chain_file = st.file_uploader("Upload real NIFTY option-chain snapshot", type=["csv"], key="closing_chain_csv")
-    if closing_file is not None and chain_file is not None:
-        try:
-            close_candles = pd.read_csv(closing_file)
-            close_chain_df = pd.read_csv(chain_file)
-            close_contracts = parse_option_chain_csv(close_chain_df)
-            closing_signal, closing_table = evaluate_closing_session(
-                close_candles, close_contracts, news_score=global_news_score
-            )
-            cc = st.columns(6)
-            cc[0].metric("Decision", closing_signal.decision)
-            cc[1].metric("Confidence", f"{closing_signal.confidence:.1f}%")
-            cc[2].metric("Option", f"{closing_signal.option_type} {closing_signal.strike or ''}")
-            cc[3].metric("Entry", "—" if closing_signal.entry is None else f"₹{closing_signal.entry:.2f}")
-            cc[4].metric("SL", "—" if closing_signal.stop_loss is None else f"₹{closing_signal.stop_loss:.2f}")
-            cc[5].metric("Target", "—" if closing_signal.target is None else f"₹{closing_signal.target:.2f}")
-            st.info(" | ".join(closing_signal.reasons))
-            if closing_signal.status == "READY":
-                st.success("Trade candidate passed the closing-session research filters. Use a broker-confirmed live quote before any order.")
-            else:
-                st.warning("NO TRADE: the engine is intentionally allowed to abstain.")
-            if not closing_table.empty:
-                st.dataframe(closing_table.head(15), width="stretch", hide_index=True)
-        except Exception as exc:
-            st.error(f"Closing-session analysis failed: {exc}")
-    else:
-        st.info("Upload both completed intraday candles and a real option-chain snapshot to generate a candidate. The system will not invent an option.")
-
-with workspace_tabs[1]:
-    st.markdown("**BTST — Buy Today, Sell Tomorrow option selection**")
-    st.caption("The selector ranks only liquid real contracts and prices entry from the ask when available. Overnight gap risk is explicit.")
-    btst_file = st.file_uploader("Upload real option-chain snapshot", type=["csv"], key="btst_chain_csv")
-    btst_direction = st.selectbox("Underlying next-session bias", ["UP", "DOWN", "NEUTRAL"], key="btst_direction")
-    if btst_file is not None:
-        try:
-            btst_df = pd.read_csv(btst_file)
-            btst_contracts = parse_option_chain_csv(btst_df)
-            btst_signal, btst_table = rank_btst_options(btst_contracts, btst_direction)
-            bc = st.columns(6)
-            bc[0].metric("Decision", btst_signal.decision)
-            bc[1].metric("Confidence", f"{btst_signal.confidence:.1f}%")
-            bc[2].metric("Strike", "—" if btst_signal.strike is None else f"{btst_signal.strike:g}")
-            bc[3].metric("Entry", "—" if btst_signal.entry is None else f"₹{btst_signal.entry:.2f}")
-            bc[4].metric("SL", "—" if btst_signal.stop_loss is None else f"₹{btst_signal.stop_loss:.2f}")
-            bc[5].metric("Target", "—" if btst_signal.target is None else f"₹{btst_signal.target:.2f}")
-            st.warning("BTST is not guaranteed: overnight gap, IV change and next-session liquidity can invalidate the setup.")
-            if not btst_table.empty:
-                st.dataframe(btst_table.head(20), width="stretch", hide_index=True)
-        except Exception as exc:
-            st.error(f"BTST option analysis failed: {exc}")
-    else:
-        st.info("Upload a real option-chain snapshot. No synthetic option is recommended for BTST.")
-
-with workspace_tabs[2]:
-    st.markdown("**Data quality gate**")
-    quality_file = st.file_uploader("Upload OHLCV for quality audit", type=["csv"], key="quality_csv")
-    if quality_file is not None:
-        try:
-            quality = assess_ohlcv(pd.read_csv(quality_file))
-            qc = st.columns(6)
-            qc[0].metric("Status", quality.status)
-            qc[1].metric("Rows", f"{quality.rows:,}")
-            qc[2].metric("Duplicates", quality.duplicate_timestamps)
-            qc[3].metric("Invalid OHLC", quality.invalid_ohlc)
-            qc[4].metric("Gaps", quality.gaps_over_expected)
-            qc[5].metric("Max Gap", f"{quality.max_gap_minutes:.1f}m")
-            if quality.reasons:
-                st.warning(" | ".join(quality.reasons))
-            else:
-                st.success("No structural quality issues detected.")
-        except Exception as exc:
-            st.error(f"Data-quality audit failed: {exc}")
-
-st.divider()
-
-# ============================================================
-# Backtest
-# ============================================================
-
-# ============================================================
-# Yahoo Finance backtest layer
-# ============================================================
-
-st.subheader("Yahoo Finance Backtest")
-st.caption(
-    "Independent NIFTY 50 spot/index validation using Yahoo Finance OHLCV. "
-    "This layer is separate from uploaded CSV and futures P&L backtests."
-)
-
-yahoo_cols = st.columns(5)
-yahoo_interval = yahoo_cols[0].selectbox(
-    "Yahoo interval", ["5m", "15m", "30m", "60m", "1d"],
-    index=0, key="yahoo_bt_interval"
-)
-yahoo_start = yahoo_cols[1].date_input(
-    "Start date",
-    value=pd.Timestamp.now(tz="Asia/Kolkata").date() - pd.Timedelta(days=30),
-    key="yahoo_bt_start"
-)
-yahoo_end = yahoo_cols[2].date_input(
-    "End date",
-    value=pd.Timestamp.now(tz="Asia/Kolkata").date(),
-    key="yahoo_bt_end"
-)
-yahoo_symbol = yahoo_cols[3].text_input(
-    "Yahoo symbol", value="^NSEI", key="yahoo_bt_symbol"
-)
-yahoo_run = yahoo_cols[4].button(
-    "Pull & Backtest", type="primary", width="stretch", key="yahoo_bt_run"
-)
-
-if yahoo_run:
-    yahoo_result = fetch_yahoo_ohlcv(
-        yahoo_start,
-        yahoo_end,
-        symbol=yahoo_symbol.strip() or "^NSEI",
-        interval=yahoo_interval,
-    )
-    st.session_state["yahoo_bt_result"] = yahoo_result
-
-yahoo_result = st.session_state.get("yahoo_bt_result")
-if yahoo_result is not None:
-    if yahoo_result.status == "OK":
-        st.success(
-            f"GREEN — {yahoo_result.message}"
-        )
-        yc = st.columns(6)
-        yc[0].metric("Source", "Yahoo Finance")
-        yc[1].metric("Symbol", yahoo_result.symbol)
-        yc[2].metric("Interval", yahoo_result.interval)
-        yc[3].metric("Candles", f"{len(yahoo_result.data):,}")
-        yc[4].metric("From", str(yahoo_result.provider_start))
-        yc[5].metric("To", str(yahoo_result.provider_end))
-
-        st.info(
-            "Yahoo ^NSEI is NIFTY 50 spot/index data. "
-            "This validates signal behavior, not futures/options profitability. "
-            "No synthetic option/OI/PCR inputs are created."
-        )
-
-        yahoo_data = yahoo_result.data
-        yahoo_quality = assess_ohlcv(yahoo_data)
-        if yahoo_quality.status != "GREEN":
-            st.warning(
-                f"Yahoo OHLCV quality gate: {yahoo_quality.status}. "
-                + " | ".join(yahoo_quality.reasons)
-            )
-        else:
-            st.success("Yahoo OHLCV passed the structural data-quality gate.")
-
-        st.dataframe(
-            yahoo_data.tail(25), width="stretch", hide_index=True
-        )
-
-        if len(yahoo_data) >= 60:
-            yahoo_research = run_signal_research(yahoo_data, StrategyConfig(require_option_confirmation=False))
-            yv = yahoo_research.validation
-
-            st.markdown("#### Yahoo signal-validation funnel")
-            yf = st.columns(6)
-            yf[0].metric("Bars", f"{yv.get('bars_considered', 0):,}")
-            yf[1].metric("Rule triggers", f"{yv.get('rule_trigger_bars', 0):,}")
-            yf[2].metric("Qualified", f"{yv.get('qualified_signal_bars', 0):,}")
-            yf[3].metric("Conflicts", f"{yv.get('conflicting_signal_bars', 0):,}")
-            yf[4].metric("Signals", f"{yv.get('signals', 0):,}")
-            yf[5].metric("Trading days", f"{yv.get('trading_days', 0):,}")
-
-            ym = st.columns(5)
-            ym[0].metric("Win rate", f"{yv.get('win_rate_pct', 0.0):.1f}%")
-            ym[1].metric("Average R", f"{yv.get('average_R', 0.0):.3f}")
-            ym[2].metric("Total R", f"{yv.get('total_R', 0.0):.2f}")
-            ym[3].metric("Wins", f"{yv.get('wins', 0):,}")
-            ym[4].metric("Losses", f"{yv.get('losses', 0):,}")
-
-            if not yahoo_research.signals.empty:
-                st.dataframe(
-                    yahoo_research.signals,
-                    width="stretch",
-                    hide_index=True,
-                )
-            else:
-                st.warning(
-                    "No qualified Yahoo signals survived the existing gates."
-                )
-            st.caption(
-                "Spot/index signal research only — not executable futures P&L."
-            )
-        else:
-            st.warning(
-                "Fewer than 60 Yahoo candles were returned; indicator warm-up "
-                "blocks a misleading backtest."
-            )
-    else:
-        st.error(
-            f"Yahoo backtest unavailable: {yahoo_result.message}"
-        )
-        st.info(
-            "No synthetic fallback is used. Adjust the Yahoo interval/date range "
-            "or use the existing CSV backtest."
-        )
-
-st.divider()
-
-
-st.subheader("Historical Rule Backtest")
-st.caption(
-    "Choose the role of the uploaded data explicitly. Spot/index OHLCV validates signal quality; "
-    "contract-specific futures OHLCV is required for executable ₹1 lakh P&L."
-)
-backtest_mode = st.radio(
-    "Backtest data role",
-    ["NIFTY Spot / Index — Signal Research", "NIFTY Futures — Executable ₹1 lakh P&L"],
-    horizontal=True,
-    key="backtest_data_role",
-)
-
-if backtest_mode.startswith("NIFTY Futures"):
-    st.warning(
-        "Executable futures mode requires contract-specific economics. Do not use a current lot size "
-        "for a historical period that spans a contract-specification change."
-    )
-    spec_cols = st.columns(4)
-    futures_lot_size = int(spec_cols[0].number_input("Lot size", min_value=1, value=65, step=1))
-    futures_point_value = float(spec_cols[1].number_input("Point value ₹", min_value=0.0001, value=1.0, step=0.1))
-    futures_tick_size = float(spec_cols[2].number_input("Tick size", min_value=0.0001, value=0.05, step=0.05))
-    futures_margin_per_lot = float(spec_cols[3].number_input("Margin / lot ₹", min_value=0.0, value=0.0, step=1000.0))
-else:
-    futures_lot_size = 65
-    futures_point_value = 1.0
-    futures_tick_size = 0.05
-    futures_margin_per_lot = 0.0
-st.caption(
-    "Use real historical OHLCV data to measure how the seven rules would have performed "
-    "on past candles. Synthetic demo data is for UI smoke-testing only and must not be "
-    "used to judge strategy accuracy."
-)
-
-uploaded = st.file_uploader(
-    "Upload historical OHLCV CSV",
-    type=["csv"],
-    help=(
-        "Required columns: timestamp, open, high, low, close, volume. "
-        "For trustworthy results, include warm-up candles before the period you want to score."
-    ),
-)
-
-run_demo = st.button(
-    "Run Synthetic Demo",
-    width="stretch",
-    help="UI/engine smoke test only. Do not treat synthetic results as evidence of profitability.",
-)
-
-bt_data = None
-bt_source = None
-
-if uploaded is not None:
-    try:
-        bt_data = pd.read_csv(uploaded)
-        bt_source = f"Uploaded historical CSV: {uploaded.name}"
-    except Exception as exc:
-        st.error(f"Could not read backtest CSV: {exc}")
-elif run_demo:
-    rng = np.random.default_rng(int(seed))
-    bt_ts = pd.date_range(
-        end=pd.Timestamp.now().normalize() - pd.Timedelta(days=1),
-        periods=800,
-        freq="5min",
-    )
-    volatility = max(abs(float(spot)) * 0.0008, 1.0)
-    base = float(spot) + np.cumsum(
-        rng.normal(0, volatility, len(bt_ts))
-    )
-    bt_data = pd.DataFrame({
-        "timestamp": bt_ts,
-        "open": base,
-        "high": base + rng.uniform(0, volatility * 2, len(bt_ts)),
-        "low": base - rng.uniform(0, volatility * 2, len(bt_ts)),
-        "close": base + rng.normal(0, volatility * 0.6, len(bt_ts)),
-        "volume": rng.integers(10000, 100000, len(bt_ts)),
-    })
-    bt_source = "Synthetic demo data"
-
-if bt_data is not None:
-    try:
-        bt_data = normalize_nifty_csv(bt_data)
-    except ValueError as schema_error:
-        missing_bt = {"timestamp", "open", "high", "low", "close", "volume"} - set(bt_data.columns)
-        if missing_bt:
-            st.error(f"Backtest data is missing/invalid required OHLCV fields: {sorted(missing_bt)}")
-        else:
-            st.error(f"Backtest data schema validation failed: {schema_error}")
-        bt_data = None
-
-    if bt_data is None:
-        pass
-    elif is_option_chain_snapshot(bt_data.columns):
-        st.error(
-            "This CSV is an option-chain snapshot, not historical OHLCV candle data. "
-            "Use the 'Option-Chain Snapshot Import' section above for CE/PE analysis. "
-            "For the seven-rule backtest, upload timestamp, open, high, low, close and volume."
-        )
-        bt_data = None
-    else:
-        try:
-            bt_data = bt_data.copy()
-            bt_data["timestamp"] = pd.to_datetime(
-                bt_data["timestamp"],
-                errors="coerce",
-            )
-
-            invalid_timestamps = int(bt_data["timestamp"].isna().sum())
-            if invalid_timestamps:
-                st.warning(
-                    f"Dropped {invalid_timestamps:,} rows with invalid timestamps."
-                )
-                bt_data = bt_data.dropna(subset=["timestamp"])
-
-            for column in [
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-            ]:
-                bt_data[column] = pd.to_numeric(
-                    bt_data[column],
-                    errors="coerce",
-                )
-
-            bt_data = bt_data.dropna(
-                subset=[
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                ]
-            )
-            bt_data = (
-                bt_data
-                .sort_values("timestamp")
-                .drop_duplicates("timestamp")
-                .reset_index(drop=True)
-            )
-
-            if bt_data.empty:
-                st.error("No valid historical candles remain after cleaning.")
-            else:
-                data_min = bt_data["timestamp"].min().date()
-                data_max = bt_data["timestamp"].max().date()
-
-                st.info(
-                    f"Source: {bt_source} | Available data: "
-                    f"{data_min} to {data_max} | Rows: {len(bt_data):,}"
-                )
-
-                date_range = st.date_input(
-                    "Backtest date range",
-                    value=(data_min, data_max),
-                    min_value=data_min,
-                    max_value=data_max,
-                    help=(
-                        "The selected dates are the scored period. "
-                        "Keep earlier warm-up candles in the CSV so EMA/RSI/MACD/VWAP "
-                        "have enough history."
-                    ),
-                )
-
-                if isinstance(date_range, tuple) and len(date_range) == 2:
-                    start_date, end_date = date_range
-                else:
-                    start_date = data_min
-                    end_date = data_max
-
-                selected = bt_data[
-                    (bt_data["timestamp"].dt.date >= start_date)
-                    & (bt_data["timestamp"].dt.date <= end_date)
-                ].copy()
-
-                st.write(
-                    f"Selected period: **{start_date} → {end_date}** "
-                    f"({len(selected):,} candles)"
-                )
-
-                run_historical = st.button(
-                    "Run Historical Backtest",
-                    type="primary",
-                    width="stretch",
-                )
-
-                if run_historical:
-                    if len(selected) < 60:
-                        st.error(
-                            "At least 60 candles are recommended for a meaningful "
-                            "EMA(50)/indicator warm-up."
-                        )
-                    else:
-                        try:
-                            evaluation_start = pd.Timestamp(start_date)
-                            evaluation_end = (
-                                pd.Timestamp(end_date)
-                                + pd.Timedelta(days=1)
-                                - pd.Timedelta(microseconds=1)
-                            )
-
-                            is_probably_spot = backtest_mode.startswith("NIFTY Spot")
-
-                            if is_probably_spot:
-                                research = run_signal_research(
-                                    bt_data,
-                                    evaluation_start=evaluation_start,
-                                    evaluation_end=evaluation_end,
-                                )
-                                rv = research.validation
-                                st.info(
-                                    "SIGNAL RESEARCH MODE: this CSV is treated as NIFTY spot/index OHLCV. "
-                                    "Signals and outcomes are measured in index points/R, not futures rupees. "
-                                    "Upload contract-specific NIFTY futures OHLCV for executable ₹1 lakh P&L."
-                                )
-                                st.markdown("#### Signal research funnel")
-                                rf = st.columns(6)
-                                rf[0].metric("Bars", f"{rv.get('bars_considered', 0):,}")
-                                rf[1].metric("Rule-trigger bars", f"{rv.get('rule_trigger_bars', 0):,}")
-                                rf[2].metric("Qualified signals", f"{rv.get('qualified_signal_bars', 0):,}")
-                                rf[3].metric("Conflicts", f"{rv.get('conflicting_signal_bars', 0):,}")
-                                rf[4].metric("Evaluated signals", f"{rv.get('signals', 0):,}")
-                                rf[5].metric("Trading days", f"{rv.get('trading_days', 0):,}")
-                                sm = st.columns(5)
-                                sm[0].metric("Signal Win Rate", f"{rv.get('win_rate_pct', 0.0):.1f}%")
-                                sm[1].metric("Average R", f"{rv.get('average_R', 0.0):.3f}")
-                                sm[2].metric("Total R", f"{rv.get('total_R', 0.0):.2f}")
-                                sm[3].metric("Wins", f"{rv.get('wins', 0):,}")
-                                sm[4].metric("Losses", f"{rv.get('losses', 0):,}")
-                                if not research.signals.empty:
-                                    st.markdown("#### Qualified signal outcomes")
-                                    st.dataframe(research.signals, width="stretch", hide_index=True)
-                                else:
-                                    st.warning("No qualified signals survived the confirmation, volatility and timing gates.")
-                                st.warning(
-                                    "This is NOT a futures profitability result. Futures P&L requires historical "
-                                    "futures candles plus the correct contract/expiry lot specification."
-                                )
-                            else:
-                                if futures_margin_per_lot <= 0:
-                                    st.error("Futures backtest blocked: enter a valid contract-specific margin per lot. The system will not assume margin or manufacture capital capacity.")
-                                    st.stop()
-                                if settings.starting_capital <= 0:
-                                    st.warning("Enter an explicit starting capital in configuration before running an executable futures backtest. Capital is an execution input, not a strategy assumption.")
-                                    st.stop()
-                                result = CapitalAwareRuleBacktestEngine(
-                                    starting_capital=settings.starting_capital,
-                                    risk_fraction=settings.risk_fraction,
-                                    instrument=instrument,
-                                    lot_size=futures_lot_size,
-                                    point_value=futures_point_value,
-                                    margin_per_lot=futures_margin_per_lot,
-                                    slippage_points=max(0.25, futures_tick_size),
-                                    brokerage_per_order=10.0,
-                                    max_daily_loss_fraction=settings.max_daily_loss_fraction,
-                                    max_trades_per_day=settings.max_trades_per_day,
-                                ).run(
-                                    bt_data, symbol=instrument,
-                                    evaluation_start=evaluation_start, evaluation_end=evaluation_end,
-                                )
-                                metrics = result.metrics
-                                trades = result.trades.copy()
-                                validation = result.validation
-                                trading_days = int(validation.get("trading_days", 0))
-                                qualified_signals = int(validation.get("qualified_signal_bars", 0))
-                                rejected_risk = int(validation.get("rejected_risk_budget", 0))
-                                if trading_days < 100:
-                                    st.warning("INSUFFICIENT EVIDENCE: fewer than 100 trading days are available.")
-                                elif len(trades) < 30:
-                                    if qualified_signals and rejected_risk == qualified_signals:
-                                        st.warning("NO EXECUTABLE TRADES: qualified signals were found, but every candidate exceeded the configured per-trade risk budget. The risk model was NOT loosened.")
-                                    elif qualified_signals == 0:
-                                        st.warning("NO QUALIFIED SIGNALS: no candidate survived the configured confirmation gates.")
-                                    else:
-                                        st.warning("INSUFFICIENT TRADE EVIDENCE: the dataset has enough history, but fewer than 30 closed trades were produced.")
-                                else:
-                                    st.success("Historical futures backtest completed. Results are historical simulation results, not a guarantee of future performance.")
-                                st.markdown("#### Backtest diagnostic funnel")
-                                funnel = st.columns(6)
-                                funnel[0].metric("Bars", f"{validation.get('bars_considered', 0):,}")
-                                funnel[1].metric("Rule-trigger bars", f"{validation.get('rule_trigger_bars', 0):,}")
-                                funnel[2].metric("Qualified signals", f"{qualified_signals:,}")
-                                funnel[3].metric("Risk rejected", f"{rejected_risk:,}")
-                                funnel[4].metric("Closed trades", f"{len(trades):,}")
-                                funnel[5].metric("Trading days", f"{trading_days:,}")
-                                total_trades = int(metrics.total_trades)
-                                wins = int(metrics.winning_trades)
-                                losses = int(metrics.losing_trades)
-                                top = st.columns(5)
-                                top[0].metric("Closed Trades", total_trades)
-                                top[1].metric("Win Rate", f"{metrics.win_rate_pct:.1f}%")
-                                top[2].metric("Net P&L", f"Rs {metrics.net_pnl:,.0f}")
-                                top[3].metric("Return", f"{metrics.return_pct:.2f}%")
-                                top[4].metric("Profit Factor", "∞" if metrics.profit_factor == float("inf") else f"{metrics.profit_factor:.2f}")
-                                detail = st.columns(5)
-                                detail[0].metric("Wins", wins)
-                                detail[1].metric("Losses", losses)
-                                detail[2].metric("Avg Trade", f"Rs {metrics.average_trade:,.0f}")
-                                detail[3].metric("Max Drawdown", f"Rs {metrics.max_drawdown:,.0f}")
-                                detail[4].metric("Max DD %", f"{metrics.max_drawdown_pct:.2f}%")
-                                if not result.rule_performance.empty:
-                                    st.markdown("#### Rule-by-Rule Accuracy")
-                                    st.dataframe(result.rule_performance.rename(columns={"win_rate_pct":"accuracy_pct"}), width="stretch", hide_index=True)
-                                if not trades.empty:
-                                    st.markdown("#### Historical Futures Trades")
-                                    cols=[x for x in ["entry_time","exit_time","direction","entry_price","exit_price","stop_loss","target","quantity","rule","pnl","reason"] if x in trades.columns]
-                                    st.dataframe(trades[cols], width="stretch", hide_index=True)
-                                else:
-                                    st.warning("No executable futures trades were closed in this period. That is not the same as 0% accuracy.")
-
-                        except Exception as exc:
-                            st.error(f"Historical backtest failed: {exc}")
-
-        except Exception as exc:
-            st.error(f"Backtest data preparation failed: {exc}")
-
-
-st.divider()
-
-
-# ============================================================
-# Safety
-# ============================================================
-
-if settings.paper_trading:
-
-    st.warning(
-        "PAPER TRADING MODE - Live trading is disabled."
-    )
-
-else:
-
-    st.info(
-        "Paper trading is disabled, but live execution "
-        "still requires explicit production configuration."
-    )
-
-st.write(
-    f"Environment: **{environment}**"
-)
-
-st.write(
-    f"Live trading allowed: "
-    f"**{settings.live_trading_allowed()}**"
-)
