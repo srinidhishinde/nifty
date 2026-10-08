@@ -122,6 +122,10 @@ def build_research_signal(instrument: str, timeframe: str, seed: int = 42):
                 open_interest=float(row.get("open_interest") or 0),
                 oi_change=float(row.get("oi_change") or 0),
                 implied_volatility=float(row.get("implied_volatility") or 0),
+                quote_timestamp=pd.Timestamp(row["quote_timestamp"]).to_pydatetime() if row.get("quote_timestamp") not in (None, "") and pd.notna(row.get("quote_timestamp")) else None,
+                quote_source=str(row.get("quote_source") or ""),
+                exchange=str(row.get("exchange") or ""),
+                underlying=str(row.get("underlying") or instrument.upper()),
             ))
         except (TypeError, ValueError):
             continue
@@ -1039,11 +1043,16 @@ st.caption(
     "the score never grants trading permission by itself."
 )
 
-readiness_tests_passed = False  # Must be certified by repository-local UAT evidence.
+uat_evidence_path = __import__("pathlib").Path("logs/uat_evidence.json")
+try:
+    _uat_evidence = __import__("json").loads(uat_evidence_path.read_text(encoding="utf-8")) if uat_evidence_path.exists() else {}
+except Exception:
+    _uat_evidence = {}
+readiness_tests_passed = str(_uat_evidence.get("status", "")).upper() == "PASS"
 readiness_broker_connected = bool(neo_status.connected)
 readiness_source_integrity = bool(snapshot is not None and snapshot.source == "KOTAK_NEO")
-readiness_no_synthetic = True
-readiness_underlying_quote_fresh = False  # Provider timestamp must be broker-supplied; local receipt time is not evidence.
+readiness_no_synthetic = bool(str(getattr(snapshot, "source", "")).upper() == "KOTAK_NEO")
+readiness_underlying_quote_fresh = False
 readiness_candle_fresh = False
 if snapshot is not None and snapshot.frame is not None and not snapshot.frame.empty:
     last_ts = pd.to_datetime(snapshot.frame["timestamp"], errors="coerce").dropna()
@@ -1098,7 +1107,9 @@ readiness_trade_plan = bool(
     and _readiness_chain_signal.take_profit > _readiness_chain_signal.entry_price > _readiness_chain_signal.stop_loss
     and getattr(_readiness_chain_signal, "confidence", 0) >= settings.minimum_signal_confidence
 )
-readiness_risk_budget = bool(settings.starting_capital > 0)
+from strategy.production_hardening import resolve_runtime_account, validate_candle_frame, live_permission
+runtime_account = resolve_runtime_account(neo_broker)
+readiness_risk_budget = runtime_account.valid
 readiness_risk_controls = bool(readiness_risk_budget and settings.max_trades_per_day > 0 and settings.max_daily_loss_fraction > 0)
 readiness_duplicate_guard = True
 readiness_journal = __import__("pathlib").Path("logs/signal_journal.jsonl").exists()
@@ -1106,6 +1117,10 @@ readiness_execution = bool(settings.live_trading_allowed())
 readiness_reconciliation = False
 readiness_backtest = False
 readiness_option_history = False
+# Execution remains fail-closed until independently verifiable account,
+# reconciliation and validated backtest evidence are present.
+if not runtime_account.valid:
+    readiness_execution = False
 readiness = assess_readiness(
     tests_passed=readiness_tests_passed,
     warmup_ready=bool(prediction_frame is not None and not prediction_frame.empty),

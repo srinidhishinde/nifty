@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     environment: str = Field(default="paper", validation_alias="APP_ENV")
 
     starting_capital: float = Field(default=0.0, validation_alias="CAPITAL")
+    runtime_equity_required: bool = Field(default=True, validation_alias="RUNTIME_EQUITY_REQUIRED")
+    max_notional_fraction: float = Field(default=0.10, validation_alias="MAX_NOTIONAL_FRACTION")
+    max_option_spread_pct: float = Field(default=0.05, validation_alias="MAX_OPTION_SPREAD_PCT")
+    option_quote_max_age_seconds: float = Field(default=60.0, validation_alias="OPTION_QUOTE_MAX_AGE_SECONDS")
+    candle_max_age_minutes_5m: float = Field(default=10.0, validation_alias="CANDLE_MAX_AGE_MINUTES_5M")
+    candle_max_age_minutes_15m: float = Field(default=20.0, validation_alias="CANDLE_MAX_AGE_MINUTES_15M")
     risk_fraction: float = Field(default=0.01, validation_alias="RISK_FRACTION")
     max_trades_per_day: int = Field(default=5, validation_alias="MAX_TRADES_PER_DAY")
     max_daily_loss_fraction: float = Field(default=0.02, validation_alias="MAX_DAILY_LOSS_FRACTION")

@@ -18,10 +18,32 @@ class SignalJournal:
 
     def append(self, record: dict[str, Any]) -> None:
         payload = dict(record)
+        from strategy.production_hardening import idempotency_key
+        payload.setdefault("decision_id", idempotency_key(payload))
+        # Streamlit reruns must not create duplicate decision records.
+        if self._contains_decision(payload["decision_id"]):
+            return
         payload.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, default=str, separators=(",", ":")) + "\n")
+
+    def _contains_decision(self, decision_id: str) -> bool:
+        if not self.path.exists():
+            return False
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        if str(json.loads(line).get("decision_id", "")) == str(decision_id):
+                            return True
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return False
+        return False
 
     def append_decision(
         self,
