@@ -79,6 +79,96 @@ class DailyMarketStore:
         out.to_csv(path, index=False)
         return path
 
+    def save_option_chain_snapshot(
+        self,
+        instrument: str,
+        contracts: list[object],
+        captured_at: pd.Timestamp | None = None,
+    ) -> Path:
+        """Persist the most recent real broker option chain for failover display.
+
+        This is a cache only: it is never used to manufacture a live decision.
+        A successful broker refresh overwrites the current day's snapshot, while
+        the loader below can recover the latest real snapshot after a Streamlit
+        restart or a transient broker/API failure.
+        """
+        if not contracts:
+            raise ValueError("Cannot persist an empty option-chain snapshot.")
+        timestamp = pd.Timestamp(captured_at or pd.Timestamp.now(tz="Asia/Kolkata"))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("Asia/Kolkata")
+        rows: list[dict[str, object]] = []
+        for contract in contracts:
+            rows.append({
+                "captured_at": timestamp.isoformat(),
+                "symbol": getattr(contract, "symbol", ""),
+                "exchange": getattr(contract, "exchange", ""),
+                "underlying": getattr(contract, "underlying", instrument),
+                "expiry": getattr(contract, "expiry", ""),
+                "strike": float(getattr(contract, "strike", 0) or 0),
+                "option_type": getattr(contract, "option_type", ""),
+                "instrument_token": getattr(contract, "instrument_token", "") or "",
+                "ltp": float(getattr(contract, "ltp", 0) or 0),
+                "bid": getattr(contract, "bid", None),
+                "ask": getattr(contract, "ask", None),
+                "volume": float(getattr(contract, "volume", 0) or 0),
+                "open_interest": float(getattr(contract, "open_interest", 0) or 0),
+                "oi_change": float(getattr(contract, "oi_change", 0) or 0),
+                "implied_volatility": float(getattr(contract, "implied_volatility", 0) or 0),
+                "built_up": getattr(contract, "built_up", "") or "",
+                "delta": getattr(contract, "delta", None),
+                "theta": getattr(contract, "theta", None),
+                "vega": getattr(contract, "vega", None),
+                "gamma": getattr(contract, "gamma", None),
+                "ltp_change_pct": float(getattr(contract, "ltp_change_pct", 0) or 0),
+            })
+        frame = pd.DataFrame(rows)
+        day = timestamp.tz_convert("Asia/Kolkata").date()
+        folder = self.directory(instrument, day)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{instrument.upper()}_option_chain_latest.csv"
+        frame.to_csv(path, index=False)
+        return path
+
+    def load_latest_option_chain_snapshot(
+        self,
+        instrument: str,
+        before: pd.Timestamp | None = None,
+    ) -> tuple[pd.DataFrame, pd.Timestamp | None]:
+        """Load the newest persisted real broker option-chain snapshot."""
+        base = self.root / instrument.upper()
+        if not base.exists():
+            return pd.DataFrame(), None
+        cutoff = pd.Timestamp(before or pd.Timestamp.now(tz="Asia/Kolkata"))
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.tz_localize("Asia/Kolkata")
+        candidates = sorted(base.glob("*/" + f"{instrument.upper()}_option_chain_latest.csv"), reverse=True)
+        newest: tuple[pd.Timestamp, Path] | None = None
+        for path in candidates:
+            try:
+                frame = pd.read_csv(path)
+                if frame.empty or "captured_at" not in frame.columns:
+                    continue
+                captured = pd.to_datetime(frame["captured_at"], errors="coerce").dropna()
+                if captured.empty:
+                    continue
+                stamp = captured.max()
+                if stamp.tzinfo is None:
+                    stamp = stamp.tz_localize("Asia/Kolkata")
+                else:
+                    stamp = stamp.tz_convert("Asia/Kolkata")
+                if stamp <= cutoff and (newest is None or stamp > newest[0]):
+                    newest = (stamp, path)
+            except (OSError, ValueError, pd.errors.ParserError):
+                continue
+        if newest is None:
+            return pd.DataFrame(), None
+        frame = pd.read_csv(newest[1])
+        frame["captured_at"] = pd.to_datetime(frame["captured_at"], errors="coerce")
+        frame["strike"] = pd.to_numeric(frame["strike"], errors="coerce")
+        frame = frame.dropna(subset=["strike"])
+        return frame, newest[0]
+
     def save_metadata(self, instrument: str, session_date: date, metadata: dict) -> Path:
         folder = self.directory(instrument, session_date)
         folder.mkdir(parents=True, exist_ok=True)
