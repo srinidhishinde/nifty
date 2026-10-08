@@ -271,29 +271,41 @@ class AccountEvidence:
 
 
 def resolve_runtime_account(broker: Any) -> AccountEvidence:
-    """Read broker/account equity only when the adapter exposes a verified value.
+    """Read only the broker adapter's canonical account-state contract.
 
-    No configured/default capital is treated as account equity.
+    We intentionally do not guess among arbitrary method names. A broker
+    adapter must expose get_account_state() and return a mapping containing
+    equity/available_margin plus an authoritative timestamp.
     """
     if broker is None:
         return AccountEvidence(None, source="NO_BROKER")
-    for name in ("get_account_equity", "account_equity", "get_funds", "get_margins", "funds"):
-        fn = getattr(broker, name, None)
-        if not callable(fn):
-            continue
-        try:
-            raw = fn()
-        except Exception:
-            continue
-        payload = raw if isinstance(raw, Mapping) else getattr(raw, "__dict__", {})
-        for key in ("equity", "net", "net_equity", "available_equity", "availableCash", "available_cash"):
-            try:
-                value = float(payload.get(key))
-            except (AttributeError, TypeError, ValueError):
-                continue
-            if value > 0 and math.isfinite(value):
-                return AccountEvidence(value, source="KOTAK_NEO_ACCOUNT", timestamp=pd.Timestamp.now(tz=IST))
-    return AccountEvidence(None, source="BROKER_EQUITY_UNAVAILABLE")
+    fn = getattr(broker, "get_account_state", None)
+    if not callable(fn):
+        return AccountEvidence(None, source="BROKER_ACCOUNT_ADAPTER_UNAVAILABLE")
+    try:
+        raw = fn()
+    except Exception:
+        return AccountEvidence(None, source="BROKER_ACCOUNT_UNAVAILABLE")
+    if not isinstance(raw, Mapping):
+        return AccountEvidence(None, source="BROKER_ACCOUNT_SCHEMA_INVALID")
+    try:
+        equity = float(raw["equity"])
+        available_margin = float(raw["available_margin"])
+    except (KeyError, TypeError, ValueError):
+        return AccountEvidence(None, source="BROKER_ACCOUNT_SCHEMA_INVALID")
+    if not math.isfinite(equity) or equity <= 0:
+        return AccountEvidence(None, source="BROKER_EQUITY_INVALID")
+    if not math.isfinite(available_margin) or available_margin < 0:
+        return AccountEvidence(None, source="BROKER_MARGIN_INVALID")
+    timestamp = as_ist_timestamp(raw.get("timestamp"))
+    if timestamp is None:
+        return AccountEvidence(None, source="BROKER_ACCOUNT_TIMESTAMP_MISSING")
+    return AccountEvidence(
+        equity=equity,
+        available_margin=available_margin,
+        source="KOTAK_NEO_ACCOUNT",
+        timestamp=timestamp,
+    )
 
 
 @dataclass(frozen=True)
@@ -357,9 +369,9 @@ def build_decision_evidence(**kwargs: Any) -> DecisionEvidence:
     return DecisionEvidence(**kwargs)
 
 
-def live_permission(evidence: DecisionEvidence, *, config_enabled: bool | None = None) -> bool:
+def live_permission(evidence: DecisionEvidence, *, config_enabled: bool = False) -> bool:
     # Configuration may lock execution OFF, but it can never authorize it.
-    return bool(evidence.mandatory_pass and evidence.ml_validated and evidence.ensemble_valid and config_enabled is not False)
+    return bool(evidence.mandatory_pass and evidence.ml_validated and evidence.ensemble_valid and config_enabled is True)
 
 
 def ml_validation_ok(artifact: Any) -> bool:
@@ -371,16 +383,31 @@ def ml_validation_ok(artifact: Any) -> bool:
     return all(bool(getattr(artifact, key, False)) for key in ("validation", "out_of_sample", "walk_forward", "leakage_audit"))
 
 
-def runtime_clock_ok(*, max_drift_seconds: float = 5.0, reference_timestamp: Any | None = None) -> bool:
-    # A broker timestamp is the preferred reference. Without one we cannot
-    # certify clock alignment and must fail closed.
+def runtime_clock_ok(
+    *,
+    max_age_seconds: float = 5.0,
+    reference_timestamp: Any | None = None,
+    now: Any | None = None,
+) -> bool:
+    """Validate broker timestamp freshness against an explicit decision clock.
+
+    This is deliberately named clock_ok only for compatibility. It does not
+    claim to measure NTP drift; it certifies that the broker event timestamp
+    is not future-dated and is within the decision freshness budget.
+    """
     if reference_timestamp is None:
         return False
-    age = timestamp_age_seconds(reference_timestamp)
-    return age is not None and 0.0 <= age <= float(max_drift_seconds)
+    age = timestamp_age_seconds(reference_timestamp, now=now)
+    return age is not None and 0.0 <= age <= float(max_age_seconds)
 
 
-def option_expiry_valid(expiry: Any, *, now: Any | None = None) -> bool:
+def option_expiry_valid(
+    expiry: Any,
+    *,
+    now: Any | None = None,
+    cutoff_hour_ist: int = 15,
+    cutoff_minute_ist: int = 30,
+) -> bool:
     if expiry in (None, ""):
         return False
     try:
@@ -390,8 +417,16 @@ def option_expiry_valid(expiry: Any, *, now: Any | None = None) -> bool:
     current = as_ist_timestamp(now or pd.Timestamp.now(tz=IST))
     if current is None:
         return False
-    return exp.date() >= current.date()
-
+    exp = exp.tz_localize(IST) if exp.tzinfo is None else exp.tz_convert(IST)
+    if exp.date() < current.date():
+        return False
+    if exp.date() > current.date():
+        return True
+    cutoff = current.normalize() + pd.Timedelta(
+        hours=int(cutoff_hour_ist),
+        minutes=int(cutoff_minute_ist),
+    )
+    return current <= cutoff
 
 def safe_risk_quantity(
     *,
