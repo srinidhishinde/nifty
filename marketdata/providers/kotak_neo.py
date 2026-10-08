@@ -198,7 +198,7 @@ class KotakNeoProvider(MarketDataProvider):
         if ltp <= 0:
             raise RuntimeError("Kotak Neo returned an invalid NIFTY index price.")
         raw_ts = row.get("timestamp") or row.get("quoteTimestamp") or row.get("quote_timestamp") or row.get("lastTradeTime") or row.get("last_traded_time")
-        quote_ts = datetime.now()
+        quote_ts = None
         if raw_ts not in (None, ""):
             try:
                 quote_ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
@@ -207,6 +207,8 @@ class KotakNeoProvider(MarketDataProvider):
                     quote_ts = datetime.fromtimestamp(float(raw_ts))
                 except (TypeError, ValueError, OSError):
                     raise RuntimeError("Kotak Neo NIFTY quote did not contain a parseable broker timestamp.")
+        if quote_ts is None:
+            raise RuntimeError("Kotak Neo NIFTY quote did not contain an authoritative broker timestamp.")
         return Quote(
             timestamp=quote_ts, symbol=index_name, exchange=segment,
             ltp=ltp, volume=self._float(row.get("last_volume") or row.get("volume")),
