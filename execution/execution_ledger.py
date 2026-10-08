@@ -74,10 +74,7 @@ class ExecutionLedger:
         row=self.latest(decision_id)
         return row is None or row.state in {"REJECTED", "CANCELLED"}
 
-    def append(self, record: ExecutionRecord) -> None:
-        if record.state not in STATES:
-            raise ValueError("Invalid execution state")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def _append_unlocked(self, record: ExecutionRecord) -> None:
         payload=json.dumps(asdict(record), sort_keys=True)
         fd,tmp=tempfile.mkstemp(prefix=".ledger-", dir=str(self.path.parent), text=True)
         try:
@@ -93,17 +90,26 @@ class ExecutionLedger:
             try: os.unlink(tmp)
             except FileNotFoundError: pass
 
+    def append(self, record: ExecutionRecord) -> None:
+        if record.state not in STATES:
+            raise ValueError("Invalid execution state")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with _file_lock(self.path):
+            self._append_unlocked(record)
+
     def begin(self, decision_id: str, symbol: str, side: str, quantity: int, broker_timestamp: str) -> ExecutionRecord:
         if int(quantity) <= 0:
             raise ValueError("Execution quantity must be positive")
         if str(side).upper() not in {"BUY", "SELL"}:
             raise ValueError("Execution side must be BUY or SELL")
-        if not self.can_submit(decision_id):
-            raise RuntimeError("Duplicate or already-active decision cannot be submitted")
-        now=datetime.now(timezone.utc).isoformat()
-        row=ExecutionRecord(decision_id,None,"CREATED",symbol,side,int(quantity),0,broker_timestamp,now)
-        self.append(row)
-        return row
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with _file_lock(self.path):
+            if not self.can_submit(decision_id):
+                raise RuntimeError("Duplicate or already-active decision cannot be submitted")
+            now=datetime.now(timezone.utc).isoformat()
+            row=ExecutionRecord(decision_id,None,"CREATED",symbol,side,int(quantity),0,broker_timestamp,now)
+            self._append_unlocked(row)
+            return row
 
     def mark_ambiguous(self, decision_id: str, error: str, broker_timestamp: str) -> ExecutionRecord:
         previous=self.latest(decision_id)
