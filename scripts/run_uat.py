@@ -2,6 +2,7 @@ from pathlib import Path
 import subprocess
 import sys
 import json
+import hashlib
 from datetime import datetime, timezone
 
 TEST_GROUPS = [
@@ -65,8 +66,26 @@ def run_group(group: str) -> str:
     return "PASS"
 
 
+def suite_fingerprint() -> str:
+    digest = hashlib.sha256()
+    for group in TEST_GROUPS:
+        path = REPO_ROOT / group
+        if path.exists():
+            for item in sorted(path.rglob('*.py')):
+                digest.update(str(item.relative_to(REPO_ROOT)).encode())
+                digest.update(item.read_bytes())
+    return digest.hexdigest()
+
+def git_head() -> str:
+    try:
+        return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=REPO_ROOT, text=True).strip()
+    except Exception:
+        return ''
+
 def main():
     passed, empty, failed = [], [], []
+    head = git_head()
+    fingerprint = suite_fingerprint()
 
     print(f"UAT Python: {PYTHON}")
     print(
@@ -100,6 +119,8 @@ def main():
         "status": "PASS" if overall_pass else "FAIL",
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "python": PYTHON,
+        "git_head": head,
+        "suite_fingerprint": fingerprint,
         "passed": passed,
         "empty": empty,
         "failed": failed,
