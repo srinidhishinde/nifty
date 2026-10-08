@@ -116,3 +116,43 @@ def test_mcx_keeps_real_option_chain_visible_when_candles_are_missing(monkeypatc
     assert len(snapshot.option_chain) == 1
     assert snapshot.signal.direction == "WAIT"
     assert "CRUDEOIL captured SFeed candle history unavailable" in snapshot.quality_reasons
+
+
+def test_live_decision_refreshes_option_quotes(monkeypatch):
+    calls = {}
+
+    class Contract:
+        option_type = "CE"
+        open_interest = 100.0
+        volume = 10.0
+
+    class Provider:
+        def __init__(self, client):
+            pass
+
+        def get_option_chain(self, **kwargs):
+            calls.update(kwargs)
+            return [Contract()]
+
+    ts = pd.date_range("2026-10-01 09:15", periods=80, freq="5min", tz="Asia/Kolkata")
+    frame = pd.DataFrame({
+        "timestamp": ts,
+        "open": 25000.0,
+        "high": 25010.0,
+        "low": 24990.0,
+        "close": 25000.0,
+        "volume": 1000.0,
+    })
+    monkeypatch.setattr("marketdata.decision_source.KotakNeoProvider", Provider)
+    monkeypatch.setattr(
+        "marketdata.daily_store.load_captured_candles",
+        lambda *args, **kwargs: (frame, "KOTAK_CAPTURED"),
+    )
+
+    snapshot = load_kotak_decision_snapshot(
+        _Connected(),
+        instrument="NIFTY",
+        now=pd.Timestamp("2026-10-09 10:00", tz="Asia/Kolkata"),
+    )
+    assert calls["enrich_quotes"] is True
+    assert snapshot.option_count == 1
