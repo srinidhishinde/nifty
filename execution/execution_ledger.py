@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import contextlib
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,28 @@ class ExecutionRecord:
     broker_timestamp: str
     updated_at: str
     error: str = ""
+
+@contextlib.contextmanager
+def _file_lock(path: Path):
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        if sys.platform.startswith("win"):
+            import msvcrt
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 class ExecutionLedger:
     """Append-only execution state store. Never retries an ambiguous submission blindly."""
@@ -70,6 +94,10 @@ class ExecutionLedger:
             except FileNotFoundError: pass
 
     def begin(self, decision_id: str, symbol: str, side: str, quantity: int, broker_timestamp: str) -> ExecutionRecord:
+        if int(quantity) <= 0:
+            raise ValueError("Execution quantity must be positive")
+        if str(side).upper() not in {"BUY", "SELL"}:
+            raise ValueError("Execution side must be BUY or SELL")
         if not self.can_submit(decision_id):
             raise RuntimeError("Duplicate or already-active decision cannot be submitted")
         now=datetime.now(timezone.utc).isoformat()
