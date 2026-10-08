@@ -1334,7 +1334,7 @@ readiness = assess_readiness(
     ml_available=bool(st.session_state.get("final_ml_artifacts")),
     live_order_enabled=settings.live_trading_allowed(),
     realistic_backtest_available=True,
-    option_premium_history_available=bool(contracts),
+    option_premium_history_available=bool(getattr(snapshot, "option_chain", ())) if snapshot is not None else False,
 )
 rc = st.columns(4)
 rc[0].metric("Readiness", f"{readiness.score:.0f}/100")
