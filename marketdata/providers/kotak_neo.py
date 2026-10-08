@@ -356,6 +356,17 @@ class KotakNeoProvider(MarketDataProvider):
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
         oi_change = self._float(oi.get("change") or oi.get("chg"))
+        implied_volatility = self._float(
+            quote.get("iv") or quote.get("impliedVolatility") or item.get("iv")
+        )
+        delta = self._float(quote.get("delta") or item.get("delta"))
+        theta = self._float(quote.get("theta") or item.get("theta"))
+        vega = self._float(quote.get("vega") or item.get("vega"))
+        gamma = self._float(quote.get("gamma") or item.get("gamma"))
+        ltp_change_pct = self._float(
+            quote.get("changePct") or quote.get("ltpChangePct") or item.get("changePct")
+        )
+        built_up = str(quote.get("builtUp") or item.get("builtUp") or "").strip()
 
         return OptionContract(
             symbol=str(symbol),
@@ -371,6 +382,13 @@ class KotakNeoProvider(MarketDataProvider):
             volume=volume,
             open_interest=current_oi,
             oi_change=oi_change,
+            implied_volatility=implied_volatility,
+            built_up=built_up,
+            delta=delta,
+            theta=theta,
+            vega=vega,
+            gamma=gamma,
+            ltp_change_pct=ltp_change_pct,
         )
 
     def _enrich_quotes(self, contracts: list[OptionContract]) -> None:
