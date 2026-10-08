@@ -18,6 +18,47 @@ from marketdata.kotak_live import FiveMinuteCandleBuilder, LiveTick, stream_kota
 from marketdata.providers.kotak_neo import KotakNeoProvider
 
 
+
+def capture_option_chain(
+    provider: KotakNeoProvider,
+    store: DailyMarketStore,
+    instrument: str,
+    *,
+    count: int = 40,
+) -> tuple[int, Path]:
+    """Fetch and persist one real Kotak option-chain snapshot.
+
+    This is the producer for Research-mode option-chain data. Empty/error
+    responses are fail-closed; no synthetic rows are ever written.
+    """
+    if instrument.upper() == "NIFTY":
+        exchange = "NSE_FO"
+        underlying = "NIFTY"
+    elif instrument.upper() == "CRUDEOIL":
+        exchange = "MCX_FO"
+        underlying = "CRUDEOIL"
+    else:
+        raise ValueError(f"Option-chain capture is not configured for {instrument}.")
+
+    contracts = provider.get_option_chain(
+        underlying=underlying,
+        exchange=exchange,
+        count=count,
+        expiry=None,
+        enrich_quotes=True,
+    )
+    if not contracts:
+        raise RuntimeError(f"Kotak returned an empty {instrument} option chain.")
+
+    captured_at = pd.Timestamp.now(tz="Asia/Kolkata")
+    path = store.save_option_chain_snapshot(
+        instrument.upper(),
+        contracts,
+        captured_at=captured_at,
+    )
+    return len(contracts), path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Capture completed NIFTY/MCX 5-minute candles from Kotak SFeed."
@@ -75,7 +116,31 @@ def main() -> int:
             print("[FAIL] No enabled capture instrument selected.")
             return 2
 
-        counts = {"nifty": 0, "mcx": 0, "candles": 0}
+
+        counts = {"nifty": 0, "mcx": 0, "candles": 0, "option_chains": 0}
+        option_chain_paths: dict[str, Path] = {}
+
+        # Persist the latest real broker option chain before starting the
+        # candle stream. Research mode reads these snapshots; it never creates
+        # synthetic contracts when a snapshot is absent.
+        for chain_instrument, enabled in (("NIFTY", want_nifty), ("CRUDEOIL", want_mcx)):
+            if not enabled:
+                continue
+            try:
+                contract_count, path = capture_option_chain(
+                    provider, store, chain_instrument, count=40
+                )
+                counts["option_chains"] += 1
+                option_chain_paths[chain_instrument] = path
+                print(
+                    f"[PASS] Option-chain capture: {chain_instrument} "
+                    f"contracts={contract_count} path={path}"
+                )
+            except Exception as exc:
+                # Candle capture may continue, but report the option-chain
+                # failure explicitly. Research remains WAIT until a real
+                # snapshot is successfully persisted.
+                print(f"[WARN] Option-chain capture {chain_instrument}: {exc}")
 
         def on_tick(tick: LiveTick) -> None:
             completed = builder.update(tick)
@@ -130,7 +195,13 @@ def main() -> int:
             f"NIFTY ticks={counts['nifty']} MCX ticks={counts['mcx']} "
             f"completed_5m_candles={counts['candles']}"
         )
-        print(f"[INFO] Persistent source: {settings.market_data_root}/*/*/*_ohlcv.csv")
+
+        print(f"[INFO] Persistent OHLCV source: {settings.market_data_root}/*/*/*_ohlcv.csv")
+        if option_chain_paths:
+            print("[INFO] Persistent option-chain snapshots:")
+            for chain_instrument, path in option_chain_paths.items():
+                print(f"[INFO]   {chain_instrument}: {path}")
+        print(f"[INFO] Option-chain snapshots captured: {counts['option_chains']}")
         print("[INFO] Source label: KOTAK_CAPTURED")
         print("[INFO] Order submission: NOT ATTEMPTED")
         return 0
