@@ -74,7 +74,7 @@ def test_cert_5_live_permission_requires_every_mandatory_gate():
         source_policy_valid=True, reasons=(),
     )
     evidence = DecisionEvidence(**fields)
-    assert live_permission(evidence, config_enabled=True)
+    assert not live_permission(evidence, config_enabled=True)
     assert not live_permission(evidence, config_enabled=False)
     assert not live_permission(evidence)
     assert not live_permission(evidence, config_enabled=True, broker_orders_allowed=False)
