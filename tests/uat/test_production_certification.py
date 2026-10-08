@@ -23,6 +23,7 @@ def _contract(ts=None, expiry=None):
         symbol="NIFTY26O1320250CE", exchange="NSE_FO", underlying="NIFTY",
         expiry=expiry or (now.date() + timedelta(days=4)).isoformat(), strike=20250,
         option_type="CE", instrument_token="nse_fo|123", ltp=100, bid=99, ask=101,
+        oi_change=0, implied_volatility=15,
         volume=1000, open_interest=10000, quote_timestamp=now, quote_source="KOTAK_NEO",
     )
 
