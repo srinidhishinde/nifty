@@ -181,34 +181,37 @@ class KotakNeoProvider(MarketDataProvider):
         )
 
     def get_index_quote(self, index_name: str = "Nifty 50") -> Quote:
-        """Fetch the current NIFTY index quote using Neo's index-name identifier."""
+        """Fetch NIFTY using a current scrip-master token and broker timestamp."""
+        neosymbol = self.resolve_nifty_index_neosymbol(index_name)
+        segment, token = neosymbol.split("|", 1)
         response = self.client.quotes(
-            instrument_tokens=[{
-                "instrument_token": index_name,
-                "exchange_segment": "nse_cm",
-            }],
+            instrument_tokens=[{"instrument_token": token, "exchange_segment": segment}],
             quote_type="all",
         )
         if isinstance(response, dict):
             data = self._response_data(response)
             response = data.get("quotes") or data.get("data") or []
-        if not isinstance(response, list) or not response:
+        if not isinstance(response, list) or not response or not isinstance(response[0], dict):
             raise RuntimeError("Kotak Neo returned no NIFTY index quote.")
         row = response[0]
         ltp = self._float(row.get("ltp"))
         if ltp <= 0:
             raise RuntimeError("Kotak Neo returned an invalid NIFTY index price.")
+        raw_ts = row.get("timestamp") or row.get("quoteTimestamp") or row.get("quote_timestamp") or row.get("lastTradeTime") or row.get("last_traded_time")
+        quote_ts = datetime.now()
+        if raw_ts not in (None, ""):
+            try:
+                quote_ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                try:
+                    quote_ts = datetime.fromtimestamp(float(raw_ts))
+                except (TypeError, ValueError, OSError):
+                    raise RuntimeError("Kotak Neo NIFTY quote did not contain a parseable broker timestamp.")
         return Quote(
-            timestamp=datetime.now(),
-            symbol=index_name,
-            exchange="nse_cm",
-            ltp=ltp,
-            volume=self._float(row.get("last_volume") or row.get("volume")),
-            open_interest=self._float(row.get("open_int")),
-            bid=None,
-            ask=None,
+            timestamp=quote_ts, symbol=index_name, exchange=segment,
+            ltp=ltp, volume=self._float(row.get("last_volume") or row.get("volume")),
+            open_interest=self._float(row.get("open_int")), bid=None, ask=None,
         )
-
     def _nearest_expiry(self, exchange: str, underlying: str) -> str:
         """Resolve the nearest available option expiry from Neo."""
         exchange_segment = self.normalize_exchange(exchange)
