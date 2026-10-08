@@ -668,6 +668,10 @@ class KotakNeoProvider(MarketDataProvider):
             vega=vega,
             gamma=gamma,
             ltp_change_pct=ltp_change_pct,
+            # The option-chain payload itself is a broker response even when
+            # quote-depth enrichment cannot provide a timestamped bid/ask.
+            # Execution validation still requires fresh quote timestamp/depth.
+            quote_source="KOTAK_NEO",
             identity_verified=identity_verified,
             scrip_master_hash=__import__("hashlib").sha256(str(canonical_symbol or "").encode("utf-8")).hexdigest(),
         )
