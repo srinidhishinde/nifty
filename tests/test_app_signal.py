@@ -1,60 +1,27 @@
-﻿from app.main import build_research_signal
+from app.main import build_research_signal, build_research_option_chain
 
 
-def test_research_signal_is_deterministic():
-
-    result1 = build_research_signal(
-        instrument="NIFTY",
-        timeframe="5m",
-        seed=42,
+def test_research_signal_fails_closed_without_real_captured_data(monkeypatch):
+    empty = __import__("pandas").DataFrame()
+    monkeypatch.setattr(
+        "marketdata.daily_store.load_captured_candles",
+        lambda *args, **kwargs: (empty, None),
     )
-
-    result2 = build_research_signal(
-        instrument="NIFTY",
-        timeframe="5m",
-        seed=42,
+    monkeypatch.setattr(
+        "marketdata.daily_store.DailyMarketStore.load_latest_option_chain_snapshot",
+        lambda *args, **kwargs: (empty, None),
     )
-
-    signal1 = result1[3]
-    signal2 = result2[3]
-
-    assert signal1.decision == signal2.decision
-    assert signal1.ce_score == signal2.ce_score
-    assert signal1.pe_score == signal2.pe_score
+    result = build_research_signal("NIFTY", "5m", seed=42)
+    signal = result[3]
+    assert signal.decision == "WAIT"
+    assert result[1] is None and result[2] is None
+    assert result[4] is None
 
 
-def test_research_signal_can_produce_non_bullish_states():
-
-    decisions = set()
-
-    for seed in range(1, 101):
-
-        result = build_research_signal(
-            instrument="NIFTY",
-            timeframe="5m",
-            seed=seed,
-        )
-
-        context = result[0]
-        signal = result[3]
-
-        decisions.add(signal.decision)
-
-    assert len(decisions) >= 2
-
-
-def test_signal_uses_configured_thresholds():
-
-    context, ce, pe, signal, probability = (
-        build_research_signal(
-            instrument="NIFTY",
-            timeframe="5m",
-            seed=42,
-        )
+def test_research_option_chain_never_generates_synthetic_contracts(monkeypatch):
+    empty = __import__("pandas").DataFrame()
+    monkeypatch.setattr(
+        "marketdata.daily_store.DailyMarketStore.load_latest_option_chain_snapshot",
+        lambda *args, **kwargs: (empty, None),
     )
-
-    assert 0 <= signal.ce_score <= 100
-    assert 0 <= signal.pe_score <= 100
-    assert 0 <= signal.confidence <= 100
-    assert signal.edge >= 0
-    assert 0 <= probability <= 1
+    assert build_research_option_chain("NIFTY", 25000.0, 42, 50.0) == []
