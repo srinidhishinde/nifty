@@ -766,6 +766,7 @@ class KotakNeoProvider(MarketDataProvider):
             raise RuntimeError(f"Kotak Neo returned no quote for {contract.get('trading_symbol') or token}.")
         row = response[0]
         ohlc = row.get("ohlc") or {}
+        raw_ts = row.get("timestamp") or row.get("quoteTimestamp") or row.get("lastTradeTime") or row.get("last_traded_time")
         return {
             "open": self._float(ohlc.get("open")),
             "high": self._float(ohlc.get("high")),
@@ -774,6 +775,9 @@ class KotakNeoProvider(MarketDataProvider):
             "volume": self._float(row.get("last_volume") or row.get("volume")),
             "open_interest": self._float(row.get("open_int") or row.get("openInterest")),
             "ltp": self._float(row.get("ltp")),
+            "timestamp": raw_ts,
+            "source": "KOTAK_NEO",
+            "instrument_token": token,
         }
 
     def get_historical_candles(
