@@ -21,6 +21,35 @@ class KotakNeoProvider(MarketDataProvider):
     def __init__(self, client):
         self.client = client
 
+    def get_account_state(self) -> dict:
+        """Return one authoritative account snapshot from Neo; never synthesize values."""
+        candidates = ("limits", "margin", "positions")
+        raw = None
+        for name in candidates:
+            fn = getattr(self.client, name, None)
+            if callable(fn):
+                try:
+                    raw = fn()
+                    if raw is not None:
+                        break
+                except Exception:
+                    continue
+        if not isinstance(raw, dict):
+            raise RuntimeError("Kotak Neo account-state endpoint is unavailable.")
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+        def pick(*keys):
+            for k in keys:
+                if data.get(k) not in (None, ""):
+                    return data[k]
+            raise RuntimeError("Kotak Neo account response is missing required field.")
+        timestamp = pick("timestamp", "updatedAt", "updateTime", "lastUpdated")
+        return {
+            "equity": self._float(pick("equity", "net", "netWorth")),
+            "available_margin": self._float(pick("available_margin", "availableMargin", "availableCash", "cash")),
+            "timestamp": timestamp,
+            "source": "KOTAK_NEO",
+        }
+
     @classmethod
     def normalize_exchange(cls, exchange: str) -> str:
         value = str(exchange or "").strip()
