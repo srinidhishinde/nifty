@@ -144,7 +144,7 @@ class DailyMarketStore:
         except (TypeError, ValueError):
             strike = 0.0
         symbol = str(row.get("symbol") or "").upper()
-        match = re.search(r"(\\d+(?:\\.\\d+)?)(CE|PE)$", symbol)
+        match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", symbol)
         symbol_strike = float(match.group(1)) if match else 0.0
         try:
             return validate_option_strike(
