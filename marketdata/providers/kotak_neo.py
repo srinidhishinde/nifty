@@ -453,7 +453,7 @@ class KotakNeoProvider(MarketDataProvider):
         # strike from that broker symbol rather than rejecting a real contract.
         if strike <= 0 and symbol:
             import re
-            match = re.search(r"(\\d+(?:\\.\\d+)?)((?:CE)|(?:PE))$", str(symbol).upper())
+            match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", str(symbol).upper())
             if match:
                 strike = self._float(match.group(1))
         ltp = self._float(quote.get("ltp"))
