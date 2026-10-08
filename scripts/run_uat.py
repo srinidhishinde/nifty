@@ -1,6 +1,8 @@
 from pathlib import Path
 import subprocess
 import sys
+import json
+from datetime import datetime, timezone
 
 TEST_GROUPS = [
     "tests/unit",
@@ -91,17 +93,27 @@ def main():
 
     print()
 
-    if failed or empty:
+    evidence_path = REPO_ROOT / "logs" / "uat_evidence.json"
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    overall_pass = not failed and not empty
+    evidence_path.write_text(json.dumps({
+        "status": "PASS" if overall_pass else "FAIL",
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "python": PYTHON,
+        "passed": passed,
+        "empty": empty,
+        "failed": failed,
+    }, indent=2), encoding="utf-8")
+
+    if not overall_pass:
         print("UAT STATUS: FAILED")
-        print()
-        print("Failed test suites:")
+        if empty:
+            print("Required suites were empty; empty suites are not production evidence.")
         for group in failed:
             print(f"  - {group}")
         raise SystemExit(1)
 
     print("UAT STATUS: PASSED")
-    if empty:
-        print("UAT STATUS: FAILED — required test suites were empty; empty suites are not production evidence.")
 
 
 if __name__ == "__main__":
