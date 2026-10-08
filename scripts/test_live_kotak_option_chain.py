@@ -58,17 +58,33 @@ def main() -> int:
             print(f"[FAIL] Live option chain: CE={len(ce)} PE={len(pe)} total={len(contracts)}")
             return 1
 
-        valid = [
+        # A broker option chain can legitimately contain inactive/far-OTM
+        # strikes with no current LTP. Validate the contract structure for every
+        # row, then require at least one currently priced CE and PE for a usable
+        # live chain. Do not reject an otherwise real chain because every strike
+        # must have traded at the current moment.
+        structurally_valid = [
             x for x in contracts
             if float(x.strike or 0) > 0
-            and float(x.ltp or 0) > 0
             and float(x.volume or 0) >= 0
             and float(x.open_interest or 0) >= 0
             and bool(x.expiry)
             and bool(x.instrument_token)
         ]
-        if len(valid) != len(contracts):
-            print(f"[FAIL] Contract validation: valid={len(valid)} total={len(contracts)}")
+        if len(structurally_valid) != len(contracts):
+            print(
+                f"[FAIL] Contract structure: valid={len(structurally_valid)} "
+                f"total={len(contracts)}"
+            )
+            return 1
+
+        priced_ce = [x for x in ce if float(x.ltp or 0) > 0]
+        priced_pe = [x for x in pe if float(x.ltp or 0) > 0]
+        if not priced_ce or not priced_pe:
+            print(
+                f"[FAIL] Live pricing: priced_CE={len(priced_ce)} "
+                f"priced_PE={len(priced_pe)} total={len(contracts)}"
+            )
             return 1
 
         expiries = sorted({str(x.expiry) for x in contracts})
