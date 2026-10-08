@@ -179,53 +179,32 @@ class KotakNeoProvider(MarketDataProvider):
         return "Kotak Neo returned no market-data records."
 
     def resolve_nifty_index_neosymbol(self, index_name: str = "Nifty 50") -> str:
-        """Resolve the current NIFTY index Neo symbol from Kotak's scrip master."""
-        queries = [index_name.strip(), "NIFTY", "Nifty 50"]
-        rows = []
-        seen = set()
-        for query in queries:
-            if not query or query.upper() in seen:
-                continue
-            seen.add(query.upper())
-            result = self.client.search_scrip(
-                exchange_segment="nse_cm",
-                symbol=query,
-                expiry="",
-                option_type="",
-                strike_price="",
+        """Return Kotak's documented index identifier, not the numeric scrip token.
+
+        Kotak's Quotes API identifies indices by their names, for example
+        nse_cm|Nifty 50, unlike equities which use numeric scrip tokens.
+        The scrip master can return pSymbol 26000 for NIFTY 50, but passing
+        that numeric token to the quote endpoint produces HTTP 400
+        Invalid neosymbol values. Do not query scrip master for this index.
+        """
+        aliases = {
+            "NIFTY": "Nifty 50",
+            "NIFTY 50": "Nifty 50",
+            "NIFTY50": "Nifty 50",
+            "NIFTY BANK": "Nifty Bank",
+            "BANKNIFTY": "Nifty Bank",
+            "NIFTY FIN SERVICE": "Nifty Fin Service",
+            "FINNIFTY": "Nifty Fin Service",
+            "INDIA VIX": "INDIA VIX",
+        }
+        normalized = " ".join(str(index_name or "").strip().upper().split())
+        canonical = aliases.get(normalized)
+        if canonical is None:
+            raise ValueError(
+                f"Unsupported Kotak index identifier '{index_name}'. "
+                "Add an explicitly documented index alias before requesting quotes."
             )
-            if isinstance(result, list):
-                rows.extend(result)
-
-        if not rows:
-            raise RuntimeError(
-                f"Kotak Neo scrip master returned no NSE cash instrument for '{index_name}'."
-            )
-
-        target_names = {"NIFTY", "NIFTY 50", "NIFTY50"}
-        candidates = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            token = str(row.get("pSymbol") or "").strip()
-            segment = str(row.get("pExchSeg") or "nse_cm").strip().lower()
-            name = str(row.get("pSymbolName") or "").strip()
-            trading_symbol = str(row.get("pTrdSymbol") or "").strip()
-            if not token or segment != "nse_cm":
-                continue
-
-            upper_name = name.upper()
-            upper_trading_symbol = trading_symbol.upper()
-            exact = 0 if upper_name in target_names or upper_trading_symbol in target_names else 1
-            candidates.append((exact, token, name))
-
-        if not candidates:
-            raise RuntimeError(
-                f"Kotak Neo scrip master returned no valid nse_cm NIFTY token for '{index_name}'."
-            )
-
-        candidates.sort(key=lambda item: (item[0], item[1]))
-        return f"nse_cm|{candidates[0][1]}"
+        return f"nse_cm|{canonical}"
 
     def get_quote(self, symbol: str, exchange: str) -> Quote:
         raise NotImplementedError(
