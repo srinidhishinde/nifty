@@ -722,6 +722,10 @@ class KotakNeoProvider(MarketDataProvider):
                     ltp_change_pct=contract.ltp_change_pct,
                     quote_timestamp=quote_timestamp,
                     quote_source="KOTAK_NEO",
+                    identity_verified=contract.identity_verified,
+                    scrip_master_hash=contract.scrip_master_hash,
+                    lot_size=contract.lot_size,
+                    tick_size=contract.tick_size,
                 )
     def resolve_mcx_futures(self, symbol: str) -> dict:
         """Resolve the nearest tradable MCX futures contract from Neo scrip master.
