@@ -174,7 +174,7 @@ def load_kotak_decision_snapshot(
             exchange="NSE_FO",
             expiry=option_expiry,
             count=option_count,
-            enrich_quotes=True,
+            enrich_quotes=False,
         )
         pcr_oi, pcr_volume = _option_features(contracts)
 
