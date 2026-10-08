@@ -28,6 +28,10 @@ class KotakNeoProvider(MarketDataProvider):
     @staticmethod
     def _float(value: Any, default: float = 0.0) -> float:
         try:
+            if isinstance(value, str):
+                value = value.strip().replace(',', '')
+                if not value:
+                    return default
             return float(value)
         except (TypeError, ValueError):
             return default
@@ -430,8 +434,20 @@ class KotakNeoProvider(MarketDataProvider):
         if not symbol or not neo_symbol:
             return None
 
-        expiry = instrument.get("expiryDt") or requested_expiry or ""
-        strike = self._float(instrument.get("strikePrice") or instrument.get("strike"))
+        expiry = (
+            instrument.get("expiryDt")
+            or instrument.get("expiry")
+            or item.get("expiryDt")
+            or item.get("expiry")
+            or requested_expiry
+            or ""
+        )
+        strike = self._float(
+            instrument.get("strikePrice")
+            or instrument.get("strike")
+            or item.get("strikePrice")
+            or item.get("strike")
+        )
         ltp = self._float(quote.get("ltp"))
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
