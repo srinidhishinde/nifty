@@ -335,6 +335,40 @@ class KotakNeoProvider(MarketDataProvider):
             "put_count": len(puts) if isinstance(puts, list) else 0,
         }
 
+    def _scrip_master_option_symbols(
+        self,
+        underlying: str,
+        exchange: str,
+        expiry: str | None,
+    ) -> dict[str, str]:
+        """Map broker option tokens to canonical trading symbols.
+
+        Some Neo option-chain responses have returned a malformed strike field.
+        The scrip master is the broker's canonical instrument source, so use
+        pTrdSymbol keyed by pSymbol before trusting a numeric strike payload.
+        """
+        try:
+            rows = self.client.search_scrip(
+                exchange_segment=exchange,
+                symbol=str(underlying).upper(),
+                expiry=str(expiry or ""),
+                option_type="",
+                strike_price="",
+            )
+        except Exception:
+            return {}
+        if not isinstance(rows, list):
+            return {}
+        mapping: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            token = str(row.get("pSymbol") or "").strip()
+            symbol = str(row.get("pTrdSymbol") or "").strip()
+            if token and symbol:
+                mapping[token] = symbol
+        return mapping
+
     def get_option_chain(
         self,
         underlying: str,
@@ -415,13 +449,17 @@ class KotakNeoProvider(MarketDataProvider):
         if isinstance(puts, dict):
             puts = list(puts.values())
 
+        canonical_symbols = self._scrip_master_option_symbols(
+            request_underlying, exchange_segment, resolved_expiry
+        )
+
         contracts: list[OptionContract] = []
         for item in calls:
-            contract = self._parse_option(item, underlying, exchange_segment, "CE", resolved_expiry)
+            contract = self._parse_option(item, underlying, exchange_segment, "CE", resolved_expiry, canonical_symbols)
             if contract:
                 contracts.append(contract)
         for item in puts:
-            contract = self._parse_option(item, underlying, exchange_segment, "PE", resolved_expiry)
+            contract = self._parse_option(item, underlying, exchange_segment, "PE", resolved_expiry, canonical_symbols)
             if contract:
                 contracts.append(contract)
 
@@ -442,6 +480,7 @@ class KotakNeoProvider(MarketDataProvider):
         exchange: str,
         option_type: str,
         requested_expiry: str | None,
+        canonical_symbols: dict[str, str] | None = None,
     ) -> OptionContract | None:
         instrument = item.get("instrument") or item.get("inst") or {}
         quote = item.get("quote") or {}
@@ -449,6 +488,9 @@ class KotakNeoProvider(MarketDataProvider):
 
         symbol = instrument.get("symbol")
         neo_symbol = instrument.get("neoSymbol")
+        canonical_symbol = (canonical_symbols or {}).get(str(neo_symbol).strip())
+        if canonical_symbol:
+            symbol = canonical_symbol
         if not symbol or not neo_symbol:
             return None
 
