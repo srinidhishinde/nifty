@@ -119,6 +119,7 @@ def load_kotak_decision_snapshot(
     option_count: int = 40,
     option_expiry: str | None = None,
     config: StrategyConfig | None = None,
+    now: pd.Timestamp | None = None,
 ) -> DecisionSnapshot:
     """Build production decision input from broker option-chain + captured Kotak SFeed candles.
 
@@ -127,7 +128,11 @@ def load_kotak_decision_snapshot(
     The Kotak historical endpoint is never used as a live decision fallback,
     and neither Yahoo nor synthetic candles/contracts are substituted.
     """
-    now = pd.Timestamp.now(tz="Asia/Kolkata")
+    now = pd.Timestamp(now or pd.Timestamp.now(tz="Asia/Kolkata"))
+    if now.tzinfo is None:
+        now = now.tz_localize("Asia/Kolkata")
+    else:
+        now = now.tz_convert("Asia/Kolkata")
 
     if broker is None or not broker.connection_status().connected:
         return DecisionSnapshot(
