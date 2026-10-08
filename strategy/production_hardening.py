@@ -196,6 +196,10 @@ def validate_contract_identity(
         reasons.append("Broker instrument token is not canonical.")
     if not symbol:
         reasons.append("Broker trading symbol is missing.")
+    if not bool(getattr(contract, "identity_verified", False)):
+        reasons.append("Contract is not bound to current broker scrip-master evidence.")
+    if not str(getattr(contract, "scrip_master_hash", "") or "").strip():
+        reasons.append("Missing scrip-master evidence hash.")
     if "|" in token and token.split("|", 1)[0].strip().lower() != exchange:
         reasons.append("Broker token exchange does not match contract exchange.")
     return not reasons, tuple(reasons)
