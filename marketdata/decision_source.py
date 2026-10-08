@@ -208,37 +208,34 @@ def load_kotak_decision_snapshot(
                 ),
             )
 
+        missing_executable_sides = False
         if market_open:
             sides = {str(getattr(c, "option_type", "")).upper() for c in executable_contracts}
-            if not {"CE", "PE"}.issubset(sides):
-                return DecisionSnapshot(
-                    "KOTAK_NEO", "LIVE", "RED",
-                    "Broker option-chain is visible, but verified executable CE and PE quotes are unavailable.",
-                    now, None, display_contracts, "RED",
-                    ("Both CE and PE must pass current quote and scrip-master identity validation.",),
-                    pcr_oi, pcr_volume, len(display_contracts),
-                    _wait("Verified CE and PE broker quotes are required; trade is blocked.", now),
-                )
+            missing_executable_sides = not {"CE", "PE"}.issubset(sides)
             contracts = executable_contracts
-            if instrument_upper == "NIFTY":
-                underlying_quote = provider.get_index_quote("Nifty 50")
-                underlying_ts = pd.Timestamp(underlying_quote.timestamp)
-                if getattr(underlying_quote, "timestamp_source", "BROKER") != "BROKER":
-                    raise RuntimeError("NIFTY underlying quote lacks authoritative broker timestamp.")
-            else:
-                mcx_contract = provider.resolve_mcx_futures(_MCX_SYMBOLS[instrument_upper])
-                underlying_quote = provider.get_mcx_quote(mcx_contract)
-                raw_ts = underlying_quote.get("timestamp")
-                underlying_ts = pd.Timestamp(raw_ts) if raw_ts not in (None, "") else None
-            if underlying_ts is None or not runtime_clock_ok(reference_timestamp=underlying_ts):
-                return DecisionSnapshot(
-                    "KOTAK_NEO", "LIVE", "RED",
-                    "Broker underlying quote timestamp is missing, stale or not clock-aligned.",
-                    now, None, contracts, "RED",
-                    ("Underlying broker timestamp validation failed.",),
-                    pcr_oi, pcr_volume, len(contracts),
-                    _wait("Underlying broker quote is not decision-ready.", now),
-                )
+            # Do not return yet when CE/PE evidence is incomplete: first report
+            # the independent candle-capture state. Missing quotes still block
+            # every decision below; this only improves diagnostics and visibility.
+            if not missing_executable_sides:
+                if instrument_upper == "NIFTY":
+                    underlying_quote = provider.get_index_quote("Nifty 50")
+                    underlying_ts = pd.Timestamp(underlying_quote.timestamp)
+                    if getattr(underlying_quote, "timestamp_source", "BROKER") != "BROKER":
+                        raise RuntimeError("NIFTY underlying quote lacks authoritative broker timestamp.")
+                else:
+                    mcx_contract = provider.resolve_mcx_futures(_MCX_SYMBOLS[instrument_upper])
+                    underlying_quote = provider.get_mcx_quote(mcx_contract)
+                    raw_ts = underlying_quote.get("timestamp")
+                    underlying_ts = pd.Timestamp(raw_ts) if raw_ts not in (None, "") else None
+                if underlying_ts is None or not runtime_clock_ok(reference_timestamp=underlying_ts):
+                    return DecisionSnapshot(
+                        "KOTAK_NEO", "LIVE", "RED",
+                        "Broker underlying quote timestamp is missing, stale or not clock-aligned.",
+                        now, None, contracts, "RED",
+                        ("Underlying broker timestamp validation failed.",),
+                        pcr_oi, pcr_volume, len(contracts),
+                        _wait("Underlying broker quote is not decision-ready.", now),
+                    )
 
         if not market_open:
             return DecisionSnapshot(
@@ -284,6 +281,16 @@ def load_kotak_decision_snapshot(
                     f"Real {instrument_upper} {timeframe} candle history is unavailable.",
                     now,
                 ),
+            )
+
+        if market_open and missing_executable_sides:
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                f"Broker option-chain is visible, but verified executable CE and PE quotes are unavailable; captured candle source is {source}.",
+                now, frame, display_contracts, "RED",
+                ("Both CE and PE must pass current quote and scrip-master identity validation.",),
+                pcr_oi, pcr_volume, len(display_contracts),
+                _wait("Verified CE and PE broker quotes are required; trade is blocked.", now),
             )
 
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dt.tz_convert("Asia/Kolkata")
