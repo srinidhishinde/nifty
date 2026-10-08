@@ -448,6 +448,14 @@ class KotakNeoProvider(MarketDataProvider):
             or item.get("strikePrice")
             or item.get("strike")
         )
+        # Some live MCX payloads have omitted the strike field while retaining
+        # the canonical trading symbol (e.g. CRUDEOIL26OCT8800CE). Recover the
+        # strike from that broker symbol rather than rejecting a real contract.
+        if strike <= 0 and symbol:
+            import re
+            match = re.search(r"(\\d+(?:\\.\\d+)?)((?:CE)|(?:PE))$", str(symbol).upper())
+            if match:
+                strike = self._float(match.group(1))
         ltp = self._float(quote.get("ltp"))
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
