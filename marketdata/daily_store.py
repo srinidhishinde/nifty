@@ -195,7 +195,10 @@ class DailyMarketStore:
         else:
             cutoff = cutoff.tz_convert("Asia/Kolkata")
 
-        candidates = list(base.glob("*/" + f"{instrument.upper()}_option_chain_latest.csv"))
+        # Immutable timestamped archives are first-class recovery sources.
+        # The latest pointer is only a convenience cache and may be overwritten.
+        candidates = list(base.glob("*/" + f"{instrument.upper()}_option_chain_*.csv"))
+        candidates += list(base.glob("*/" + f"{instrument.upper()}_option_chain_latest.csv"))
         candidates += list(base.glob("*/" + f"{instrument.upper()}_option_chain.csv"))
         newest: tuple[pd.Timestamp, Path, pd.DataFrame] | None = None
 
