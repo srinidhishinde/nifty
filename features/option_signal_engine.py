@@ -49,12 +49,24 @@ def generate_option_chain_signal(
     unrealistically favorable LTP fill.
     """
     rows = []
+    normalized_hint = str(direction_hint or "").upper().strip()
+    if normalized_hint not in {"CE", "PE", "WAIT"}:
+        normalized_hint = None
+
     for contract in contracts:
+        if normalized_hint in {"CE", "PE"} and contract.option_type != normalized_hint:
+            continue
+        if normalized_hint == "WAIT":
+            continue
         entry = _buy_entry(contract)
         if entry is None or entry < min_premium or entry > max_premium:
             continue
-        bid = float(contract.bid or 0.0); ask = float(contract.ask or 0.0)
-        if bid > 0 and ask >= bid and (ask - bid) / ask > max_spread_pct:
+        bid = float(contract.bid or 0.0)
+        ask = float(contract.ask or 0.0)
+        if require_two_sided_quote and not (bid > 0 and ask > 0 and ask >= bid):
+            continue
+        spread_pct = ((ask - bid) / ask) if bid > 0 and ask > 0 and ask >= bid else 0.0
+        if spread_pct > max_spread_pct:
             continue
         if float(contract.volume or 0.0) <= 0 or float(contract.open_interest or 0.0) <= 0:
             continue
@@ -63,20 +75,24 @@ def generate_option_chain_signal(
         news_boost = global_news_score * 12.0 * side_bias
         momentum_boost = max(-10.0, min(10.0, float(contract.ltp_change_pct or 0.0) * 0.5))
         confidence = _clamp(analysis.score + news_boost + momentum_boost)
+        effective_stop_pct = max(stop_loss_pct, min(0.10, spread_pct * 2.0))
+        risk_per_unit = entry * effective_stop_pct
+        target_price = entry + (risk_per_unit * 2.0)
+        stop_price = entry - risk_per_unit
         rows.append({
             "Side": contract.option_type,
             "Strike": contract.strike,
             "Signal": "BUY" if confidence >= 60 else "WAIT",
             "Confidence": round(confidence, 2),
-            "Entry Price": round(entry, 2) if entry is not None else None,
-            "Stop Loss": round(entry * (1 - stop_loss_pct), 2) if entry is not None else None,
-            "Take Profit": round(entry * (1 + target_roi_pct), 2) if entry is not None else None,
-            "Target Gain %": round(target_roi_pct * 100, 2) if entry is not None else None,
-            "Stop Risk %": round(stop_loss_pct * 100, 2) if entry is not None else None,
-            "Max Gain %": round(target_roi_pct * 100, 2) if entry is not None else None,
-            "Max Loss %": round(stop_loss_pct * 100, 2) if entry is not None else None,
+            "Entry Price": round(entry, 2),
+            "Stop Loss": round(stop_price, 2),
+            "Take Profit": round(target_price, 2),
+            "Target Gain %": round(((target_price / entry) - 1.0) * 100.0, 2),
+            "Stop Risk %": round(((entry - stop_price) / entry) * 100.0, 2),
+            "Max Gain %": round(((target_price / entry) - 1.0) * 100.0, 2),
+            "Max Loss %": round(((entry - stop_price) / entry) * 100.0, 2),
             "Underlying Entry": round(float(spot), 2),
-            "Underlying SL": round(float(spot) * (1 - stop_loss_pct) if contract.option_type == "CE" else float(spot) * (1 + stop_loss_pct), 2),
+            "Underlying SL": None,
             "Underlying TP": None,
             "Global News": round(global_news_score, 3),
             "Score": analysis.score,
@@ -89,14 +105,26 @@ def generate_option_chain_signal(
     grouped = frame.groupby("Side")["Confidence"].max().to_dict()
     ce, pe = float(grouped.get("CE", 0.0)), float(grouped.get("PE", 0.0))
     edge = abs(ce - pe)
-    if edge < 10.0:
+    if normalized_hint == "CE":
+        direction, confidence, reason = "BUY CE", ce, "Canonical underlying signal selected CE"
+    elif normalized_hint == "PE":
+        direction, confidence, reason = "BUY PE", pe, "Canonical underlying signal selected PE"
+    elif edge < 10.0:
         direction, confidence, reason = "WAIT", max(ce, pe), "CE/PE confidence edge is below 10 points"
     elif ce > pe:
         direction, confidence, reason = "BUY CE", ce, "CE has the strongest option-chain evidence"
     else:
         direction, confidence, reason = "BUY PE", pe, "PE has the strongest option-chain evidence"
 
-    winner = frame[frame["Side"] == ("CE" if ce >= pe else "PE")].sort_values("Confidence", ascending=False).iloc[0]
+    winner_side = "CE" if direction == "BUY CE" else "PE" if direction == "BUY PE" else None
+    if winner_side is None:
+        return OptionChainSignal(
+            "WAIT", round(confidence, 2), None, None, None,
+            float(spot), float(spot), float(spot),
+            (reason, "No canonical side selected; trade is blocked."),
+        ), frame
+
+    winner = frame[frame["Side"] == winner_side].sort_values("Confidence", ascending=False).iloc[0]
     entry = winner["Entry Price"] if pd.notna(winner["Entry Price"]) else None
     sl = winner["Stop Loss"] if pd.notna(winner["Stop Loss"]) else None
     tp = winner["Take Profit"] if pd.notna(winner["Take Profit"]) else None
