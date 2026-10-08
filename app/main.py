@@ -648,17 +648,18 @@ seed = st.sidebar.number_input(
     step=1,
 )
 
-(
-    context,
-    ce,
-    pe,
-    signal,
-    ml_probability,
-) = build_research_signal(
-    instrument=instrument,
-    timeframe=timeframe,
-    seed=int(seed),
+# Research compatibility placeholders. The active dashboard decision path
+# below is always driven by Kotak/persisted real data; synthetic research
+# selectors are not used for PAPER/UAT/LIVE decisions.
+context = SimpleNamespace(
+    trend="UNAVAILABLE",
+    momentum="UNAVAILABLE",
+    price_vs_vwap="UNAVAILABLE",
+    volatility_regime="UNAVAILABLE",
 )
+ce = pe = None
+signal = SimpleNamespace(ce_score=0.0, pe_score=0.0, edge=0.0, decision="WAIT")
+ml_probability = None
 
 
 
@@ -1327,13 +1328,13 @@ regime_snapshot = classify_regime(pd.Series({
     "ADX": 20.0, "ATR_PCT": 0.01, "EMA_SPREAD": 1.0, "VWAP_DEV": 0.0,
 }), global_news_score)
 readiness = assess_readiness(
-    tests_passed=False,
-    warmup_ready=True,
+    tests_passed=False,  # Repository-local UAT must certify this; never hardcode PASS.
+    warmup_ready=bool(prediction_frame is not None and not prediction_frame.empty),
     risk_engine_ready=True,
-    ml_available=True,
+    ml_available=bool(st.session_state.get("final_ml_artifacts")),
     live_order_enabled=settings.live_trading_allowed(),
     realistic_backtest_available=True,
-    option_premium_history_available=False,
+    option_premium_history_available=bool(contracts),
 )
 rc = st.columns(4)
 rc[0].metric("Readiness", f"{readiness.score:.0f}/100")
@@ -1501,13 +1502,14 @@ best_pe = None
 if environment == "RESEARCH":
     st.subheader("Research CE / WAIT / PE")
     st.caption(
-        "Synthetic research selector only. It is not the canonical Kotak Neo "
-        "decision and must not be used as a paper/live trade signal."
+        "Research uses the latest persisted real Kotak option-chain snapshot. "
+        "No synthetic selector is used. Trade direction is WAIT until real "
+        "market context and the option-chain engine produce a qualified signal."
     )
-    ce_score = float(signal.ce_score)
-    pe_score = float(signal.pe_score)
-    wait_edge = float(signal.edge)
-    selected_side = signal.decision
+    ce_score = 0.0
+    pe_score = 0.0
+    wait_edge = 0.0
+    selected_side = "WAIT"
 else:
     st.subheader(f"{instrument} CE / WAIT / PE")
     st.caption(
@@ -1865,11 +1867,31 @@ else:
         "PE LTP", "PE Volume", "PE OI", "PE OI Chg", "PE IV", "PE Score", "ATM",
     ])
 
-if contracts and spot is not None:
+# Only the current broker refresh is tradable in PAPER/UAT/LIVE.
+# A stale persisted snapshot may be displayed, but it can never generate a
+# fresh trade plan while the market is open.
+tradable_contracts = contracts
+if environment != "RESEARCH" and chain_market_open:
+    tradable_contracts = (
+        live_contracts
+        if chain_status_label == "LIVE KOTAK NEO" and live_contracts
+        else []
+    )
+
+if tradable_contracts and spot is not None:
+    direction_hint = None
+    if environment != "RESEARCH" and canonical_signal.valid:
+        direction_hint = (
+            "CE" if canonical_signal.direction == "BUY"
+            else "PE" if canonical_signal.direction == "SELL"
+            else "WAIT"
+        )
     chain_signal, chain_signal_rows = generate_option_chain_signal(
-        contracts,
+        tradable_contracts,
         spot=spot,
         global_news_score=global_news_score,
+        direction_hint=direction_hint,
+        require_two_sided_quote=(environment != "RESEARCH"),
     )
 else:
     chain_signal, chain_signal_rows = None, []
@@ -2115,8 +2137,8 @@ def highlight_atm(
     return styles
 
 
-if environment == "RESEARCH" and not live_contracts:
-    st.caption("RESEARCH DATA — deterministic synthetic option chain; not a broker feed.")
+if environment == "RESEARCH" and contracts:
+    st.caption("RESEARCH DATA — latest persisted real KOTAK_CAPTURED option chain. Synthetic option-chain data is disabled.")
 
 st.markdown("#### Option Chain — Trade Plan")
 st.caption("Entry / SL / TP and Max Gain are premium-based only when actual option LTP is available. Snapshot files containing only LTP-change % will show unavailable premium levels.")
