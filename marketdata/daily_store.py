@@ -135,39 +135,75 @@ class DailyMarketStore:
         instrument: str,
         before: pd.Timestamp | None = None,
     ) -> tuple[pd.DataFrame, pd.Timestamp | None]:
-        """Load the newest persisted real broker option-chain snapshot."""
+        """Return the newest real option-chain snapshot available before *before*.
+
+        The loader supports both the new persistent latest-snapshot file and
+        older daily option-chain files. This is intentionally a read-only
+        display/recovery path: it never creates market data or marks it live.
+        """
         base = self.root / instrument.upper()
         if not base.exists():
             return pd.DataFrame(), None
         cutoff = pd.Timestamp(before or pd.Timestamp.now(tz="Asia/Kolkata"))
         if cutoff.tzinfo is None:
             cutoff = cutoff.tz_localize("Asia/Kolkata")
-        candidates = sorted(base.glob("*/" + f"{instrument.upper()}_option_chain_latest.csv"), reverse=True)
-        newest: tuple[pd.Timestamp, Path] | None = None
+        else:
+            cutoff = cutoff.tz_convert("Asia/Kolkata")
+
+        candidates = list(base.glob("*/" + f"{instrument.upper()}_option_chain_latest.csv"))
+        candidates += list(base.glob("*/" + f"{instrument.upper()}_option_chain.csv"))
+        newest: tuple[pd.Timestamp, Path, pd.DataFrame] | None = None
+
         for path in candidates:
             try:
                 frame = pd.read_csv(path)
-                if frame.empty or "captured_at" not in frame.columns:
+                if frame.empty:
                     continue
-                captured = pd.to_datetime(frame["captured_at"], errors="coerce").dropna()
-                if captured.empty:
-                    continue
-                stamp = captured.max()
-                if stamp.tzinfo is None:
-                    stamp = stamp.tz_localize("Asia/Kolkata")
+                if "captured_at" in frame.columns:
+                    captured = pd.to_datetime(frame["captured_at"], errors="coerce").dropna()
+                    if captured.empty:
+                        stamp = pd.Timestamp(path.stat().st_mtime, unit="s", tz="Asia/Kolkata")
+                    else:
+                        stamp = captured.max()
+                        if stamp.tzinfo is None:
+                            stamp = stamp.tz_localize("Asia/Kolkata")
+                        else:
+                            stamp = stamp.tz_convert("Asia/Kolkata")
+                elif "timestamp" in frame.columns:
+                    captured = pd.to_datetime(frame["timestamp"], errors="coerce").dropna()
+                    if captured.empty:
+                        stamp = pd.Timestamp(path.stat().st_mtime, unit="s", tz="Asia/Kolkata")
+                    else:
+                        stamp = captured.max()
+                        if stamp.tzinfo is None:
+                            stamp = stamp.tz_localize("Asia/Kolkata")
+                        else:
+                            stamp = stamp.tz_convert("Asia/Kolkata")
                 else:
-                    stamp = stamp.tz_convert("Asia/Kolkata")
-                if stamp <= cutoff and (newest is None or stamp > newest[0]):
-                    newest = (stamp, path)
+                    stamp = pd.Timestamp(path.stat().st_mtime, unit="s", tz="Asia/Kolkata")
+
+                if stamp > cutoff:
+                    continue
+                if "strike" in frame.columns:
+                    frame["strike"] = pd.to_numeric(frame["strike"], errors="coerce")
+                elif "Strike" in frame.columns:
+                    frame["strike"] = pd.to_numeric(frame["Strike"], errors="coerce")
+                else:
+                    continue
+                if "option_type" not in frame.columns:
+                    continue
+                frame["option_type"] = frame["option_type"].astype(str).str.upper().str.strip()
+                frame = frame[frame["option_type"].isin({"CE", "PE"})].dropna(subset=["strike"])
+                if frame.empty:
+                    continue
+                if newest is None or stamp > newest[0]:
+                    newest = (stamp, path, frame)
             except (OSError, ValueError, pd.errors.ParserError):
                 continue
+
         if newest is None:
             return pd.DataFrame(), None
-        frame = pd.read_csv(newest[1])
-        frame["captured_at"] = pd.to_datetime(frame["captured_at"], errors="coerce")
-        frame["strike"] = pd.to_numeric(frame["strike"], errors="coerce")
-        frame = frame.dropna(subset=["strike"])
-        return frame, newest[0]
+        return newest[2].reset_index(drop=True), newest[0]
 
     def save_metadata(self, instrument: str, session_date: date, metadata: dict) -> Path:
         folder = self.directory(instrument, session_date)
