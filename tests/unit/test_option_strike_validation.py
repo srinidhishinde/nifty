@@ -38,6 +38,6 @@ def test_cached_snapshot_uses_symbol_strike_when_payload_is_corrupt(tmp_path):
         "option_type": ["CE"],
         "ltp": [100],
     }).to_csv(path / "NIFTY_option_chain_latest.csv", index=False)
-    frame, _ = store.load_latest_option_chain_snapshot("NIFTY")
+    frame, _ = store.load_latest_option_chain_snapshot("NIFTY", before=pd.Timestamp("2026-10-09 10:01", tz="Asia/Kolkata"))
     assert frame.empty is False
     assert frame.iloc[0]["strike"] == 25000
