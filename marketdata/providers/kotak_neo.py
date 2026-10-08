@@ -37,6 +37,23 @@ class KotakNeoProvider(MarketDataProvider):
         except (TypeError, ValueError):
             return default
 
+    @classmethod
+    def _quote_ltp(cls, quote: dict, fallback: float = 0.0) -> float:
+        """Read Kotak LTP across current/legacy quote field names."""
+        for key in (
+            "ltp",
+            "lastTradedPrice",
+            "last_traded_price",
+            "lastPrice",
+            "last_price",
+            "LTP",
+        ):
+            if key in quote and quote.get(key) not in (None, ""):
+                value = cls._float(quote.get(key), fallback)
+                if value > 0:
+                    return value
+        return fallback
+
     @staticmethod
     def _response_data(response: Any) -> dict:
         """Normalize both legacy and current Kotak market-data envelopes."""
@@ -475,7 +492,7 @@ class KotakNeoProvider(MarketDataProvider):
             strike,
             symbol_strike=symbol_strike if symbol_strike > 0 else None,
         )
-        ltp = self._float(quote.get("ltp"))
+        ltp = self._quote_ltp(quote)
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
         oi_change = self._float(oi.get("change") or oi.get("chg"))
@@ -556,7 +573,7 @@ class KotakNeoProvider(MarketDataProvider):
                 quote = by_token.get(token)
                 if not quote:
                     continue
-                ltp = self._float(quote.get("ltp"), contract.ltp or 0.0)
+                ltp = self._quote_ltp(quote, contract.ltp or 0.0)
                 depth = quote.get("depth") or {}
                 buy = depth.get("buy") or depth.get("buyDepth") or []
                 sell = depth.get("sell") or depth.get("sellDepth") or []
