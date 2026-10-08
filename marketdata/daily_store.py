@@ -125,6 +125,11 @@ class DailyMarketStore:
                 "vega": getattr(contract, "vega", None),
                 "gamma": getattr(contract, "gamma", None),
                 "ltp_change_pct": float(getattr(contract, "ltp_change_pct", 0) or 0),
+                "quote_timestamp": (
+                    pd.Timestamp(getattr(contract, "quote_timestamp")).isoformat()
+                    if getattr(contract, "quote_timestamp", None) is not None else ""
+                ),
+                "quote_source": str(getattr(contract, "quote_source", "") or ""),
             })
         frame = pd.DataFrame(rows)
         day = timestamp.tz_convert("Asia/Kolkata").date()

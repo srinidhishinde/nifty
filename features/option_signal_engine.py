@@ -43,6 +43,7 @@ def generate_option_chain_signal(
     max_spread_pct: float = 0.05,
     direction_hint: str | None = None,
     require_two_sided_quote: bool = False,
+    require_verified_broker_quote: bool = False,
 ) -> tuple[OptionChainSignal, pd.DataFrame]:
     """Generate an auditable CE/PE signal.
 
@@ -56,6 +57,11 @@ def generate_option_chain_signal(
         normalized_hint = None
 
     for contract in contracts:
+        if require_verified_broker_quote:
+            source = str(getattr(contract, "quote_source", "") or "").upper()
+            quote_timestamp = getattr(contract, "quote_timestamp", None)
+            if source != "KOTAK_NEO" or quote_timestamp is None:
+                continue
         if normalized_hint in {"CE", "PE"} and contract.option_type != normalized_hint:
             continue
         if normalized_hint == "WAIT":

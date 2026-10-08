@@ -656,6 +656,19 @@ class KotakNeoProvider(MarketDataProvider):
                 if not quote:
                     continue
                 ltp = self._quote_ltp(quote, contract.ltp or 0.0)
+                quote_timestamp = None
+                for _key in ("timestamp", "quoteTimestamp", "quote_timestamp", "lastTradeTime", "last_traded_time"):
+                    _raw_ts = quote.get(_key)
+                    if _raw_ts not in (None, ""):
+                        try:
+                            quote_timestamp = datetime.fromisoformat(str(_raw_ts).replace("Z", "+00:00"))
+                        except (TypeError, ValueError):
+                            try:
+                                quote_timestamp = datetime.fromtimestamp(float(_raw_ts))
+                            except (TypeError, ValueError, OSError):
+                                quote_timestamp = None
+                        if quote_timestamp is not None:
+                            break
                 depth = quote.get("depth") or {}
                 buy = depth.get("buy") or depth.get("buyDepth") or []
                 sell = depth.get("sell") or depth.get("sellDepth") or []
@@ -670,6 +683,8 @@ class KotakNeoProvider(MarketDataProvider):
                     implied_volatility=contract.implied_volatility, built_up=contract.built_up,
                     delta=contract.delta, theta=contract.theta, vega=contract.vega, gamma=contract.gamma,
                     ltp_change_pct=contract.ltp_change_pct,
+                    quote_timestamp=quote_timestamp,
+                    quote_source="KOTAK_NEO",
                 )
     def resolve_mcx_futures(self, symbol: str) -> dict:
         """Resolve the nearest tradable MCX futures contract from Neo scrip master.

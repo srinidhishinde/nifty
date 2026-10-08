@@ -1,5 +1,4 @@
-﻿import random
-import sys
+﻿import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,392 +64,114 @@ from analytics.signal_journal import SignalJournal
 # Research signal
 # ============================================================
 
-def build_research_signal(
-    instrument: str,
-    timeframe: str,
-    seed: int = 42,
-):
+def build_research_signal(instrument: str, timeframe: str, seed: int = 42):
+    """Return a research decision derived only from persisted real Kotak data.
+
+    Historical/synthetic research generation is intentionally removed. When
+    real captured candles/options are unavailable the function returns WAIT.
+    The seed argument is retained only for API compatibility and has no effect.
     """
-    Generate deterministic synthetic research data.
+    del seed
+    from marketdata.daily_store import DailyMarketStore, load_captured_candles
 
-    This function does not connect to a broker.
-    It is used for research and paper-trading UI development.
+    frame, _source = load_captured_candles(instrument.upper())
+    store = DailyMarketStore()
+    chain, _captured_at = store.load_latest_option_chain_snapshot(instrument.upper())
 
-    Returns:
-
-        (
-            MarketContext,
-            CE OptionAnalysis,
-            PE OptionAnalysis,
-            Signal,
-            ML probability,
+    if frame.empty or chain.empty:
+        context = MarketContext(
+            timeframe=timeframe,
+            trend="NEUTRAL",
+            momentum="NEUTRAL",
+            price_vs_vwap="AT",
+            volatility_regime="NORMAL",
         )
-    """
+        signal = CEPESelector(
+            minimum_confidence=settings.minimum_signal_confidence,
+            minimum_edge=settings.minimum_signal_edge,
+        ).generate(
+            context=context,
+            ce=OptionAnalysis("CE", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ("Real captured data unavailable",)),
+            pe=OptionAnalysis("PE", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ("Real captured data unavailable",)),
+        )
+        return context, None, None, signal, None
 
-    rng = random.Random(seed)
+    frame = frame.sort_values("timestamp").copy()
+    enriched = add_indicators(frame)
+    latest = enriched.iloc[-1]
+    trend = "BULLISH" if float(latest.get("EMA9", 0)) > float(latest.get("EMA21", 0)) else "BEARISH" if float(latest.get("EMA9", 0)) < float(latest.get("EMA21", 0)) else "NEUTRAL"
+    momentum = "POSITIVE" if float(latest.get("RSI", 50)) >= 55 else "NEGATIVE" if float(latest.get("RSI", 50)) <= 45 else "NEUTRAL"
+    vwap_dev = float(latest.get("VWAP_DEV", 0) or 0)
+    price_vs_vwap = "ABOVE" if vwap_dev > 0 else "BELOW" if vwap_dev < 0 else "AT"
+    atr_pct = float(latest.get("ATR_PCT", 0) or 0)
+    volatility = "HIGH" if atr_pct >= 0.025 else "NORMAL" if atr_pct >= 0.01 else "LOW"
+    context = MarketContext(timeframe, trend, momentum, price_vs_vwap, volatility)
 
-    trend = rng.choice(
-        [
-            "BULLISH",
-            "BEARISH",
-            "NEUTRAL",
-        ]
-    )
-
-    momentum = rng.choice(
-        [
-            "POSITIVE",
-            "NEGATIVE",
-            "NEUTRAL",
-        ]
-    )
-
-    price_vs_vwap = rng.choice(
-        [
-            "ABOVE",
-            "BELOW",
-            "AT",
-        ]
-    )
-
-    volatility_regime = rng.choice(
-        [
-            "LOW",
-            "NORMAL",
-            "HIGH",
-        ]
-    )
-
-    context = MarketContext(
-        timeframe=timeframe,
-        trend=trend,
-        momentum=momentum,
-        price_vs_vwap=price_vs_vwap,
-        volatility_regime=volatility_regime,
-    )
-
-    ce_score = rng.uniform(
-        40.0,
-        75.0,
-    )
-
-    pe_score = rng.uniform(
-        40.0,
-        75.0,
-    )
-
-    research_base = {
-        "NIFTY": 25040.0,
-        "BANKNIFTY": 58000.0,
-        "CRUDEOIL": 6500.0,
-        "NATURALGAS": 300.0,
-        "COPPER": 950.0,
-        "SILVER": 95000.0,
-        "GOLD": 125000.0,
-    }.get(instrument.upper(), 25040.0)
-    research_strike = round_to_strike(
-        research_base,
-        get_strike_step(instrument),
-    )
-
-    ce = OptionAnalysis(
-        option_type="CE",
-        strike=research_strike,
-        ltp=100.0,
-        volume=10000.0,
-        open_interest=20000.0,
-        oi_change=rng.uniform(
-            -5000.0,
-            5000.0,
-        ),
-        implied_volatility=rng.uniform(
-            12.0,
-            45.0,
-        ),
-        score=round(
-            ce_score,
-            2,
-        ),
-        reasons=(
-            "Research-mode synthetic option data",
-        ),
-    )
-
-    pe = OptionAnalysis(
-        option_type="PE",
-        strike=research_strike,
-        ltp=100.0,
-        volume=10000.0,
-        open_interest=20000.0,
-        oi_change=rng.uniform(
-            -5000.0,
-            5000.0,
-        ),
-        implied_volatility=rng.uniform(
-            12.0,
-            45.0,
-        ),
-        score=round(
-            pe_score,
-            2,
-        ),
-        reasons=(
-            "Research-mode synthetic option data",
-        ),
-    )
-
-    ml_probability = round(
-        rng.uniform(
-            0.35,
-            0.80,
-        ),
-        4,
-    )
-
-    selector = CEPESelector(
-        minimum_confidence=(
-            settings.minimum_signal_confidence
-        ),
-        minimum_edge=(
-            settings.minimum_signal_edge
-        ),
-    )
-
-    signal = selector.generate(
-        context=context,
-        ce=ce,
-        pe=pe,
-    )
-
-    return (
-        context,
-        ce,
-        pe,
-        signal,
-        ml_probability,
-    )
-
+    contracts=[]
+    for row in chain.to_dict("records"):
+        try:
+            contracts.append(OptionContract(
+                symbol=str(row.get("symbol") or ""),
+                expiry=str(row.get("expiry") or ""),
+                strike=float(row.get("strike") or 0),
+                option_type=str(row.get("option_type") or "").upper(),
+                ltp=float(row.get("ltp") or 0),
+                bid=float(row["bid"]) if pd.notna(row.get("bid")) else None,
+                ask=float(row["ask"]) if pd.notna(row.get("ask")) else None,
+                volume=float(row.get("volume") or 0),
+                open_interest=float(row.get("open_interest") or 0),
+                oi_change=float(row.get("oi_change") or 0),
+                implied_volatility=float(row.get("implied_volatility") or 0),
+            ))
+        except (TypeError, ValueError):
+            continue
+    ce_rows=[x for x in contracts if x.option_type=="CE"]
+    pe_rows=[x for x in contracts if x.option_type=="PE"]
+    if not ce_rows or not pe_rows:
+        return context, None, None, CEPESelector(settings.minimum_signal_confidence, settings.minimum_signal_edge).generate(
+            context,
+            OptionAnalysis("CE",0,0,0,0,0,0,0,("Both CE and PE are required.",)),
+            OptionAnalysis("PE",0,0,0,0,0,0,0,("Both CE and PE are required.",)),
+        ), None
+    ce_contract=max(ce_rows,key=lambda x: x.open_interest)
+    pe_contract=max(pe_rows,key=lambda x: x.open_interest)
+    ce=analyze_option(ce_contract)
+    pe=analyze_option(pe_contract)
+    signal=CEPESelector(settings.minimum_signal_confidence, settings.minimum_signal_edge).generate(context,ce,pe)
+    return context, ce, pe, signal, None
 
 # ============================================================
 # Synthetic option chain
 # ============================================================
 
-def build_research_option_chain(
-    instrument: str,
-    spot: float,
-    seed: int,
-    strike_step: float,
-) -> list[OptionContract]:
+def build_research_option_chain(instrument: str, spot: float, seed: int, strike_step: float) -> list[OptionContract]:
+    """Load only persisted real Kotak option contracts for research.
+
+    The historical synthetic chain generator has been removed. The extra
+    arguments are retained for compatibility and are intentionally ignored.
     """
-    Build a deterministic synthetic option chain.
-
-    This is research-only data. It must not be interpreted
-    as live market data.
-    """
-
-    rng = random.Random(
-        f"{instrument}:{seed}:{spot}"
-    )
-
-    atm_strike = round_to_strike(spot, strike_step)
-
-    strikes = [
-        atm_strike
-        + (
-            offset * strike_step
-        )
-        for offset in range(-10, 11)
-    ]
-
-    contracts: list[OptionContract] = []
-
-    for strike in strikes:
-
-        distance = abs(
-            strike - spot
-        )
-
-        # Synthetic option premium.
-        intrinsic_ce = max(
-            0.0,
-            spot - strike,
-        )
-
-        intrinsic_pe = max(
-            0.0,
-            strike - spot,
-        )
-
-        time_value = max(
-            8.0,
-            120.0
-            - distance * 0.45,
-        )
-
-        ce_ltp = max(
-            1.0,
-            intrinsic_ce
-            + time_value
-            + rng.uniform(-3.0, 3.0),
-        )
-
-        pe_ltp = max(
-            1.0,
-            intrinsic_pe
-            + time_value
-            + rng.uniform(-3.0, 3.0),
-        )
-
-        ce_spread = max(
-            0.5,
-            ce_ltp * rng.uniform(
-                0.003,
-                0.012,
-            ),
-        )
-
-        pe_spread = max(
-            0.5,
-            pe_ltp * rng.uniform(
-                0.003,
-                0.012,
-            ),
-        )
-
-        ce_volume = rng.randint(
-            5000,
-            80000,
-        )
-
-        pe_volume = rng.randint(
-            5000,
-            80000,
-        )
-
-        ce_oi = rng.randint(
-            10000,
-            150000,
-        )
-
-        pe_oi = rng.randint(
-            10000,
-            150000,
-        )
-
-        ce_oi_change = rng.randint(
-            -30000,
-            30000,
-        )
-
-        pe_oi_change = rng.randint(
-            -30000,
-            30000,
-        )
-
-        ce_iv = rng.uniform(
-            12.0,
-            38.0,
-        )
-
-        pe_iv = rng.uniform(
-            12.0,
-            38.0,
-        )
-
-        expiry = (
-            pd.Timestamp.now()
-            .normalize()
-            + pd.Timedelta(days=7)
-        ).strftime(
-            "%Y-%m-%d"
-        )
-
-        contracts.append(
-            OptionContract(
-                symbol=(
-                    f"{instrument}"
-                    f"{int(strike)}CE"
-                ),
-                expiry=expiry,
-                strike=float(strike),
-                option_type="CE",
-                ltp=round(
-                    ce_ltp,
-                    2,
-                ),
-                bid=round(
-                    max(
-                        0.05,
-                        ce_ltp
-                        - ce_spread,
-                    ),
-                    2,
-                ),
-                ask=round(
-                    ce_ltp
-                    + ce_spread,
-                    2,
-                ),
-                volume=float(
-                    ce_volume
-                ),
-                open_interest=float(
-                    ce_oi
-                ),
-                oi_change=float(
-                    ce_oi_change
-                ),
-                implied_volatility=round(
-                    ce_iv,
-                    2,
-                ),
-            )
-        )
-
-        contracts.append(
-            OptionContract(
-                symbol=(
-                    f"{instrument}"
-                    f"{int(strike)}PE"
-                ),
-                expiry=expiry,
-                strike=float(strike),
-                option_type="PE",
-                ltp=round(
-                    pe_ltp,
-                    2,
-                ),
-                bid=round(
-                    max(
-                        0.05,
-                        pe_ltp
-                        - pe_spread,
-                    ),
-                    2,
-                ),
-                ask=round(
-                    pe_ltp
-                    + pe_spread,
-                    2,
-                ),
-                volume=float(
-                    pe_volume
-                ),
-                open_interest=float(
-                    pe_oi
-                ),
-                oi_change=float(
-                    pe_oi_change
-                ),
-                implied_volatility=round(
-                    pe_iv,
-                    2,
-                ),
-            )
-        )
-
+    del spot, seed, strike_step
+    from marketdata.daily_store import DailyMarketStore
+    frame, _captured_at = DailyMarketStore().load_latest_option_chain_snapshot(instrument.upper())
+    contracts=[]
+    for row in frame.to_dict("records"):
+        try:
+            contracts.append(OptionContract(
+                symbol=str(row.get("symbol") or ""),
+                expiry=str(row.get("expiry") or ""),
+                strike=float(row.get("strike") or 0),
+                option_type=str(row.get("option_type") or "").upper(),
+                ltp=float(row.get("ltp") or 0),
+                bid=float(row["bid"]) if pd.notna(row.get("bid")) else None,
+                ask=float(row["ask"]) if pd.notna(row.get("ask")) else None,
+                volume=float(row.get("volume") or 0),
+                open_interest=float(row.get("open_interest") or 0),
+                oi_change=float(row.get("oi_change") or 0),
+                implied_volatility=float(row.get("implied_volatility") or 0),
+            ))
+        except (TypeError, ValueError):
+            continue
     return contracts
-
 
 # ============================================================
 # Option-chain dataframe
@@ -1273,21 +994,16 @@ if spot is None:
 # ============================================================
 # Cross-market trend radar
 # ============================================================
-def _research_trend_snapshot(name: str, seed_value: int) -> TrendSnapshot:
-    base = {"NIFTY": 25040.0, "CRUDE": 6500.0, "NATGAS": 300.0, "COPPER": 950.0}[name]
-    rng = np.random.default_rng(abs(hash((name, int(seed_value)))) % (2**32))
-    returns = rng.normal(0.0, base * 0.0008, 120)
-    close = base + np.cumsum(returns)
-    frame = pd.DataFrame({
-        "timestamp": pd.date_range(end=pd.Timestamp.now(), periods=120, freq="5min"),
-        "open": close,
-        "high": close + abs(rng.normal(0, base * 0.0003, 120)),
-        "low": close - abs(rng.normal(0, base * 0.0003, 120)),
-        "close": close,
-        "volume": rng.integers(1000, 10000, 120),
-    })
-    return calculate_trend(name, frame, is_live=False)
-
+def _real_radar_snapshot(name: str, connected: bool) -> TrendSnapshot:
+    from marketdata.daily_store import load_captured_candles
+    frame, _source = load_captured_candles(name)
+    if frame.empty:
+        return TrendSnapshot(
+            name, "DATA_UNAVAILABLE", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN",
+            None, 0, False,
+            "No real captured Kotak candles are available; synthetic radar data is disabled.",
+        )
+    return calculate_trend(name, frame, is_live=connected)
 
 st.subheader("Market Radar")
 st.caption("Directional context for NIFTY, Crude Oil, Natural Gas and Copper. Research cards are explicitly marked when a live feed is unavailable.")
@@ -1295,12 +1011,7 @@ radar_names = ["NIFTY", "CRUDE", "NATGAS", "COPPER"]
 radar_cols = st.columns(4)
 radar_snapshots: dict[str, TrendSnapshot] = {}
 for name, col in zip(radar_names, radar_cols):
-    if name == "NIFTY" and neo_status.connected:
-        # Until historical intraday streaming is wired for every instrument, do not
-        # fabricate a live trend from the single index quote.
-        snap = TrendSnapshot(name, "LIVE_QUOTE_ONLY", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", pd.Timestamp.now(), 0, True, "Live quote available; completed-candle history is required for a genuine trend score.")
-    else:
-        snap = _research_trend_snapshot(name, int(seed))
+    snap = _real_radar_snapshot(name, neo_status.connected)
     radar_snapshots[name] = snap
     if snap.direction in {"STRONG_UP", "UP"}:
         cls = "radar-up"
@@ -1314,7 +1025,7 @@ for name, col in zip(radar_names, radar_cols):
     col.markdown(f'<div class="market-radar"><div class="radar-title">{name}</div><span class="radar-pill {cls}">{snap.direction}</span><br><small>{source} · score {snap.score:.0f} · {snap.volatility}</small><br><small>{snap.reason}</small></div>', unsafe_allow_html=True)
 
 radar_context = aggregate_context(radar_snapshots)
-st.caption(f"Cross-market context score: {radar_context:+.1f}. This is a context filter, not a standalone trade signal.")
+st.caption(f"Cross-market context score: {radar_context:+.1f}. Only real captured Kotak candles are eligible; unavailable markets contribute no score.")
 
 # ============================================================
 # System readiness dashboard
@@ -1323,28 +1034,123 @@ from strategy.readiness import assess_readiness
 from strategy.regime import classify_regime
 
 st.subheader("System Readiness")
-st.caption("Design-time gate dashboard. Automated test status must be confirmed by the repository-local UAT before merge.")
-regime_snapshot = classify_regime(pd.Series({
-    "ADX": 20.0, "ATR_PCT": 0.01, "EMA_SPREAD": 1.0, "VWAP_DEV": 0.0,
-}), global_news_score)
+st.caption(
+    "Evidence-only 100-point audit. A missing or unverified gate is a failure; "
+    "the score never grants trading permission by itself."
+)
+
+readiness_tests_passed = False  # Must be certified by repository-local UAT evidence.
+readiness_broker_connected = bool(neo_status.connected)
+readiness_source_integrity = bool(snapshot is not None and snapshot.source == "KOTAK_NEO")
+readiness_no_synthetic = True
+readiness_underlying_quote_fresh = False  # Provider timestamp must be broker-supplied; local receipt time is not evidence.
+readiness_candle_fresh = False
+if snapshot is not None and snapshot.frame is not None and not snapshot.frame.empty:
+    last_ts = pd.to_datetime(snapshot.frame["timestamp"], errors="coerce").dropna()
+    if not last_ts.empty:
+        age_minutes = (pd.Timestamp.now(tz="Asia/Kolkata") - last_ts.iloc[-1].tz_convert("Asia/Kolkata")).total_seconds() / 60.0
+        readiness_candle_fresh = age_minutes <= (10 if decision_timeframe == "5m" else 20)
+
+readiness_data_quality = bool(snapshot is not None and snapshot.quality_status == "GREEN")
+readiness_chain_present = bool(snapshot is not None and snapshot.option_chain)
+verified_quotes = []
+for _contract in (snapshot.option_chain if snapshot is not None else []):
+    _source = str(getattr(_contract, "quote_source", "") or "").upper()
+    _ts = getattr(_contract, "quote_timestamp", None)
+    _bid = float(getattr(_contract, "bid", 0) or 0)
+    _ask = float(getattr(_contract, "ask", 0) or 0)
+    if _source == "KOTAK_NEO" and _ts is not None and _bid > 0 and _ask >= _bid:
+        try:
+            _age = (pd.Timestamp.now(tz="Asia/Kolkata") - pd.Timestamp(_ts).tz_convert("Asia/Kolkata")).total_seconds()
+            verified_quotes.append(_age <= 60.0)
+        except Exception:
+            verified_quotes.append(False)
+readiness_option_quotes_fresh = bool(verified_quotes) and all(verified_quotes)
+readiness_option_liquidity = bool(snapshot and snapshot.option_chain and any(
+    float(getattr(x, "open_interest", 0) or 0) > 0 and float(getattr(x, "volume", 0) or 0) > 0
+    for x in snapshot.option_chain
+))
+readiness_option_flow = bool(snapshot and snapshot.pcr_oi is not None and np.isfinite(float(snapshot.pcr_oi)))
+
+# Regime is derived from the same completed decision row used by the
+# canonical signal. Keep this calculation local to the readiness block so the
+# dashboard never depends on a variable created later in the module.
+_readiness_regime_snapshot = None
+if prediction_frame is not None and not prediction_frame.empty:
+    try:
+        _readiness_regime_snapshot = classify_regime(prediction_frame.iloc[-1])
+    except (TypeError, ValueError, KeyError):
+        _readiness_regime_snapshot = None
+readiness_regime = bool(
+    _readiness_regime_snapshot is not None
+    and _readiness_regime_snapshot.tradable
+    and canonical_signal.valid
+)
+readiness_ml = bool(st.session_state.get("final_ml_artifacts"))
+readiness_ensemble = bool("ensemble_rows" in locals() and ensemble_rows and abs(float(ensemble_rows[0].final_ce) - float(ensemble_rows[0].final_pe)) >= 10.0)
+_readiness_chain_signal = locals().get("chain_signal")
+readiness_trade_plan = bool(
+    _readiness_chain_signal is not None
+    and _readiness_chain_signal.direction in {"BUY CE", "BUY PE"}
+    and _readiness_chain_signal.entry_price is not None
+    and _readiness_chain_signal.stop_loss is not None
+    and _readiness_chain_signal.take_profit is not None
+    and _readiness_chain_signal.take_profit > _readiness_chain_signal.entry_price > _readiness_chain_signal.stop_loss
+    and getattr(_readiness_chain_signal, "confidence", 0) >= settings.minimum_signal_confidence
+)
+readiness_risk_budget = bool(settings.starting_capital > 0)
+readiness_risk_controls = bool(readiness_risk_budget and settings.max_trades_per_day > 0 and settings.max_daily_loss_fraction > 0)
+readiness_duplicate_guard = True
+readiness_journal = __import__("pathlib").Path("logs/signal_journal.jsonl").exists()
+readiness_execution = bool(settings.live_trading_allowed())
+readiness_reconciliation = False
+readiness_backtest = False
+readiness_option_history = False
 readiness = assess_readiness(
-    tests_passed=False,  # Repository-local UAT must certify this; never hardcode PASS.
+    tests_passed=readiness_tests_passed,
     warmup_ready=bool(prediction_frame is not None and not prediction_frame.empty),
-    risk_engine_ready=True,
-    ml_available=bool(st.session_state.get("final_ml_artifacts")),
+    risk_engine_ready=readiness_risk_controls,
+    ml_available=readiness_ml,
     live_order_enabled=settings.live_trading_allowed(),
-    realistic_backtest_available=True,
-    option_premium_history_available=bool(getattr(snapshot, "option_chain", ())) if snapshot is not None else False,
+    realistic_backtest_available=readiness_backtest,
+    option_premium_history_available=readiness_option_history,
+    broker_connected=readiness_broker_connected,
+    source_integrity=readiness_source_integrity,
+    no_synthetic_fallback=readiness_no_synthetic,
+    underlying_quote_fresh=readiness_underlying_quote_fresh,
+    candle_fresh=readiness_candle_fresh,
+    data_quality_ready=readiness_data_quality,
+    option_chain_present=readiness_chain_present,
+    option_quotes_fresh=readiness_option_quotes_fresh,
+    option_liquidity_ready=readiness_option_liquidity,
+    option_flow_ready=readiness_option_flow,
+    regime_ready=readiness_regime,
+    ensemble_ready=readiness_ensemble,
+    trade_plan_ready=readiness_trade_plan,
+    risk_budget_ready=readiness_risk_budget,
+    risk_controls_ready=readiness_risk_controls,
+    duplicate_guard_ready=readiness_duplicate_guard,
+    journal_ready=readiness_journal,
+    execution_ready=readiness_execution,
+    reconciliation_ready=readiness_reconciliation,
+    live_approval=settings.live_trading_allowed(),
 )
 rc = st.columns(4)
 rc[0].metric("Readiness", f"{readiness.score:.0f}/100")
 rc[1].metric("Status", readiness.status)
-rc[2].metric("Regime", regime_snapshot.regime)
+rc[2].metric(
+    "Regime",
+    _readiness_regime_snapshot.regime if _readiness_regime_snapshot is not None else "UNKNOWN",
+)
 rc[3].metric("Live Orders", "ENABLED" if settings.live_trading_allowed() else "LOCKED")
-with st.expander("Readiness gates", expanded=False):
+with st.expander("100-point evidence gates", expanded=False):
     st.dataframe(pd.DataFrame([{
-        "Gate": g.name, "Passed": g.passed, "Priority": g.severity, "Detail": g.detail
+        "Gate": g.name, "Passed": g.passed, "Points": g.points,
+        "Priority": g.severity, "Detail": g.detail
     } for g in readiness.gates]), width="stretch", hide_index=True)
+    if readiness.blockers:
+        st.error("BLOCKERS: " + " | ".join(readiness.blockers))
+
 
 # ============================================================
 # Risk summary
@@ -1459,7 +1265,7 @@ elif environment != "RESEARCH":
     )
     st.caption("Live market context is unavailable because the canonical Kotak Neo decision frame is blocked.")
 else:
-    st.caption("Research context is synthetic and is available only in RESEARCH environment.")
+    st.caption("Research context is real-data-only. No synthetic market context is generated; unavailable data remains WAIT/UNKNOWN.")
 
 st.subheader(
     "Market Context"
@@ -1652,6 +1458,8 @@ if chain_config:
                             vega=float(row["vega"]) if pd.notna(row.get("vega")) else None,
                             gamma=float(row["gamma"]) if pd.notna(row.get("gamma")) else None,
                             ltp_change_pct=float(row.get("ltp_change_pct") or 0),
+                            quote_timestamp=pd.Timestamp(row["quote_timestamp"]).to_pydatetime() if row.get("quote_timestamp") not in (None, "") and pd.notna(row.get("quote_timestamp")) else None,
+                            quote_source=str(row.get("quote_source") or ""),
                         )
                     )
                 except (TypeError, ValueError):
@@ -1896,6 +1704,7 @@ if tradable_contracts and spot is not None:
         global_news_score=global_news_score,
         direction_hint=direction_hint,
         require_two_sided_quote=(environment != "RESEARCH"),
+        require_verified_broker_quote=(environment != "RESEARCH"),
     )
 else:
     chain_signal, chain_signal_rows = None, []
