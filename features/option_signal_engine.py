@@ -136,7 +136,29 @@ def generate_option_chain_signal(
             (reason, "No canonical side selected; trade is blocked."),
         ), frame
 
-    winner = frame[frame["Side"] == winner_side].sort_values("Confidence", ascending=False).iloc[0]
+    from strategy.production_hardening import choose_executable_option
+    executable = choose_executable_option(
+        [c for c in contracts if str(getattr(c, "option_type", "")).upper() == winner_side],
+        spot=float(spot),
+        direction=winner_side,
+        max_quote_age_seconds=max_quote_age_seconds,
+        max_spread_pct=max_spread_pct,
+    )
+    if executable is None:
+        return OptionChainSignal(
+            "WAIT", 0.0, None, None, None, float(spot), float(spot), float(spot),
+            ("Canonical executable-option gate rejected every candidate.",),
+        ), frame
+    winner_rows = frame[
+        (frame["Side"] == winner_side)
+        & (pd.to_numeric(frame["Strike"], errors="coerce") == float(executable.strike))
+    ].sort_values("Confidence", ascending=False)
+    if winner_rows.empty:
+        return OptionChainSignal(
+            "WAIT", 0.0, None, None, None, float(spot), float(spot), float(spot),
+            ("Selected executable option was not present in the scored decision frame.",),
+        ), frame
+    winner = winner_rows.iloc[0]
     entry = winner["Entry Price"] if pd.notna(winner["Entry Price"]) else None
     sl = winner["Stop Loss"] if pd.notna(winner["Stop Loss"]) else None
     tp = winner["Take Profit"] if pd.notna(winner["Take Profit"]) else None
