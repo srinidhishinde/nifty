@@ -152,6 +152,9 @@ def test_option_trade_levels_follow_live_entry_and_never_use_static_target():
         option_type="CE", ltp=11.0, bid=10.8, ask=11.2,
         volume=10000, open_interest=20000, oi_change=500,
         implied_volatility=20.0, ltp_change_pct=1.0,
+        exchange="NSE_FO", underlying="NIFTY", instrument_token="nse_fo|123",
+        quote_timestamp=pd.Timestamp.now(tz="Asia/Kolkata").to_pydatetime(),
+        quote_source="KOTAK_NEO", identity_verified=True, scrip_master_hash="test-fixture-scrip-master",
     )
     signal_a, _ = generate_option_chain_signal(
         [base], spot=25000.0, direction_hint="CE", require_two_sided_quote=True
