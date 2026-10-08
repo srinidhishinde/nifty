@@ -1,5 +1,4 @@
-﻿import random
-import sys
+﻿import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1171,7 +1170,7 @@ elif environment != "RESEARCH":
     )
     st.caption("Live market context is unavailable because the canonical Kotak Neo decision frame is blocked.")
 else:
-    st.caption("Research context is synthetic and is available only in RESEARCH environment.")
+    st.caption("Research context is real-data-only. No synthetic market context is generated; unavailable data remains WAIT/UNKNOWN.")
 
 st.subheader(
     "Market Context"
