@@ -41,6 +41,8 @@ def generate_option_chain_signal(
     min_premium: float = 10.0,
     max_premium: float = 500.0,
     max_spread_pct: float = 0.05,
+    direction_hint: str | None = None,
+    require_two_sided_quote: bool = False,
 ) -> tuple[OptionChainSignal, pd.DataFrame]:
     """Generate an auditable CE/PE signal.
 
