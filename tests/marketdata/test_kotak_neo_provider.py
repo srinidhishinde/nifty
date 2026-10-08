@@ -344,3 +344,58 @@ def test_daily_store_loader_uses_only_captured_partitions(tmp_path):
     assert source == "KOTAK_CAPTURED"
     assert len(loaded) == 2
     assert set(loaded["data_source"]) == {"KOTAK_CAPTURED"}
+
+
+
+def test_nifty_index_quote_uses_documented_name_not_numeric_scrip_token():
+    class IndexNeo:
+        def __init__(self):
+            self.search_calls = []
+            self.quote_calls = []
+
+        def search_scrip(self, **kwargs):
+            self.search_calls.append(kwargs)
+            return [{"pSymbol": "26000", "pExchSeg": "nse_cm", "pSymbolName": "NIFTY 50", "pTrdSymbol": "NIFTY"}]
+
+        def quotes(self, **kwargs):
+            self.quote_calls.append(kwargs)
+            return [{
+                "ltp": "25000.5",
+                "timestamp": "2026-10-09T10:00:00+05:30",
+                "exchange_segment": "nse_cm",
+            }]
+
+    client = IndexNeo()
+    provider = KotakNeoProvider(client)
+
+    assert provider.resolve_nifty_index_neosymbol("NIFTY") == "nse_cm|Nifty 50"
+    quote = provider.get_index_quote("Nifty 50")
+
+    assert quote.ltp == 25000.5
+    assert client.search_calls == []
+    assert client.quote_calls[0]["instrument_tokens"] == [
+        {"instrument_token": "Nifty 50", "exchange_segment": "nse_cm"}
+    ]
+
+
+def test_nifty_index_resolver_rejects_unknown_index_instead_of_guessing():
+    provider = KotakNeoProvider(FakeNeo())
+    try:
+        provider.resolve_nifty_index_neosymbol("MADE UP INDEX")
+    except ValueError as exc:
+        assert "Unsupported Kotak index identifier" in str(exc)
+    else:
+        raise AssertionError("unknown index names must fail closed")
+
+
+def test_kotak_limits_bridge_error_is_not_treated_as_account_data():
+    class LimitsErrorNeo:
+        def limits(self):
+            return {"stat": "Not_Ok", "stCode": 300015, "errMsg": "bridge API error out"}
+
+    try:
+        KotakNeoProvider(LimitsErrorNeo()).get_account_state()
+    except RuntimeError as exc:
+        assert "bridge API error out" in str(exc)
+    else:
+        raise AssertionError("broker limits bridge errors must fail closed")
