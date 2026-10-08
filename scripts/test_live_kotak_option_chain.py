@@ -74,7 +74,7 @@ def main() -> int:
         if len(structurally_valid) != len(contracts):
             print(
                 f"[FAIL] Contract structure: valid={len(structurally_valid)} "
-                f"total={len(contracts)}"
+                f"total={len(contracts)}" f"strike_invalid={sum(float(x.strike or 0) <= 0 for x in contracts)} expiry_missing={sum(not bool(x.expiry) for x in contracts)} token_missing={sum(not bool(x.instrument_token) for x in contracts)}"
             )
             return 1
 
