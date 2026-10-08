@@ -114,17 +114,29 @@ def validate_option_contract(
         reasons.append("Quote provenance/timestamp is not broker-verified.")
     if quote_ts is not None and not is_fresh(quote_ts, max_age_seconds=max_quote_age_seconds, now=now):
         reasons.append("Option quote is stale or from the future.")
-    bid = float(getattr(contract, "bid", 0) or 0)
-    ask = float(getattr(contract, "ask", 0) or 0)
-    ltp = float(getattr(contract, "ltp", 0) or 0)
-    volume = float(getattr(contract, "volume", 0) or 0)
-    oi = float(getattr(contract, "open_interest", 0) or 0)
-    strike = float(getattr(contract, "strike", 0) or 0)
+    def _finite_number(name: str) -> float | None:
+        raw = getattr(contract, name, 0)
+        try:
+            value = float(raw if raw not in (None, "") else 0)
+        except (TypeError, ValueError):
+            reasons.append(f"Invalid numeric option field: {name}.")
+            return None
+        if not math.isfinite(value):
+            reasons.append(f"Non-finite option field: {name}.")
+            return None
+        return value
+
+    bid = _finite_number("bid")
+    ask = _finite_number("ask")
+    ltp = _finite_number("ltp")
+    volume = _finite_number("volume")
+    oi = _finite_number("open_interest")
+    strike = _finite_number("strike")
     side = str(getattr(contract, "option_type", "") or "").upper()
     expiry = str(getattr(contract, "expiry", "") or "").strip()
     if side not in {"CE", "PE"}:
         reasons.append("Invalid option side.")
-    if strike <= 0 or not math.isfinite(strike):
+    if strike is None or strike <= 0:
         reasons.append("Invalid strike.")
     if not expiry:
         reasons.append("Missing expiry.")
@@ -142,13 +154,13 @@ def validate_option_contract(
         reasons.append("Missing canonical broker instrument token.")
     if not symbol:
         reasons.append("Missing canonical broker trading symbol.")
-    if ltp <= 0:
+    if ltp is None or ltp <= 0:
         reasons.append("Non-positive LTP.")
-    if bid <= 0 or ask <= 0 or ask < bid:
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
         reasons.append("Invalid executable bid/ask.")
     elif ask > 0 and (ask - bid) / ask > float(max_spread_pct):
         reasons.append("Bid/ask spread exceeds configured limit.")
-    if volume <= 0 or oi <= 0:
+    if volume is None or oi is None or volume <= 0 or oi <= 0:
         reasons.append("Option has no executable volume/OI.")
     return not reasons, tuple(reasons)
 
@@ -160,6 +172,33 @@ def synchronized_timestamps(*values: Any, tolerance_seconds: float = 90.0) -> bo
     ages = [(v - timestamps[0]).total_seconds() for v in timestamps[1:]]
     return all(abs(x) <= float(tolerance_seconds) for x in ages)
 
+
+
+def validate_contract_identity(
+    contract: Any,
+    *,
+    expected_instrument: str | None = None,
+    expected_exchange: str | None = None,
+    expected_expiry: Any | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    reasons: list[str] = []
+    exchange = str(getattr(contract, "exchange", "") or "").strip().lower()
+    underlying = str(getattr(contract, "underlying", "") or "").strip().upper()
+    symbol = str(getattr(contract, "symbol", "") or "").strip()
+    token = str(getattr(contract, "instrument_token", "") or "").strip()
+    if expected_instrument and underlying != str(expected_instrument).strip().upper():
+        reasons.append("Option underlying does not match decision instrument.")
+    if expected_exchange and exchange != str(expected_exchange).strip().lower():
+        reasons.append("Option exchange does not match decision exchange.")
+    if expected_expiry and str(getattr(contract, "expiry", "")).strip() != str(expected_expiry).strip():
+        reasons.append("Option expiry does not match selected decision expiry.")
+    if "|" not in token or not token.split("|", 1)[1]:
+        reasons.append("Broker instrument token is not canonical.")
+    if not symbol:
+        reasons.append("Broker trading symbol is missing.")
+    if "|" in token and token.split("|", 1)[0].strip().lower() != exchange:
+        reasons.append("Broker token exchange does not match contract exchange.")
+    return not reasons, tuple(reasons)
 
 def choose_executable_option(
     contracts: Sequence[Any],
@@ -182,7 +221,8 @@ def choose_executable_option(
             require_broker_quote=True,
             max_spread_pct=max_spread_pct,
         )
-        if not ok:
+        identity_ok, _ = validate_contract_identity(contract)
+        if not ok or not identity_ok:
             continue
         bid = float(getattr(contract, "bid", 0) or 0)
         ask = float(getattr(contract, "ask", 0) or 0)
