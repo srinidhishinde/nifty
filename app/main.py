@@ -1252,16 +1252,15 @@ if neo_status.connected:
         st.error(f"Live underlying quote request failed: {exc}")
 
 if spot is None and environment == "RESEARCH":
-    spot_rng = random.Random(f"spot:{instrument}:{seed}")
-    base_spot = {
-        "NIFTY": 25040.0,
-        "CRUDEOIL": 6500.0,
-        "NATURALGAS": 300.0,
-        "COPPER": 950.0,
-        "SILVER": 95000.0,
-        "GOLD": 125000.0,
-    }.get(instrument, 25000.0)
-    spot = base_spot + spot_rng.uniform(-100, 100)
+    from marketdata.daily_store import load_captured_candles
+    research_frame, _ = load_captured_candles(instrument.upper())
+    if not research_frame.empty:
+        latest_research = research_frame.sort_values("timestamp").iloc[-1]
+        spot = float(latest_research["close"])
+        st.caption(
+            "Research spot: latest persisted KOTAK_CAPTURED close at "
+            f"{latest_research['timestamp']}."
+        )
 
 if spot is None:
     st.warning(
@@ -1800,16 +1799,46 @@ if live_contracts:
 else:
     contracts = []
     if environment == "RESEARCH":
-        contracts = build_research_option_chain(
-            instrument=instrument,
-            spot=spot,
-            seed=int(seed),
-            strike_step=strike_step,
+        from marketdata.daily_store import DailyMarketStore
+        research_frame, captured_at = DailyMarketStore().load_latest_option_chain_snapshot(
+            instrument.upper()
         )
-        st.warning(
-            "RESEARCH DATA ONLY — this option chain is synthetic and is not a broker feed. "
-            "It is available only in RESEARCH environment."
-        )
+        for row in research_frame.to_dict("records"):
+            try:
+                contracts.append(
+                    OptionContract(
+                        symbol=str(row.get("symbol") or ""),
+                        expiry=str(row.get("expiry") or ""),
+                        strike=float(row["strike"]),
+                        option_type=str(row.get("option_type") or "").upper(),
+                        ltp=float(row.get("ltp") or 0),
+                        bid=float(row["bid"]) if pd.notna(row.get("bid")) else None,
+                        ask=float(row["ask"]) if pd.notna(row.get("ask")) else None,
+                        volume=float(row.get("volume") or 0),
+                        open_interest=float(row.get("open_interest") or 0),
+                        oi_change=float(row.get("oi_change") or 0),
+                        implied_volatility=float(row.get("implied_volatility") or 0),
+                        built_up=str(row.get("built_up") or ""),
+                        delta=float(row["delta"]) if pd.notna(row.get("delta")) else None,
+                        theta=float(row["theta"]) if pd.notna(row.get("theta")) else None,
+                        vega=float(row["vega"]) if pd.notna(row.get("vega")) else None,
+                        gamma=float(row["gamma"]) if pd.notna(row.get("gamma")) else None,
+                        ltp_change_pct=float(row.get("ltp_change_pct") or 0),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+        if contracts:
+            stamp = captured_at.strftime("%Y-%m-%d %H:%M:%S %Z") if captured_at is not None else "timestamp unavailable"
+            st.success(
+                f"RESEARCH DATA — latest persisted real KOTAK_CAPTURED option chain "
+                f"({len(contracts)} contracts, captured {stamp})."
+            )
+        else:
+            st.warning(
+                "RESEARCH DATA UNAVAILABLE — no real captured option chain exists. "
+                "Synthetic option-chain data is disabled."
+            )
     else:
         st.warning(
             f"No live {instrument} option-chain data is available. "
