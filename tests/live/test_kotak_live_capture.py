@@ -141,3 +141,49 @@ def test_capture_option_chain_persists_real_nifty_snapshot(tmp_path):
     assert set(frame["option_type"]) == {"CE", "PE"}
     assert set(frame["strike"]) == {25000.0}
     assert captured_at is not None
+
+
+def test_option_trade_levels_follow_live_entry_and_never_use_static_target():
+    from features.option_signal_engine import generate_option_chain_signal
+    from features.option_chain import OptionContract
+
+    base = OptionContract(
+        symbol="NIFTY26OCT25000CE", expiry="2026-10-13", strike=25000.0,
+        option_type="CE", ltp=11.0, bid=10.8, ask=11.2,
+        volume=10000, open_interest=20000, oi_change=500,
+        implied_volatility=20.0, ltp_change_pct=1.0,
+    )
+    signal_a, _ = generate_option_chain_signal(
+        [base], spot=25000.0, direction_hint="CE", require_two_sided_quote=True
+    )
+    changed = OptionContract(**{**base.__dict__, "ltp": 13.0, "bid": 12.8, "ask": 13.2})
+    signal_b, _ = generate_option_chain_signal(
+        [changed], spot=25000.0, direction_hint="CE", require_two_sided_quote=True
+    )
+
+    assert signal_a.direction == "BUY CE"
+    assert signal_b.direction == "BUY CE"
+    assert signal_a.entry_price == 11.2
+    assert signal_b.entry_price == 13.2
+    assert signal_a.take_profit != 14.0
+    assert signal_b.take_profit != signal_a.take_profit
+    assert signal_a.stop_loss < signal_a.entry_price < signal_a.take_profit
+    assert signal_b.stop_loss < signal_b.entry_price < signal_b.take_profit
+
+
+def test_option_trade_is_blocked_without_two_sided_live_quote():
+    from features.option_signal_engine import generate_option_chain_signal
+    from features.option_chain import OptionContract
+
+    contract = OptionContract(
+        symbol="NIFTY26OCT25000CE", expiry="2026-10-13", strike=25000.0,
+        option_type="CE", ltp=125.0, bid=None, ask=None,
+        volume=10000, open_interest=20000, oi_change=500,
+        implied_volatility=20.0,
+    )
+    signal, rows = generate_option_chain_signal(
+        [contract], spot=25000.0, direction_hint="CE", require_two_sided_quote=True
+    )
+    assert signal.direction == "WAIT"
+    assert signal.entry_price is None
+    assert rows.empty
