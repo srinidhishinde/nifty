@@ -3,6 +3,7 @@ from typing import Any, List
 
 from marketdata.models.market_data import Candle, OptionContract, Quote
 from marketdata.providers.base import MarketDataProvider
+from strategy.market_specs import validate_option_strike
 
 
 class KotakNeoProvider(MarketDataProvider):
@@ -462,16 +463,18 @@ class KotakNeoProvider(MarketDataProvider):
             else 0.0
         )
 
-        strike = payload_strike
-        if symbol_strike > 0:
-            if strike <= 0:
-                strike = symbol_strike
-            elif abs(strike - symbol_strike) > 1e-9:
-                # Payload strike and contract symbol disagree. Fail closed to
-                # the broker's canonical trading symbol rather than displaying
-                # a corrupted strike. Keep this instrument-specific: no generic
-                # /100 or *100 conversion is applied to MCX/NIFTY strikes.
-                strike = symbol_strike
+        # Prefer the broker's canonical symbol strike, but validate it before
+        # constructing an OptionContract. Never rescale an invalid value.
+        strike = symbol_strike if symbol_strike > 0 else payload_strike
+        if symbol_strike > 0 and payload_strike > 0 and abs(payload_strike - symbol_strike) > 1e-9:
+            # A disagreement is retained only when both values are individually
+            # valid. The symbol remains authoritative for contract identity.
+            strike = symbol_strike
+        strike = validate_option_strike(
+            underlying,
+            strike,
+            symbol_strike=symbol_strike if symbol_strike > 0 else None,
+        )
         ltp = self._float(quote.get("ltp"))
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
