@@ -148,7 +148,10 @@ class FiveMinuteCandleBuilder:
         key = self._key(tick)
         state = self._states.get(key)
         completed: list[dict[str, Any]] = []
-        volume_delta = self._volume_delta(tick)
+        # Kotak SFeed volume_traded_today is cumulative; convert it before
+        # assigning/accumulating candle volume so every update has a defined
+        # per-tick delta, including the first tick of a new bucket.
+        volume_delta: float = self._volume_delta(tick)
 
         if state is not None and bucket > state.bucket:
             completed.append(self._to_row(state))
