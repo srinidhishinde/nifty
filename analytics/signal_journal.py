@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,13 +22,31 @@ class SignalJournal:
         payload = dict(record)
         from strategy.production_hardening import idempotency_key
         payload.setdefault("decision_id", idempotency_key(payload))
-        # Streamlit reruns must not create duplicate decision records.
-        if self._contains_decision(payload["decision_id"]):
-            return
         payload.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, default=str, separators=(",", ":")) + "\n")
+        # Use an advisory sidecar lock so concurrent Streamlit reruns cannot
+        # both observe a missing decision and append duplicates.
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            try:
+                import msvcrt
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            except (ImportError, OSError):
+                pass
+            try:
+                if self._contains_decision(payload["decision_id"]):
+                    return
+                with self.path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload, default=str, separators=(",", ":")) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            finally:
+                try:
+                    import msvcrt
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                except (ImportError, OSError):
+                    pass
 
     def _contains_decision(self, decision_id: str) -> bool:
         if not self.path.exists():
