@@ -538,11 +538,12 @@ class KotakNeoProvider(MarketDataProvider):
             or item.get("strike")
         )
 
-        # The broker trading symbol is the authoritative contract identifier.
-        # In particular, never let a misplaced/incorrect strike field from a
-        # CSV/API adapter turn an NIFTY option into values such as 1320 or 500.
-        # Kotak symbols end with the actual strike immediately before CE/PE,
-        # e.g. NIFTY26OCT25000CE or CRUDEOILM26OCT8800CE.
+        # Kotak's compact trading symbol is not safely parseable by simply
+        # taking all digits before CE/PE. For example:
+        #   NIFTY26O1320250CE
+        # contains expiry day 13 + strike 20250, so a suffix regex produces
+        # the false strike 1320250. The instrument's strkPrc is the explicit
+        # strike field and must win when supplied.
         import re
         symbol_match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", str(symbol).upper())
         symbol_strike = (
@@ -550,18 +551,17 @@ class KotakNeoProvider(MarketDataProvider):
             if symbol_match
             else 0.0
         )
+        explicit_strike = payload_strike
+        if explicit_strike <= 0:
+            explicit_strike = self._float(instrument.get("strkPrc") or item.get("strkPrc"))
 
-        # Prefer the broker's canonical symbol strike, but validate it before
-        # constructing an OptionContract. Never rescale an invalid value.
-        strike = symbol_strike if symbol_strike > 0 else payload_strike
-        if symbol_strike > 0 and payload_strike > 0 and abs(payload_strike - symbol_strike) > 1e-9:
-            # A disagreement is retained only when both values are individually
-            # valid. The symbol remains authoritative for contract identity.
-            strike = symbol_strike
+        # Prefer Kotak's explicit strike field. The symbol is used only as a
+        # fallback because expiry/day digits can be adjacent to the strike.
+        strike = explicit_strike if explicit_strike > 0 else symbol_strike
         strike = validate_option_strike(
             underlying,
             strike,
-            symbol_strike=symbol_strike if symbol_strike > 0 else None,
+            symbol_strike=explicit_strike if explicit_strike > 0 else None,
         )
         ltp = self._quote_ltp(quote)
         volume = self._float(quote.get("volume") or quote.get("vol"))
