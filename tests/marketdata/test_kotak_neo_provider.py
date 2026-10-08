@@ -64,6 +64,7 @@ def test_kotak_option_chain_normalizes_current_response():
         underlying="NIFTY",
         exchange="NSE",
         count=40,
+        enrich_quotes=True,
     )
 
     assert len(chain) == 2
@@ -123,6 +124,20 @@ def test_mcx_option_chain_uses_canonical_scrip_master_underlying():
     assert client.option_calls[0]["underlying"] == "CRUDEOILM"
     assert client.search_calls[0]["exchange_segment"] == "mcx_fo"
 
+
+
+def test_option_chain_defaults_to_broker_payload_without_quote_enrichment():
+    class NoQuotesNeo(FakeNeo):
+        def quotes(self, **kwargs):
+            raise AssertionError("quote enrichment must be opt-in")
+
+    chain = KotakNeoProvider(NoQuotesNeo()).get_option_chain(
+        underlying="NIFTY",
+        exchange="nse_fo",
+        count=40,
+    )
+    assert len(chain) == 2
+    assert chain[0].ltp == 120.5
 
 
 def test_option_chain_success_payload_without_stat_is_accepted():
