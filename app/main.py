@@ -1642,6 +1642,8 @@ if chain_config:
                             vega=float(row["vega"]) if pd.notna(row.get("vega")) else None,
                             gamma=float(row["gamma"]) if pd.notna(row.get("gamma")) else None,
                             ltp_change_pct=float(row.get("ltp_change_pct") or 0),
+                            quote_timestamp=pd.Timestamp(row["quote_timestamp"]).to_pydatetime() if row.get("quote_timestamp") not in (None, "") and pd.notna(row.get("quote_timestamp")) else None,
+                            quote_source=str(row.get("quote_source") or ""),
                         )
                     )
                 except (TypeError, ValueError):
