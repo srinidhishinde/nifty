@@ -197,9 +197,14 @@ class DailyMarketStore:
 
         # Immutable timestamped archives are first-class recovery sources.
         # The latest pointer is only a convenience cache and may be overwritten.
-        candidates = list(base.glob("*/" + f"{instrument.upper()}_option_chain_*.csv"))
-        candidates += list(base.glob("*/" + f"{instrument.upper()}_option_chain_latest.csv"))
-        candidates += list(base.glob("*/" + f"{instrument.upper()}_option_chain.csv"))
+        # Only immutable timestamped archives are considered canonical
+        # recovery sources. The latest pointer is deliberately excluded so a
+        # partial overwrite cannot masquerade as a historical snapshot.
+        candidates = []
+        for path in base.glob("*/" + f"{instrument.upper()}_option_chain_*.csv"):
+            if path.name.endswith("_latest.csv"):
+                continue
+            candidates.append(path)
         newest: tuple[pd.Timestamp, Path, pd.DataFrame] | None = None
 
         for path in candidates:
@@ -234,6 +239,13 @@ class DailyMarketStore:
                     continue
                 if "option_type" not in frame.columns:
                     continue
+                if "quote_source" in frame.columns:
+                    sources = frame["quote_source"].astype(str).str.upper().str.strip()
+                    if not sources.eq("KOTAK_NEO").any():
+                        continue
+                    frame = frame.loc[sources.eq("KOTAK_NEO")].copy()
+                    if frame.empty:
+                        continue
                 frame["option_type"] = frame["option_type"].astype(str).str.upper().str.strip()
                 frame = frame[frame["option_type"].isin({"CE", "PE"})].copy()
                 if frame.empty:
