@@ -1886,6 +1886,7 @@ if tradable_contracts and spot is not None:
         global_news_score=global_news_score,
         direction_hint=direction_hint,
         require_two_sided_quote=(environment != "RESEARCH"),
+        require_verified_broker_quote=(environment != "RESEARCH"),
     )
 else:
     chain_signal, chain_signal_rows = None, []
