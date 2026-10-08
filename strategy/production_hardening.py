@@ -128,6 +128,20 @@ def validate_option_contract(
         reasons.append("Invalid strike.")
     if not expiry:
         reasons.append("Missing expiry.")
+    elif not option_expiry_valid(expiry, now=now):
+        reasons.append("Option expiry is missing, malformed, or already expired.")
+    exchange = str(getattr(contract, "exchange", "") or "").strip().lower()
+    underlying = str(getattr(contract, "underlying", "") or "").strip().upper()
+    token = str(getattr(contract, "instrument_token", "") or "").strip()
+    symbol = str(getattr(contract, "symbol", "") or "").strip()
+    if exchange not in {"nse_fo", "mcx_fo", "bse_fo"}:
+        reasons.append("Invalid option exchange.")
+    if not underlying:
+        reasons.append("Missing option underlying.")
+    if not token or "|" not in token:
+        reasons.append("Missing canonical broker instrument token.")
+    if not symbol:
+        reasons.append("Missing canonical broker trading symbol.")
     if ltp <= 0:
         reasons.append("Non-positive LTP.")
     if bid <= 0 or ask <= 0 or ask < bid:
@@ -294,6 +308,8 @@ class DecisionEvidence:
             self.clock_valid,
             self.schema_valid,
             self.source_policy_valid,
+            self.ml_validated,
+            self.ensemble_valid,
         ))
 
 
@@ -345,7 +361,12 @@ def safe_risk_quantity(
     lot_size: float,
     max_notional_fraction: float = 0.10,
 ) -> int:
-    if equity <= 0 or risk_fraction <= 0 or entry <= 0 or stop <= 0 or lot_size <= 0:
+    if (
+        equity <= 0 or risk_fraction <= 0 or entry <= 0 or stop <= 0
+        or lot_size <= 0
+        or not all(math.isfinite(float(x)) for x in (equity, risk_fraction, entry, stop, lot_size))
+        or stop >= entry
+    ):
         return 0
     risk_per_unit = abs(entry - stop) * lot_size
     if risk_per_unit <= 0:
@@ -356,10 +377,13 @@ def safe_risk_quantity(
 
 
 def source_policy_ok(*, environment: str, source: str, synthetic: bool = False, yahoo: bool = False) -> bool:
+    """Permit only explicitly labelled sources for each runtime environment."""
     env = str(environment).upper()
     if synthetic or yahoo:
-        return env in {"BACKTEST", "RESEARCH"}
-    return source == BROKER_SOURCE or env == "BACKTEST"
+        return env == "BACKTEST"
+    if env in {"LIVE", "PAPER", "UAT", "RESEARCH"}:
+        return str(source or "").upper() == BROKER_SOURCE
+    return env == "BACKTEST" or str(source or "").upper() == BROKER_SOURCE
 
 
 def idempotency_key(record: Mapping[str, Any]) -> str:
