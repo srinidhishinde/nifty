@@ -146,6 +146,41 @@ def test_mcx_option_chain_recovers_strike_from_symbol_when_field_missing():
     assert chain[0].strike == 8800.0
 
 
+
+def test_option_chain_uses_symbol_strike_when_payload_strike_is_wrong():
+    class WrongStrikeNeo(FakeNeo):
+        def option_chain(self, **kwargs):
+            return {
+                "data": {
+                    "call": [{
+                        "instrument": {
+                            "neoSymbol": "nse_fo|900001",
+                            "symbol": "NIFTY26OCT25000CE",
+                            "strikePrice": "1320",
+                            "expiryDt": "2026-10-15",
+                        },
+                        "quote": {"ltp": "120", "volume": 100},
+                        "openInterest": {"current": 2000, "change": 100},
+                    }],
+                    "put": [{
+                        "instrument": {
+                            "neoSymbol": "nse_fo|900002",
+                            "symbol": "NIFTY26OCT25000PE",
+                            "strikePrice": "500",
+                            "expiryDt": "2026-10-15",
+                        },
+                        "quote": {"ltp": "110", "volume": 100},
+                        "openInterest": {"current": 1800, "change": 50},
+                    }],
+                }
+            }
+
+    chain = KotakNeoProvider(WrongStrikeNeo()).get_option_chain(
+        underlying="NIFTY", exchange="NSE", count=40, enrich_quotes=False
+    )
+    assert {contract.strike for contract in chain} == {25000.0}
+
+
 def test_option_chain_defaults_to_broker_payload_without_quote_enrichment():
     class NoQuotesNeo(FakeNeo):
         def quotes(self, **kwargs):
