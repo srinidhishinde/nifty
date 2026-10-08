@@ -1533,47 +1533,59 @@ st.divider()
 authenticated = neo_status.connected
 live_contracts: list[OptionContract] = []
 
-if instrument == "NIFTY" and authenticated:
-    now = pd.Timestamp.now()
-    market_open = (
-        now.weekday() < 5
-        and now.time() >= pd.Timestamp("09:15").time()
-        and now.time() <= pd.Timestamp("15:30").time()
-    )
+# Kotak option-chain support is exchange/instrument specific. NIFTY uses
+# NSE-F&O; MCX commodities use MCX-F&O and their canonical scrip-master
+# underlying (resolved inside KotakNeoProvider). Never use a NIFTY request
+# for an MCX instrument and never synthesize a failed live response.
+option_chain_config = {
+    "NIFTY": ("nse_fo", "NIFTY", 40),
+    "CRUDEOIL": ("mcx_fo", "CRUDEOIL", 40),
+    "NATURALGAS": ("mcx_fo", "NATURALGAS", 40),
+    "COPPER": ("mcx_fo", "COPPER", 40),
+    "SILVER": ("mcx_fo", "SILVER", 40),
+    "GOLD": ("mcx_fo", "GOLD", 40),
+}
+chain_config = option_chain_config.get(instrument)
+
+if authenticated and chain_config:
+    chain_exchange, chain_underlying, chain_count = chain_config
+    now = pd.Timestamp.now(tz="Asia/Kolkata")
+    # NSE index options trade 09:15-15:30 IST; MCX commodity options have
+    # a longer session. The broker remains the source of truth for actual
+    # availability; these windows only prevent pointless closed-market calls.
+    if instrument == "NIFTY":
+        market_open = now.weekday() < 5 and now.time() >= pd.Timestamp("09:15").time() and now.time() <= pd.Timestamp("15:30").time()
+    else:
+        market_open = now.weekday() < 5 and now.time() >= pd.Timestamp("09:00").time() and now.time() <= pd.Timestamp("23:30").time()
     if not market_open:
         st.info(
-            "NIFTY market is currently closed. Live option-chain polling is paused. "
-            "Synthetic contracts are shown only when Environment is RESEARCH."
+            f"{instrument} market is currently closed. Live option-chain polling is paused. "
+            "Synthetic contracts are shown only in RESEARCH."
         )
     else:
         try:
             provider = KotakNeoProvider(neo_broker.client)
             live_contracts = provider.get_option_chain(
-                underlying="NIFTY",
-                exchange="nse_fo",
-                count=40,
+                underlying=chain_underlying,
+                exchange=chain_exchange,
+                count=chain_count,
                 enrich_quotes=True,
             )
             if not live_contracts:
                 st.warning(
-                    "Kotak Neo returned no NIFTY option contracts. "
+                    f"Kotak Neo returned no live {instrument} option contracts. "
                     + ("A clearly labelled research chain is available only in RESEARCH mode."
                        if environment == "RESEARCH"
                        else f"{environment} mode remains WAIT; no synthetic fallback is used.")
                 )
         except Exception as exc:
             st.warning(
-                f"Live NIFTY option-chain unavailable: {exc}. "
+                f"Live {instrument} option-chain unavailable: {exc}. "
                 + ("Showing clearly labelled research data instead."
                    if environment == "RESEARCH"
                    else f"{environment} mode remains WAIT; no synthetic fallback is used.")
             )
-elif instrument != "NIFTY":
-    st.info(
-        "Live option-chain display is currently implemented for NIFTY. "
-        "MCX instruments use futures/spot market data rather than an option chain."
-    )
-else:
+elif not authenticated:
     st.warning(
         "Kotak Neo is not connected. Connect with TOTP to load live option-chain data."
     )
