@@ -65,392 +65,114 @@ from analytics.signal_journal import SignalJournal
 # Research signal
 # ============================================================
 
-def build_research_signal(
-    instrument: str,
-    timeframe: str,
-    seed: int = 42,
-):
+def build_research_signal(instrument: str, timeframe: str, seed: int = 42):
+    """Return a research decision derived only from persisted real Kotak data.
+
+    Historical/synthetic research generation is intentionally removed. When
+    real captured candles/options are unavailable the function returns WAIT.
+    The seed argument is retained only for API compatibility and has no effect.
     """
-    Generate deterministic synthetic research data.
+    del seed
+    from marketdata.daily_store import DailyMarketStore, load_captured_candles
 
-    This function does not connect to a broker.
-    It is used for research and paper-trading UI development.
+    frame, _source = load_captured_candles(instrument.upper())
+    store = DailyMarketStore()
+    chain, _captured_at = store.load_latest_option_chain_snapshot(instrument.upper())
 
-    Returns:
-
-        (
-            MarketContext,
-            CE OptionAnalysis,
-            PE OptionAnalysis,
-            Signal,
-            ML probability,
+    if frame.empty or chain.empty:
+        context = MarketContext(
+            timeframe=timeframe,
+            trend="NEUTRAL",
+            momentum="NEUTRAL",
+            price_vs_vwap="AT",
+            volatility_regime="NORMAL",
         )
-    """
+        signal = CEPESelector(
+            minimum_confidence=settings.minimum_signal_confidence,
+            minimum_edge=settings.minimum_signal_edge,
+        ).generate(
+            context=context,
+            ce=OptionAnalysis("CE", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ("Real captured data unavailable",)),
+            pe=OptionAnalysis("PE", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ("Real captured data unavailable",)),
+        )
+        return context, None, None, signal, None
 
-    rng = random.Random(seed)
+    frame = frame.sort_values("timestamp").copy()
+    enriched = add_indicators(frame)
+    latest = enriched.iloc[-1]
+    trend = "BULLISH" if float(latest.get("EMA9", 0)) > float(latest.get("EMA21", 0)) else "BEARISH" if float(latest.get("EMA9", 0)) < float(latest.get("EMA21", 0)) else "NEUTRAL"
+    momentum = "POSITIVE" if float(latest.get("RSI", 50)) >= 55 else "NEGATIVE" if float(latest.get("RSI", 50)) <= 45 else "NEUTRAL"
+    vwap_dev = float(latest.get("VWAP_DEV", 0) or 0)
+    price_vs_vwap = "ABOVE" if vwap_dev > 0 else "BELOW" if vwap_dev < 0 else "AT"
+    atr_pct = float(latest.get("ATR_PCT", 0) or 0)
+    volatility = "HIGH" if atr_pct >= 0.025 else "NORMAL" if atr_pct >= 0.01 else "LOW"
+    context = MarketContext(timeframe, trend, momentum, price_vs_vwap, volatility)
 
-    trend = rng.choice(
-        [
-            "BULLISH",
-            "BEARISH",
-            "NEUTRAL",
-        ]
-    )
-
-    momentum = rng.choice(
-        [
-            "POSITIVE",
-            "NEGATIVE",
-            "NEUTRAL",
-        ]
-    )
-
-    price_vs_vwap = rng.choice(
-        [
-            "ABOVE",
-            "BELOW",
-            "AT",
-        ]
-    )
-
-    volatility_regime = rng.choice(
-        [
-            "LOW",
-            "NORMAL",
-            "HIGH",
-        ]
-    )
-
-    context = MarketContext(
-        timeframe=timeframe,
-        trend=trend,
-        momentum=momentum,
-        price_vs_vwap=price_vs_vwap,
-        volatility_regime=volatility_regime,
-    )
-
-    ce_score = rng.uniform(
-        40.0,
-        75.0,
-    )
-
-    pe_score = rng.uniform(
-        40.0,
-        75.0,
-    )
-
-    research_base = {
-        "NIFTY": 25040.0,
-        "BANKNIFTY": 58000.0,
-        "CRUDEOIL": 6500.0,
-        "NATURALGAS": 300.0,
-        "COPPER": 950.0,
-        "SILVER": 95000.0,
-        "GOLD": 125000.0,
-    }.get(instrument.upper(), 25040.0)
-    research_strike = round_to_strike(
-        research_base,
-        get_strike_step(instrument),
-    )
-
-    ce = OptionAnalysis(
-        option_type="CE",
-        strike=research_strike,
-        ltp=100.0,
-        volume=10000.0,
-        open_interest=20000.0,
-        oi_change=rng.uniform(
-            -5000.0,
-            5000.0,
-        ),
-        implied_volatility=rng.uniform(
-            12.0,
-            45.0,
-        ),
-        score=round(
-            ce_score,
-            2,
-        ),
-        reasons=(
-            "Research-mode synthetic option data",
-        ),
-    )
-
-    pe = OptionAnalysis(
-        option_type="PE",
-        strike=research_strike,
-        ltp=100.0,
-        volume=10000.0,
-        open_interest=20000.0,
-        oi_change=rng.uniform(
-            -5000.0,
-            5000.0,
-        ),
-        implied_volatility=rng.uniform(
-            12.0,
-            45.0,
-        ),
-        score=round(
-            pe_score,
-            2,
-        ),
-        reasons=(
-            "Research-mode synthetic option data",
-        ),
-    )
-
-    ml_probability = round(
-        rng.uniform(
-            0.35,
-            0.80,
-        ),
-        4,
-    )
-
-    selector = CEPESelector(
-        minimum_confidence=(
-            settings.minimum_signal_confidence
-        ),
-        minimum_edge=(
-            settings.minimum_signal_edge
-        ),
-    )
-
-    signal = selector.generate(
-        context=context,
-        ce=ce,
-        pe=pe,
-    )
-
-    return (
-        context,
-        ce,
-        pe,
-        signal,
-        ml_probability,
-    )
-
+    contracts=[]
+    for row in chain.to_dict("records"):
+        try:
+            contracts.append(OptionContract(
+                symbol=str(row.get("symbol") or ""),
+                expiry=str(row.get("expiry") or ""),
+                strike=float(row.get("strike") or 0),
+                option_type=str(row.get("option_type") or "").upper(),
+                ltp=float(row.get("ltp") or 0),
+                bid=float(row["bid"]) if pd.notna(row.get("bid")) else None,
+                ask=float(row["ask"]) if pd.notna(row.get("ask")) else None,
+                volume=float(row.get("volume") or 0),
+                open_interest=float(row.get("open_interest") or 0),
+                oi_change=float(row.get("oi_change") or 0),
+                implied_volatility=float(row.get("implied_volatility") or 0),
+            ))
+        except (TypeError, ValueError):
+            continue
+    ce_rows=[x for x in contracts if x.option_type=="CE"]
+    pe_rows=[x for x in contracts if x.option_type=="PE"]
+    if not ce_rows or not pe_rows:
+        return context, None, None, CEPESelector(settings.minimum_signal_confidence, settings.minimum_signal_edge).generate(
+            context,
+            OptionAnalysis("CE",0,0,0,0,0,0,0,("Both CE and PE are required.",)),
+            OptionAnalysis("PE",0,0,0,0,0,0,0,("Both CE and PE are required.",)),
+        ), None
+    ce_contract=max(ce_rows,key=lambda x: x.open_interest)
+    pe_contract=max(pe_rows,key=lambda x: x.open_interest)
+    ce=analyze_option(ce_contract)
+    pe=analyze_option(pe_contract)
+    signal=CEPESelector(settings.minimum_signal_confidence, settings.minimum_signal_edge).generate(context,ce,pe)
+    return context, ce, pe, signal, None
 
 # ============================================================
 # Synthetic option chain
 # ============================================================
 
-def build_research_option_chain(
-    instrument: str,
-    spot: float,
-    seed: int,
-    strike_step: float,
-) -> list[OptionContract]:
+def build_research_option_chain(instrument: str, spot: float, seed: int, strike_step: float) -> list[OptionContract]:
+    """Load only persisted real Kotak option contracts for research.
+
+    The historical synthetic chain generator has been removed. The extra
+    arguments are retained for compatibility and are intentionally ignored.
     """
-    Build a deterministic synthetic option chain.
-
-    This is research-only data. It must not be interpreted
-    as live market data.
-    """
-
-    rng = random.Random(
-        f"{instrument}:{seed}:{spot}"
-    )
-
-    atm_strike = round_to_strike(spot, strike_step)
-
-    strikes = [
-        atm_strike
-        + (
-            offset * strike_step
-        )
-        for offset in range(-10, 11)
-    ]
-
-    contracts: list[OptionContract] = []
-
-    for strike in strikes:
-
-        distance = abs(
-            strike - spot
-        )
-
-        # Synthetic option premium.
-        intrinsic_ce = max(
-            0.0,
-            spot - strike,
-        )
-
-        intrinsic_pe = max(
-            0.0,
-            strike - spot,
-        )
-
-        time_value = max(
-            8.0,
-            120.0
-            - distance * 0.45,
-        )
-
-        ce_ltp = max(
-            1.0,
-            intrinsic_ce
-            + time_value
-            + rng.uniform(-3.0, 3.0),
-        )
-
-        pe_ltp = max(
-            1.0,
-            intrinsic_pe
-            + time_value
-            + rng.uniform(-3.0, 3.0),
-        )
-
-        ce_spread = max(
-            0.5,
-            ce_ltp * rng.uniform(
-                0.003,
-                0.012,
-            ),
-        )
-
-        pe_spread = max(
-            0.5,
-            pe_ltp * rng.uniform(
-                0.003,
-                0.012,
-            ),
-        )
-
-        ce_volume = rng.randint(
-            5000,
-            80000,
-        )
-
-        pe_volume = rng.randint(
-            5000,
-            80000,
-        )
-
-        ce_oi = rng.randint(
-            10000,
-            150000,
-        )
-
-        pe_oi = rng.randint(
-            10000,
-            150000,
-        )
-
-        ce_oi_change = rng.randint(
-            -30000,
-            30000,
-        )
-
-        pe_oi_change = rng.randint(
-            -30000,
-            30000,
-        )
-
-        ce_iv = rng.uniform(
-            12.0,
-            38.0,
-        )
-
-        pe_iv = rng.uniform(
-            12.0,
-            38.0,
-        )
-
-        expiry = (
-            pd.Timestamp.now()
-            .normalize()
-            + pd.Timedelta(days=7)
-        ).strftime(
-            "%Y-%m-%d"
-        )
-
-        contracts.append(
-            OptionContract(
-                symbol=(
-                    f"{instrument}"
-                    f"{int(strike)}CE"
-                ),
-                expiry=expiry,
-                strike=float(strike),
-                option_type="CE",
-                ltp=round(
-                    ce_ltp,
-                    2,
-                ),
-                bid=round(
-                    max(
-                        0.05,
-                        ce_ltp
-                        - ce_spread,
-                    ),
-                    2,
-                ),
-                ask=round(
-                    ce_ltp
-                    + ce_spread,
-                    2,
-                ),
-                volume=float(
-                    ce_volume
-                ),
-                open_interest=float(
-                    ce_oi
-                ),
-                oi_change=float(
-                    ce_oi_change
-                ),
-                implied_volatility=round(
-                    ce_iv,
-                    2,
-                ),
-            )
-        )
-
-        contracts.append(
-            OptionContract(
-                symbol=(
-                    f"{instrument}"
-                    f"{int(strike)}PE"
-                ),
-                expiry=expiry,
-                strike=float(strike),
-                option_type="PE",
-                ltp=round(
-                    pe_ltp,
-                    2,
-                ),
-                bid=round(
-                    max(
-                        0.05,
-                        pe_ltp
-                        - pe_spread,
-                    ),
-                    2,
-                ),
-                ask=round(
-                    pe_ltp
-                    + pe_spread,
-                    2,
-                ),
-                volume=float(
-                    pe_volume
-                ),
-                open_interest=float(
-                    pe_oi
-                ),
-                oi_change=float(
-                    pe_oi_change
-                ),
-                implied_volatility=round(
-                    pe_iv,
-                    2,
-                ),
-            )
-        )
-
+    del spot, seed, strike_step
+    from marketdata.daily_store import DailyMarketStore
+    frame, _captured_at = DailyMarketStore().load_latest_option_chain_snapshot(instrument.upper())
+    contracts=[]
+    for row in frame.to_dict("records"):
+        try:
+            contracts.append(OptionContract(
+                symbol=str(row.get("symbol") or ""),
+                expiry=str(row.get("expiry") or ""),
+                strike=float(row.get("strike") or 0),
+                option_type=str(row.get("option_type") or "").upper(),
+                ltp=float(row.get("ltp") or 0),
+                bid=float(row["bid"]) if pd.notna(row.get("bid")) else None,
+                ask=float(row["ask"]) if pd.notna(row.get("ask")) else None,
+                volume=float(row.get("volume") or 0),
+                open_interest=float(row.get("open_interest") or 0),
+                oi_change=float(row.get("oi_change") or 0),
+                implied_volatility=float(row.get("implied_volatility") or 0),
+            ))
+        except (TypeError, ValueError):
+            continue
     return contracts
-
 
 # ============================================================
 # Option-chain dataframe
