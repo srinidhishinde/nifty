@@ -1,5 +1,14 @@
 ﻿import random
+import sys
+from pathlib import Path
 from types import SimpleNamespace
+
+# Streamlit executes this file with app/ as the script directory. Add the
+# repository root so top-level packages (strategy, broker, marketdata, etc.)
+# resolve the same way they do under pytest and normal Python execution.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import pandas as pd
