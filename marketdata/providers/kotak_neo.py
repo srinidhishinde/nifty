@@ -34,10 +34,19 @@ class KotakNeoProvider(MarketDataProvider):
 
     @staticmethod
     def _response_data(response: Any) -> dict:
+        """Normalize both legacy and current Kotak market-data envelopes."""
         if not isinstance(response, dict):
             return {}
         data = response.get("data")
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            return data
+
+        # Current Neo SDK option_chain() returns the payload directly:
+        # {"call": [...], "put": [...], "common_data": {...}, ...}.
+        payload_keys = {"call", "put", "common_data", "spot", "future", "future_contracts"}
+        if payload_keys.intersection(response):
+            return response
+        return {}
 
     @staticmethod
     def _response_error(response: Any) -> str:
@@ -53,10 +62,11 @@ class KotakNeoProvider(MarketDataProvider):
         elif explicit_status == "ok" or explicit_status_alt in {"ok", "success"}:
             return ""
         else:
-            # Some current Neo market-data success responses omit stat/status
-            # but contain a populated data object.
+            # Some current Neo market-data success responses omit stat/status.
+            # The current SDK also returns option-chain payload fields at top level.
             data = response.get("data")
-            if isinstance(data, dict) and data:
+            payload_keys = {"call", "put", "common_data", "spot", "future", "future_contracts"}
+            if (isinstance(data, dict) and data) or payload_keys.intersection(response):
                 return ""
 
         # Preserve the broker's actual diagnostic. The previous implementation
