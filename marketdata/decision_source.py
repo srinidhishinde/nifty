@@ -164,7 +164,7 @@ def load_kotak_decision_snapshot(
                 exchange=chain_exchange,
                 expiry=option_expiry,
                 count=option_count,
-                enrich_quotes=False,
+                enrich_quotes=True,
             )
         else:
             contracts, cached_captured_at = _cached_option_contracts(instrument_upper, now)
