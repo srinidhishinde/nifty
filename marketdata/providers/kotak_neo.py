@@ -442,20 +442,36 @@ class KotakNeoProvider(MarketDataProvider):
             or requested_expiry
             or ""
         )
-        strike = self._float(
+        payload_strike = self._float(
             instrument.get("strikePrice")
             or instrument.get("strike")
             or item.get("strikePrice")
             or item.get("strike")
         )
-        # Some live MCX payloads have omitted the strike field while retaining
-        # the canonical trading symbol (e.g. CRUDEOIL26OCT8800CE). Recover the
-        # strike from that broker symbol rather than rejecting a real contract.
-        if strike <= 0 and symbol:
-            import re
-            match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", str(symbol).upper())
-            if match:
-                strike = self._float(match.group(1))
+
+        # The broker trading symbol is the authoritative contract identifier.
+        # In particular, never let a misplaced/incorrect strike field from a
+        # CSV/API adapter turn an NIFTY option into values such as 1320 or 500.
+        # Kotak symbols end with the actual strike immediately before CE/PE,
+        # e.g. NIFTY26OCT25000CE or CRUDEOILM26OCT8800CE.
+        import re
+        symbol_match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", str(symbol).upper())
+        symbol_strike = (
+            self._float(symbol_match.group(1))
+            if symbol_match
+            else 0.0
+        )
+
+        strike = payload_strike
+        if symbol_strike > 0:
+            if strike <= 0:
+                strike = symbol_strike
+            elif abs(strike - symbol_strike) > 1e-9:
+                # Payload strike and contract symbol disagree. Fail closed to
+                # the broker's canonical trading symbol rather than displaying
+                # a corrupted strike. Keep this instrument-specific: no generic
+                # /100 or *100 conversion is applied to MCX/NIFTY strikes.
+                strike = symbol_strike
         ltp = self._float(quote.get("ltp"))
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
