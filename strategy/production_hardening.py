@@ -464,20 +464,28 @@ def safe_risk_quantity(
     current_exposure: float = 0.0,
     max_exposure_fraction: float = 0.10,
 ) -> int:
-    if (
-        equity <= 0 or risk_fraction <= 0 or entry <= 0 or stop <= 0
-        or lot_size <= 0
-        or not all(math.isfinite(float(x)) for x in (equity, risk_fraction, entry, stop, lot_size))
-        or stop >= entry
-    ):
+    values = (equity, risk_fraction, entry, stop, lot_size, current_exposure, max_exposure_fraction)
+    if any(not math.isfinite(float(x)) for x in values):
+        return 0
+    if equity <= 0 or risk_fraction <= 0 or entry <= 0 or stop <= 0 or lot_size <= 0 or stop >= entry:
+        return 0
+    if max_notional_fraction <= 0 or max_exposure_fraction <= 0 or current_exposure < 0:
+        return 0
+    if available_margin is not None and (not math.isfinite(float(available_margin)) or float(available_margin) < 0):
+        return 0
+    if margin_per_lot is not None and (not math.isfinite(float(margin_per_lot)) or float(margin_per_lot) <= 0):
         return 0
     risk_per_unit = abs(entry - stop) * lot_size
     if risk_per_unit <= 0:
         return 0
     by_risk = math.floor((equity * risk_fraction) / risk_per_unit)
     by_notional = math.floor((equity * max_notional_fraction) / (entry * lot_size))
-    return max(0, min(by_risk, by_notional))
-
+    remaining_exposure = max(0.0, equity * max_exposure_fraction - current_exposure)
+    by_exposure = math.floor(remaining_exposure / (entry * lot_size))
+    limits = [by_risk, by_notional, by_exposure]
+    if available_margin is not None and margin_per_lot is not None:
+        limits.append(math.floor(available_margin / margin_per_lot))
+    return max(0, min(limits))
 
 def source_policy_ok(*, environment: str, source: str, synthetic: bool = False, yahoo: bool = False) -> bool:
     """Permit only explicitly labelled sources for each runtime environment."""
