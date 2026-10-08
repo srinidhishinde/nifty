@@ -369,9 +369,9 @@ def build_decision_evidence(**kwargs: Any) -> DecisionEvidence:
     return DecisionEvidence(**kwargs)
 
 
-def live_permission(evidence: DecisionEvidence, *, config_enabled: bool = False) -> bool:
-    # Configuration may lock execution OFF, but it can never authorize it.
-    return bool(evidence.mandatory_pass and evidence.ml_validated and evidence.ensemble_valid and config_enabled is True)
+def live_permission(evidence: DecisionEvidence, *, config_enabled: bool = False, broker_orders_allowed: bool = False) -> bool:
+    """Authorize only with complete evidence, explicit enable, and broker lock."""
+    return bool(evidence.mandatory_pass and config_enabled is True and broker_orders_allowed is True)
 
 
 def ml_validation_ok(artifact: Any) -> bool:
@@ -388,6 +388,8 @@ def runtime_clock_ok(
     max_age_seconds: float = 5.0,
     reference_timestamp: Any | None = None,
     now: Any | None = None,
+    broker_now: Any | None = None,
+    max_drift_seconds: float = 5.0,
 ) -> bool:
     """Validate broker timestamp freshness against an explicit decision clock.
 
@@ -398,7 +400,14 @@ def runtime_clock_ok(
     if reference_timestamp is None:
         return False
     age = timestamp_age_seconds(reference_timestamp, now=now)
-    return age is not None and 0.0 <= age <= float(max_age_seconds)
+    if age is None or age < 0.0 or age > float(max_age_seconds):
+        return False
+    if broker_now is not None:
+        local = as_ist_timestamp(now)
+        broker = as_ist_timestamp(broker_now)
+        if local is None or broker is None or abs((local - broker).total_seconds()) > float(max_drift_seconds):
+            return False
+    return True
 
 
 def option_expiry_valid(
