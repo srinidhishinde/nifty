@@ -49,7 +49,7 @@ def main() -> int:
             underlying=args.underlying,
             exchange=exchange,
             count=args.count,
-            enrich_quotes=True,
+            enrich_quotes=False,
         )
 
         ce = [x for x in contracts if x.option_type == "CE"]
