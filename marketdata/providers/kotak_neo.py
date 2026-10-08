@@ -267,6 +267,42 @@ class KotakNeoProvider(MarketDataProvider):
         candidates.sort(key=lambda item: (item[0], item[1]))
         return candidates[0][1]
 
+    @staticmethod
+    def option_chain_diagnostics(response: Any) -> dict:
+        """Return safe, non-credential diagnostics for a raw Neo option-chain response."""
+        if not isinstance(response, dict):
+            return {
+                "response_type": type(response).__name__,
+                "top_level_keys": [],
+                "stat": "",
+                "status": "",
+                "stCode": "",
+                "errMsg": "",
+                "desc": "",
+                "data_type": type(response).__name__,
+                "data_keys": [],
+                "call_count": 0,
+                "put_count": 0,
+            }
+        data = response.get("data")
+        if not isinstance(data, dict):
+            data = {}
+        calls = data.get("call") or data.get("calls") or []
+        puts = data.get("put") or data.get("puts") or []
+        return {
+            "response_type": type(response).__name__,
+            "top_level_keys": sorted(str(k) for k in response.keys()),
+            "stat": str(response.get("stat") or ""),
+            "status": str(response.get("status") or ""),
+            "stCode": str(response.get("stCode") or response.get("code") or ""),
+            "errMsg": str(response.get("errMsg") or response.get("emsg") or ""),
+            "desc": str(response.get("desc") or ""),
+            "data_type": type(data).__name__,
+            "data_keys": sorted(str(k) for k in data.keys()),
+            "call_count": len(calls) if isinstance(calls, list) else 0,
+            "put_count": len(puts) if isinstance(puts, list) else 0,
+        }
+
     def get_option_chain(
         self,
         underlying: str,
