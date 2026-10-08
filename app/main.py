@@ -1074,14 +1074,15 @@ readiness_option_flow = bool(snapshot and snapshot.pcr_oi is not None and np.isf
 readiness_regime = bool(prediction_frame is not None and not prediction_frame.empty and canonical_signal.valid)
 readiness_ml = bool(st.session_state.get("final_ml_artifacts"))
 readiness_ensemble = bool("ensemble_rows" in locals() and ensemble_rows and abs(float(ensemble_rows[0].final_ce) - float(ensemble_rows[0].final_pe)) >= 10.0)
+_readiness_chain_signal = locals().get("chain_signal")
 readiness_trade_plan = bool(
-    chain_signal is not None
-    and chain_signal.direction in {"BUY CE", "BUY PE"}
-    and chain_signal.entry_price is not None
-    and chain_signal.stop_loss is not None
-    and chain_signal.take_profit is not None
-    and chain_signal.take_profit > chain_signal.entry_price > chain_signal.stop_loss
-    and getattr(chain_signal, "confidence", 0) >= settings.minimum_signal_confidence
+    _readiness_chain_signal is not None
+    and _readiness_chain_signal.direction in {"BUY CE", "BUY PE"}
+    and _readiness_chain_signal.entry_price is not None
+    and _readiness_chain_signal.stop_loss is not None
+    and _readiness_chain_signal.take_profit is not None
+    and _readiness_chain_signal.take_profit > _readiness_chain_signal.entry_price > _readiness_chain_signal.stop_loss
+    and getattr(_readiness_chain_signal, "confidence", 0) >= settings.minimum_signal_confidence
 )
 readiness_risk_budget = bool(settings.starting_capital > 0)
 readiness_risk_controls = bool(readiness_risk_budget and settings.max_trades_per_day > 0 and settings.max_daily_loss_fraction > 0)
