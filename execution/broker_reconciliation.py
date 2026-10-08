@@ -99,9 +99,13 @@ def reconcile_broker_orders(
     expected_order_id: str | None = None,
     expected_symbol: str | None = None,
     expected_quantity: int | None = None,
+    query_authoritative: bool = False,
 ) -> ReconciliationResult:
-    if rows is None:
-        return ReconciliationResult(False, False, False, "AMBIGUOUS", "Broker order query returned no authoritative response.")
+    if rows is None or query_authoritative is not True:
+        return ReconciliationResult(
+            False, False, False, "AMBIGUOUS",
+            "Broker order query is missing or has not been proven complete and authoritative.",
+        )
     matches = []
     for row in rows:
         if not isinstance(row, Mapping):
