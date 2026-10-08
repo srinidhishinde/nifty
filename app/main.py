@@ -1676,6 +1676,7 @@ if chain_config:
                 # Persist only a successful real broker refresh. This becomes
                 # the fallback shown when the next refresh fails or the market
                 # is closed; it is never used to claim a live refresh succeeded.
+                persistence_error = None
                 try:
                     from marketdata.daily_store import DailyMarketStore
                     DailyMarketStore().save_option_chain_snapshot(
@@ -1683,9 +1684,16 @@ if chain_config:
                         live_contracts,
                         captured_at=now,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Never hide a persistence failure. The live chain can be
+                    # displayed in-memory, but Research must not be told that
+                    # this refresh was captured if the durable write failed.
+                    persistence_error = str(exc)
                 chain_status_label = "LIVE KOTAK NEO"
+                if persistence_error:
+                    chain_status_detail = (
+                        f"{chain_status_detail} Persistence FAILED: {persistence_error}"
+                    )
                 chain_status_detail = (
                     f"Current broker chain · {len(live_contracts)} contracts · "
                     f"refreshed {now.strftime('%H:%M:%S IST')}"
