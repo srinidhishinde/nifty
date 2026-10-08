@@ -106,7 +106,10 @@ class DailyMarketStore:
                 "exchange": getattr(contract, "exchange", ""),
                 "underlying": getattr(contract, "underlying", instrument),
                 "expiry": getattr(contract, "expiry", ""),
-                "strike": float(getattr(contract, "strike", 0) or 0),
+                "strike": validate_option_strike(
+                    instrument,
+                    float(getattr(contract, "strike", 0) or 0),
+                ),
                 "option_type": getattr(contract, "option_type", ""),
                 "instrument_token": getattr(contract, "instrument_token", "") or "",
                 "ltp": float(getattr(contract, "ltp", 0) or 0),
