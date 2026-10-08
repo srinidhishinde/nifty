@@ -271,12 +271,17 @@ def load_kotak_decision_snapshot(
                     f"Real {instrument_upper} {timeframe} candle history is unavailable. "
                     "Start the Kotak SFeed recorder; no synthetic/Yahoo fallback is permitted."
                 ),
-                now, None, contracts, "RED",
+                now, None, display_contracts, "RED",
                 (
                     f"{instrument_upper} captured SFeed candle history unavailable",
                     "Run the real Kotak SFeed capture before enabling this decision path.",
+                    *(
+                        ("Both CE and PE must pass current quote and scrip-master identity validation.",)
+                        if market_open and missing_executable_sides
+                        else ()
+                    ),
                 ),
-                pcr_oi, pcr_volume, len(contracts),
+                pcr_oi, pcr_volume, len(display_contracts),
                 _wait(
                     f"Real {instrument_upper} {timeframe} candle history is unavailable.",
                     now,
