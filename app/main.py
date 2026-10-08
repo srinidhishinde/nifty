@@ -1669,7 +1669,9 @@ if chain_config:
                 exchange=chain_exchange,
                 count=chain_count,
                 expiry=None,
-                enrich_quotes=False,
+                # Refresh broker quotes so displayed LTP is current,
+                # not the option-chain snapshot's potentially stale quote.
+                enrich_quotes=True,
             )
             if live_contracts:
                 # Persist only a successful real broker refresh. This becomes
