@@ -22,6 +22,8 @@ class OptionContract:
     vega: float | None = None
     gamma: float | None = None
     ltp_change_pct: float = 0.0
+    quote_timestamp: object | None = None
+    quote_source: str = ""
 
 @dataclass(frozen=True)
 class OptionAnalysis:
