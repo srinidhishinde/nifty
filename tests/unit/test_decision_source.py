@@ -54,7 +54,7 @@ def test_nifty_uses_captured_kotak_candles_not_historical_api(monkeypatch):
         lambda *args, **kwargs: (frame, "KOTAK_CAPTURED"),
     )
 
-    snapshot = load_kotak_decision_snapshot(_Connected(), instrument="NIFTY")
+    snapshot = load_kotak_decision_snapshot(_Connected(), instrument="NIFTY", now=pd.Timestamp("2026-10-09 10:00", tz="Asia/Kolkata"))
     assert snapshot.source == "KOTAK_NEO"
     assert snapshot.option_count == 1
     assert snapshot.signal.direction in {"BUY", "WAIT"}
@@ -109,7 +109,7 @@ def test_mcx_keeps_real_option_chain_visible_when_candles_are_missing(monkeypatc
         lambda *args, **kwargs: (pd.DataFrame(), "KOTAK_CAPTURED"),
     )
 
-    snapshot = load_kotak_decision_snapshot(_Connected(), instrument="CRUDEOIL")
+    snapshot = load_kotak_decision_snapshot(_Connected(), instrument="CRUDEOIL", now=pd.Timestamp("2026-10-09 10:00", tz="Asia/Kolkata"))
     assert snapshot.source == "KOTAK_NEO"
     assert snapshot.status == "RED"
     assert snapshot.option_count == 1
