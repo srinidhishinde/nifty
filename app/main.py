@@ -1071,7 +1071,21 @@ readiness_option_liquidity = bool(snapshot and snapshot.option_chain and any(
     for x in snapshot.option_chain
 ))
 readiness_option_flow = bool(snapshot and snapshot.pcr_oi is not None and np.isfinite(float(snapshot.pcr_oi)))
-readiness_regime = bool(prediction_frame is not None and not prediction_frame.empty and canonical_signal.valid)
+
+# Regime is derived from the same completed decision row used by the
+# canonical signal. Keep this calculation local to the readiness block so the
+# dashboard never depends on a variable created later in the module.
+_readiness_regime_snapshot = None
+if prediction_frame is not None and not prediction_frame.empty:
+    try:
+        _readiness_regime_snapshot = classify_regime(prediction_frame.iloc[-1])
+    except (TypeError, ValueError, KeyError):
+        _readiness_regime_snapshot = None
+readiness_regime = bool(
+    _readiness_regime_snapshot is not None
+    and _readiness_regime_snapshot.tradable
+    and canonical_signal.valid
+)
 readiness_ml = bool(st.session_state.get("final_ml_artifacts"))
 readiness_ensemble = bool("ensemble_rows" in locals() and ensemble_rows and abs(float(ensemble_rows[0].final_ce) - float(ensemble_rows[0].final_pe)) >= 10.0)
 _readiness_chain_signal = locals().get("chain_signal")
@@ -1124,7 +1138,10 @@ readiness = assess_readiness(
 rc = st.columns(4)
 rc[0].metric("Readiness", f"{readiness.score:.0f}/100")
 rc[1].metric("Status", readiness.status)
-rc[2].metric("Regime", regime_snapshot.regime)
+rc[2].metric(
+    "Regime",
+    _readiness_regime_snapshot.regime if _readiness_regime_snapshot is not None else "UNKNOWN",
+)
 rc[3].metric("Live Orders", "ENABLED" if settings.live_trading_allowed() else "LOCKED")
 with st.expander("100-point evidence gates", expanded=False):
     st.dataframe(pd.DataFrame([{
