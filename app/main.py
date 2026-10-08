@@ -122,6 +122,10 @@ def build_research_signal(instrument: str, timeframe: str, seed: int = 42):
                 open_interest=float(row.get("open_interest") or 0),
                 oi_change=float(row.get("oi_change") or 0),
                 implied_volatility=float(row.get("implied_volatility") or 0),
+                quote_timestamp=pd.Timestamp(row["quote_timestamp"]).to_pydatetime() if row.get("quote_timestamp") not in (None, "") and pd.notna(row.get("quote_timestamp")) else None,
+                quote_source=str(row.get("quote_source") or ""),
+                exchange=str(row.get("exchange") or ""),
+                underlying=str(row.get("underlying") or instrument.upper()),
             ))
         except (TypeError, ValueError):
             continue
