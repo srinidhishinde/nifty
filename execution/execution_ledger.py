@@ -111,6 +111,26 @@ class ExecutionLedger:
             self._append_unlocked(row)
             return row
 
+    def reconcile(self, decision_id: str, broker_state: str, *, order_id: str | None = None,
+                  filled_quantity: int | None = None, broker_timestamp: str = "",
+                  error: str = "") -> ExecutionRecord:
+        previous = self.latest(decision_id)
+        if previous is None:
+            raise RuntimeError("Unknown decision")
+        state = str(broker_state).upper()
+        if state not in STATES or state in {"CREATED", "SUBMITTED", "AMBIGUOUS"}:
+            raise ValueError("Broker reconciliation requires a definitive execution state")
+        filled = previous.filled_quantity if filled_quantity is None else int(filled_quantity)
+        if filled < 0 or filled > previous.quantity:
+            raise ValueError("Broker filled quantity is outside the ordered quantity")
+        row = ExecutionRecord(
+            decision_id, order_id or previous.order_id, state, previous.symbol,
+            previous.side, previous.quantity, filled, broker_timestamp,
+            datetime.now(timezone.utc).isoformat(), str(error)
+        )
+        self.append(row)
+        return row
+
     def mark_ambiguous(self, decision_id: str, error: str, broker_timestamp: str) -> ExecutionRecord:
         previous=self.latest(decision_id)
         if previous is None:
