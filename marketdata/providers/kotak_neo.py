@@ -613,10 +613,10 @@ class KotakNeoProvider(MarketDataProvider):
         )
 
     def _enrich_quotes(self, contracts: list[OptionContract]) -> None:
-        """Populate LTP/depth fields without exceeding Neo's 50-symbol limit."""
-        quote_batch_size = 50
-        for start in range(0, len(contracts), quote_batch_size):
-            batch = contracts[start:start + quote_batch_size]
+        """Populate LTP/depth fields while respecting Neo quote symbol limits."""
+        def fetch_batch(batch: list[OptionContract]) -> list[dict]:
+            if not batch:
+                return []
             tokens = []
             for contract in batch:
                 token = contract.instrument_token or ""
@@ -625,30 +625,31 @@ class KotakNeoProvider(MarketDataProvider):
                 else:
                     segment, instrument_token = contract.exchange, token
                 if instrument_token:
-                    tokens.append({
-                        "instrument_token": instrument_token,
-                        "exchange_segment": segment,
-                    })
-
+                    tokens.append({"instrument_token": instrument_token, "exchange_segment": segment})
             if not tokens:
-                continue
-
-            response = self.client.quotes(
-                instrument_tokens=tokens,
-                quote_type="all",
-            )
+                return []
+            try:
+                response = self.client.quotes(instrument_tokens=tokens[:50], quote_type="all")
+            except Exception:
+                if len(batch) <= 1:
+                    return []
+                midpoint = max(1, len(batch) // 2)
+                return fetch_batch(batch[:midpoint]) + fetch_batch(batch[midpoint:])
             if not isinstance(response, list):
                 data = self._response_data(response)
                 response = data.get("quotes") or data.get("data") or []
+            return response if isinstance(response, list) else []
 
+        for start in range(0, len(contracts), 50):
+            batch = contracts[start:start + 50]
+            response = fetch_batch(batch)
             by_token = {}
-            for quote in response if isinstance(response, list) else []:
+            for quote in response:
                 if not isinstance(quote, dict):
                     continue
                 token = str(quote.get("exchange_token") or quote.get("instrument_token") or "")
                 if token:
                     by_token[token] = quote
-
             for contract in batch:
                 token = (contract.instrument_token or "").split("|")[-1]
                 quote = by_token.get(token)
@@ -660,32 +661,16 @@ class KotakNeoProvider(MarketDataProvider):
                 sell = depth.get("sell") or depth.get("sellDepth") or []
                 bid = self._float(buy[0].get("price")) if buy and isinstance(buy[0], dict) else None
                 ask = self._float(sell[0].get("price")) if sell and isinstance(sell[0], dict) else None
-
-                # Dataclass is frozen; replace in place in the list.
                 index = contracts.index(contract)
                 contracts[index] = OptionContract(
-                    symbol=contract.symbol,
-                    exchange=contract.exchange,
-                    underlying=contract.underlying,
-                    expiry=contract.expiry,
-                    strike=contract.strike,
-                    option_type=contract.option_type,
-                    instrument_token=contract.instrument_token,
-                    ltp=ltp,
-                    bid=bid,
-                    ask=ask,
-                    volume=contract.volume,
-                    open_interest=contract.open_interest,
-                    oi_change=contract.oi_change,
-                    implied_volatility=contract.implied_volatility,
-                    built_up=contract.built_up,
-                    delta=contract.delta,
-                    theta=contract.theta,
-                    vega=contract.vega,
-                    gamma=contract.gamma,
+                    symbol=contract.symbol, exchange=contract.exchange, underlying=contract.underlying,
+                    expiry=contract.expiry, strike=contract.strike, option_type=contract.option_type,
+                    instrument_token=contract.instrument_token, ltp=ltp, bid=bid, ask=ask,
+                    volume=contract.volume, open_interest=contract.open_interest, oi_change=contract.oi_change,
+                    implied_volatility=contract.implied_volatility, built_up=contract.built_up,
+                    delta=contract.delta, theta=contract.theta, vega=contract.vega, gamma=contract.gamma,
                     ltp_change_pct=contract.ltp_change_pct,
                 )
-
     def resolve_mcx_futures(self, symbol: str) -> dict:
         """Resolve the nearest tradable MCX futures contract from Neo scrip master.
 
