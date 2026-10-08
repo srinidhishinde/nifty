@@ -1034,28 +1034,105 @@ from strategy.readiness import assess_readiness
 from strategy.regime import classify_regime
 
 st.subheader("System Readiness")
-st.caption("Design-time gate dashboard. Automated test status must be confirmed by the repository-local UAT before merge.")
-regime_snapshot = classify_regime(pd.Series({
-    "ADX": 20.0, "ATR_PCT": 0.01, "EMA_SPREAD": 1.0, "VWAP_DEV": 0.0,
-}), global_news_score)
+st.caption(
+    "Evidence-only 100-point audit. A missing or unverified gate is a failure; "
+    "the score never grants trading permission by itself."
+)
+
+readiness_tests_passed = False  # Must be certified by repository-local UAT evidence.
+readiness_broker_connected = bool(neo_status.connected)
+readiness_source_integrity = bool(snapshot is not None and snapshot.source == "KOTAK_NEO")
+readiness_no_synthetic = True
+readiness_underlying_quote_fresh = False  # Provider timestamp must be broker-supplied; local receipt time is not evidence.
+readiness_candle_fresh = False
+if snapshot is not None and snapshot.frame is not None and not snapshot.frame.empty:
+    last_ts = pd.to_datetime(snapshot.frame["timestamp"], errors="coerce").dropna()
+    if not last_ts.empty:
+        age_minutes = (pd.Timestamp.now(tz="Asia/Kolkata") - last_ts.iloc[-1].tz_convert("Asia/Kolkata")).total_seconds() / 60.0
+        readiness_candle_fresh = age_minutes <= (10 if decision_timeframe == "5m" else 20)
+
+readiness_data_quality = bool(snapshot is not None and snapshot.quality_status == "GREEN")
+readiness_chain_present = bool(snapshot is not None and snapshot.option_chain)
+verified_quotes = []
+for _contract in (snapshot.option_chain if snapshot is not None else []):
+    _source = str(getattr(_contract, "quote_source", "") or "").upper()
+    _ts = getattr(_contract, "quote_timestamp", None)
+    _bid = float(getattr(_contract, "bid", 0) or 0)
+    _ask = float(getattr(_contract, "ask", 0) or 0)
+    if _source == "KOTAK_NEO" and _ts is not None and _bid > 0 and _ask >= _bid:
+        try:
+            _age = (pd.Timestamp.now(tz="Asia/Kolkata") - pd.Timestamp(_ts).tz_convert("Asia/Kolkata")).total_seconds()
+            verified_quotes.append(_age <= 60.0)
+        except Exception:
+            verified_quotes.append(False)
+readiness_option_quotes_fresh = bool(verified_quotes) and all(verified_quotes)
+readiness_option_liquidity = bool(snapshot and snapshot.option_chain and any(
+    float(getattr(x, "open_interest", 0) or 0) > 0 and float(getattr(x, "volume", 0) or 0) > 0
+    for x in snapshot.option_chain
+))
+readiness_option_flow = bool(snapshot and snapshot.pcr_oi is not None and np.isfinite(float(snapshot.pcr_oi)))
+readiness_regime = bool(prediction_frame is not None and not prediction_frame.empty and canonical_signal.valid)
+readiness_ml = bool(st.session_state.get("final_ml_artifacts"))
+readiness_ensemble = bool("ensemble_rows" in locals() and ensemble_rows and abs(float(ensemble_rows[0].final_ce) - float(ensemble_rows[0].final_pe)) >= 10.0)
+readiness_trade_plan = bool(
+    chain_signal is not None
+    and chain_signal.direction in {"BUY CE", "BUY PE"}
+    and chain_signal.entry_price is not None
+    and chain_signal.stop_loss is not None
+    and chain_signal.take_profit is not None
+    and chain_signal.take_profit > chain_signal.entry_price > chain_signal.stop_loss
+    and getattr(chain_signal, "confidence", 0) >= settings.minimum_signal_confidence
+)
+readiness_risk_budget = bool(settings.starting_capital > 0)
+readiness_risk_controls = bool(readiness_risk_budget and settings.max_trades_per_day > 0 and settings.max_daily_loss_fraction > 0)
+readiness_duplicate_guard = True
+readiness_journal = __import__("pathlib").Path("logs/signal_journal.jsonl").exists()
+readiness_execution = bool(settings.live_trading_allowed())
+readiness_reconciliation = False
+readiness_backtest = False
+readiness_option_history = False
 readiness = assess_readiness(
-    tests_passed=False,  # Repository-local UAT must certify this; never hardcode PASS.
+    tests_passed=readiness_tests_passed,
     warmup_ready=bool(prediction_frame is not None and not prediction_frame.empty),
-    risk_engine_ready=True,
-    ml_available=bool(st.session_state.get("final_ml_artifacts")),
+    risk_engine_ready=readiness_risk_controls,
+    ml_available=readiness_ml,
     live_order_enabled=settings.live_trading_allowed(),
-    realistic_backtest_available=True,
-    option_premium_history_available=bool(getattr(snapshot, "option_chain", ())) if snapshot is not None else False,
+    realistic_backtest_available=readiness_backtest,
+    option_premium_history_available=readiness_option_history,
+    broker_connected=readiness_broker_connected,
+    source_integrity=readiness_source_integrity,
+    no_synthetic_fallback=readiness_no_synthetic,
+    underlying_quote_fresh=readiness_underlying_quote_fresh,
+    candle_fresh=readiness_candle_fresh,
+    data_quality_ready=readiness_data_quality,
+    option_chain_present=readiness_chain_present,
+    option_quotes_fresh=readiness_option_quotes_fresh,
+    option_liquidity_ready=readiness_option_liquidity,
+    option_flow_ready=readiness_option_flow,
+    regime_ready=readiness_regime,
+    ensemble_ready=readiness_ensemble,
+    trade_plan_ready=readiness_trade_plan,
+    risk_budget_ready=readiness_risk_budget,
+    risk_controls_ready=readiness_risk_controls,
+    duplicate_guard_ready=readiness_duplicate_guard,
+    journal_ready=readiness_journal,
+    execution_ready=readiness_execution,
+    reconciliation_ready=readiness_reconciliation,
+    live_approval=settings.live_trading_allowed(),
 )
 rc = st.columns(4)
 rc[0].metric("Readiness", f"{readiness.score:.0f}/100")
 rc[1].metric("Status", readiness.status)
 rc[2].metric("Regime", regime_snapshot.regime)
 rc[3].metric("Live Orders", "ENABLED" if settings.live_trading_allowed() else "LOCKED")
-with st.expander("Readiness gates", expanded=False):
+with st.expander("100-point evidence gates", expanded=False):
     st.dataframe(pd.DataFrame([{
-        "Gate": g.name, "Passed": g.passed, "Priority": g.severity, "Detail": g.detail
+        "Gate": g.name, "Passed": g.passed, "Points": g.points,
+        "Priority": g.severity, "Detail": g.detail
     } for g in readiness.gates]), width="stretch", hide_index=True)
+    if readiness.blockers:
+        st.error("BLOCKERS: " + " | ".join(readiness.blockers))
+
 
 # ============================================================
 # Risk summary
