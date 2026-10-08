@@ -50,12 +50,12 @@ def test_five_minute_builder_emits_only_completed_buckets():
     )
     assert builder.update(
         normalize_sfeed_message(
-            tick("mcx_fo", "123", "CRUDEOIL26OCT", "2026-10-05T10:04:59+05:30", 7005, 7)
+            tick("mcx_fo", "123", "CRUDEOIL26OCT", "2026-10-05T10:04:59+05:30", 7005, 12)
         )
     ) == []
     completed = builder.update(
         normalize_sfeed_message(
-            tick("mcx_fo", "123", "CRUDEOIL26OCT", "2026-10-05T10:05:01+05:30", 6998, 3)
+            tick("mcx_fo", "123", "CRUDEOIL26OCT", "2026-10-05T10:05:01+05:30", 6998, 15)
         )
     )
     assert len(completed) == 1
@@ -65,7 +65,8 @@ def test_five_minute_builder_emits_only_completed_buckets():
     assert candle["high"] == 7005
     assert candle["low"] == 7000
     assert candle["close"] == 7005
-    assert candle["volume"] == 12
+    # Kotak volume_traded_today is cumulative: 5 -> 12 = 7 traded in bucket.
+    assert candle["volume"] == 7
     assert candle["data_source"] == "KOTAK_CAPTURED"
 
 
