@@ -80,7 +80,11 @@ def test_option_data_is_required_for_ce_pe(monkeypatch):
             return []
 
     monkeypatch.setattr("marketdata.decision_source.KotakNeoProvider", Provider)
-    snapshot = load_kotak_decision_snapshot(_Connected())
+    snapshot = load_kotak_decision_snapshot(
+        _Connected(),
+        instrument="NIFTY",
+        now=pd.Timestamp("2026-10-09 10:00", tz="Asia/Kolkata"),
+    )
     assert snapshot.signal.direction == "WAIT"
     assert "option-chain" in snapshot.signal.reasons[0]
 
