@@ -555,14 +555,18 @@ class KotakNeoProvider(MarketDataProvider):
         if explicit_strike <= 0:
             explicit_strike = self._float(instrument.get("strkPrc") or item.get("strkPrc"))
 
-        # Prefer Kotak's explicit strike field. The symbol is used only as a
-        # fallback because expiry/day digits can be adjacent to the strike.
-        strike = explicit_strike if explicit_strike > 0 else symbol_strike
-        strike = validate_option_strike(
-            underlying,
-            strike,
-            symbol_strike=explicit_strike if explicit_strike > 0 else None,
-        )
+        # Prefer Kotak's explicit strike when it is valid. Some broker/test
+        # payloads contain a stale or malformed numeric strike, while the
+        # canonical trading symbol still carries the correct strike. Never
+        # silently rescale either value: validate the explicit value first,
+        # then fall back to the symbol only when the explicit value is invalid.
+        if explicit_strike > 0:
+            try:
+                strike = validate_option_strike(underlying, explicit_strike)
+            except ValueError:
+                strike = validate_option_strike(underlying, symbol_strike)
+        else:
+            strike = validate_option_strike(underlying, symbol_strike)
         ltp = self._quote_ltp(quote)
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
