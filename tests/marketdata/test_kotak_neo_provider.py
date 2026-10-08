@@ -128,6 +128,14 @@ def test_mcx_option_chain_uses_canonical_scrip_master_underlying():
 
 def test_mcx_option_chain_recovers_strike_from_symbol_when_field_missing():
     class SymbolStrikeNeo(FakeNeo):
+        def search_scrip(self, **kwargs):
+            return [{
+                "pSymbol": "569999",
+                "pExchSeg": "mcx_fo",
+                "pSymbolName": "CRUDEOILM",
+                "pTrdSymbol": "CRUDEOILM26OCTFUT",
+            }]
+
         def option_chain(self, **kwargs):
             return {"data": {"call": [{"instrument": {"neoSymbol": "mcx_fo|700001", "symbol": "CRUDEOILM26OCT8800CE", "expiryDt": "2026-10-26"}, "quote": {"ltp": "100", "volume": 10}, "openInterest": {"current": 20, "change": 1}}], "put": []}}
 
