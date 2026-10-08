@@ -103,3 +103,41 @@ def test_candle_builder_converts_cumulative_volume_to_delta():
     assert builder.update(b) == []
     completed = builder.update(c2)
     assert completed[0]["volume"] == 15
+
+
+from marketdata.daily_store import DailyMarketStore
+from scripts.capture_daily_market_data import capture_option_chain
+
+
+def test_capture_option_chain_persists_real_nifty_snapshot(tmp_path):
+    class Provider:
+        def get_option_chain(self, **kwargs):
+            return [
+                SimpleNamespace(
+                    symbol="NIFTY26OCT25000CE", exchange="NSE_FO", underlying="NIFTY",
+                    expiry="2026-10-13", strike=25000.0, option_type="CE",
+                    instrument_token="1", ltp=125.5, bid=125.0, ask=126.0,
+                    volume=1000, open_interest=2000, oi_change=100,
+                    implied_volatility=12.5, built_up="Long Built Up",
+                    delta=0.5, theta=-2.0, vega=1.2, gamma=0.01, ltp_change_pct=2.0,
+                ),
+                SimpleNamespace(
+                    symbol="NIFTY26OCT25000PE", exchange="NSE_FO", underlying="NIFTY",
+                    expiry="2026-10-13", strike=25000.0, option_type="PE",
+                    instrument_token="2", ltp=120.5, bid=120.0, ask=121.0,
+                    volume=900, open_interest=1800, oi_change=-50,
+                    implied_volatility=13.0, built_up="Short Built Up",
+                    delta=-0.5, theta=-2.1, vega=1.3, gamma=0.01, ltp_change_pct=-1.0,
+                ),
+            ]
+
+    store = DailyMarketStore(tmp_path)
+    count, path = capture_option_chain(Provider(), store, "NIFTY", count=40)
+
+    assert count == 2
+    assert path.exists()
+    frame, captured_at = store.load_latest_option_chain_snapshot("NIFTY")
+    assert len(frame) == 2
+    assert set(frame["option_type"]) == {"CE", "PE"}
+    assert set(frame["strike"]) == {25000.0}
+    assert captured_at is not None
