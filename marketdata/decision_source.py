@@ -82,107 +82,107 @@ def load_kotak_decision_snapshot(
     option_expiry: str | None = None,
     config: StrategyConfig | None = None,
 ) -> DecisionSnapshot:
-    """Build the production decision input strictly from real Kotak Neo data.
+    """Build production decision input from broker option-chain + captured Kotak SFeed candles.
 
-    NIFTY uses real index candles plus a real NSE option chain.
-    MCX instruments use the nearest non-expired Kotak futures contract and
-    real futures candles; no synthetic option chain is created.
-    Yahoo is never a live fallback.
+    Both NIFTY and MCX use the same fail-closed architecture:
+      Kotak option chain + persisted Kotak SFeed 5m candles -> decision engine.
+    The Kotak historical endpoint is never used as a live decision fallback,
+    and neither Yahoo nor synthetic candles/contracts are substituted.
     """
     now = pd.Timestamp.now(tz="Asia/Kolkata")
 
     if broker is None or not broker.connection_status().connected:
         return DecisionSnapshot(
-            "KOTAK_NEO", "LIVE", "RED", "Kotak Neo is not connected; live decision is blocked.",
+            "KOTAK_NEO", "LIVE", "RED",
+            "Kotak Neo is not connected; live decision is blocked.",
             now, None, [], "RED", ("Kotak Neo connection required",), None, None, 0,
             _wait("Kotak Neo connection required", now),
         )
 
     try:
-        provider = KotakNeoProvider(broker.client)
-        end = now.date()
-        start = end - timedelta(days=max(3, int(history_days)))
-
         instrument_upper = instrument.upper()
-        if instrument_upper != "NIFTY":
-            # Kotak's current historical-data endpoint does not support the
-            # mcx_fo exchange segment. A current MCX futures quote or contract
-            # resolution is not enough to manufacture the 60-bar 5m history
-            # required by the rule engine. Fail closed until a real SFeed/local
-            # MCX candle recorder supplies persisted completed bars.
-            return DecisionSnapshot(
-                "KOTAK_NEO", "LIVE", "RED",
-                (
-                    f"Kotak Neo historical candles are not available for {instrument_upper} "
-                    "via mcx_fo. Live MCX decisions require a real captured SFeed candle "
-                    "history; no synthetic/Yahoo fallback is permitted."
-                ),
-                now, None, [], "RED",
-                (
-                    "MCX historical candle feed unavailable",
-                    "Start the real Kotak SFeed MCX recorder before enabling this decision path.",
-                ),
-                None, None, 0,
-                _wait(
-                    f"Real MCX {instrument_upper} 5m candle history is unavailable.",
-                    now,
-                ),
-            )
+        if instrument_upper not in {"NIFTY", *_MCX_SYMBOLS}:
+            raise RuntimeError(f"Live instrument mapping is not configured for {instrument_upper}.")
 
-        symbol, exchange, neosymbol = _history_request(
-            provider, instrument_upper, timeframe, start, end
-        )
-        candles = provider.get_historical_candles(
-            symbol=symbol,
-            exchange=exchange,
-            timeframe=timeframe,
-            start=start,
-            end=end,
-            neosymbol=neosymbol,
-        )
-        rows = [{
-            "timestamp": x.timestamp,
-            "open": x.open,
-            "high": x.high,
-            "low": x.low,
-            "close": x.close,
-            "volume": x.volume,
-        } for x in candles]
-        frame = pd.DataFrame(rows)
+        provider = KotakNeoProvider(broker.client)
 
-        if frame.empty:
-            raise RuntimeError(f"Kotak Neo returned no completed {instrument} candles.")
+        if instrument_upper == "NIFTY":
+            chain_exchange, chain_underlying = "NSE_FO", "NIFTY"
+        else:
+            chain_exchange, chain_underlying = "MCX_FO", instrument_upper
 
-        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True).dt.tz_convert("Asia/Kolkata")
-        frame = frame.sort_values("timestamp").drop_duplicates("timestamp").reset_index(drop=True)
-
-        expected_minutes = 5 if timeframe == "5m" else 15
-        quality = assess_ohlcv(frame, expected_minutes=expected_minutes)
-        if quality.status == "RED" or len(frame) < 60:
-            reason = " | ".join(quality.reasons) or "insufficient completed candles"
-            return DecisionSnapshot(
-                "KOTAK_NEO", "LIVE", "RED",
-                f"Kotak Neo data-quality gate blocked the decision: {reason}",
-                now, frame, [], quality.status, tuple(quality.reasons), None, None, 0,
-                _wait(f"Data-quality gate: {reason}", now, frame, quality.status, tuple(quality.reasons)),
-            )
-
-        enriched = add_indicators(frame.copy())
-
+        # Fetch the real broker option chain independently of candle readiness.
+        # This keeps real CE/PE candidates visible even when the underlying
+        # 5m decision gate is WAIT.
         contracts = provider.get_option_chain(
-            underlying="NIFTY",
-            exchange="NSE_FO",
+            underlying=chain_underlying,
+            exchange=chain_exchange,
             expiry=option_expiry,
             count=option_count,
             enrich_quotes=False,
         )
         pcr_oi, pcr_volume = _option_features(contracts)
 
-        if not contracts or pcr_oi is None:
+        # Live decision candles come only from the persisted Kotak SFeed
+        # recorder. This is the common path for NIFTY and MCX; no historical
+        # API, Yahoo data, or synthetic candles are allowed here.
+        from marketdata.daily_store import load_captured_candles
+
+        end = now.date()
+        start = end - timedelta(days=max(3, int(history_days)))
+        frame, source = load_captured_candles(
+            instrument_upper,
+            start=start,
+            end=end,
+        )
+
+        if frame.empty:
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                (
+                    f"Real {instrument_upper} {timeframe} candle history is unavailable. "
+                    "Start the Kotak SFeed recorder; no synthetic/Yahoo fallback is permitted."
+                ),
+                now, None, contracts, "RED",
+                (
+                    f"{instrument_upper} captured SFeed candle history unavailable",
+                    "Run the real Kotak SFeed capture before enabling this decision path.",
+                ),
+                pcr_oi, pcr_volume, len(contracts),
+                _wait(
+                    f"Real {instrument_upper} {timeframe} candle history is unavailable.",
+                    now,
+                ),
+            )
+
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dt.tz_convert("Asia/Kolkata")
+        frame = (
+            frame.dropna(subset=["timestamp"])
+            .sort_values("timestamp")
+            .drop_duplicates("timestamp")
+            .reset_index(drop=True)
+        )
+
+        expected_minutes = 5 if timeframe == "5m" else 15
+        quality = assess_ohlcv(frame, expected_minutes=expected_minutes)
+        if quality.status == "RED" or len(frame) < 60:
+            reason = " | ".join(quality.reasons) or "insufficient completed captured candles"
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                f"Real Kotak captured data-quality gate blocked the decision: {reason}",
+                now, frame, contracts, quality.status, tuple(quality.reasons),
+                pcr_oi, pcr_volume, len(contracts),
+                _wait(
+                    f"Data-quality gate: {reason}",
+                    now, frame, quality.status, tuple(quality.reasons),
+                ),
+            )
+
+        enriched = add_indicators(frame.copy())
+        if pcr_oi is None:
             signal = _wait(
-                "Live option-chain/OI data is unavailable; CE/PE trade is blocked.",
-                now,
-                enriched,
+                "Real Kotak option-chain/OI confirmation is unavailable; CE/PE trade is blocked.",
+                now, enriched,
             )
         else:
             enriched["PCR_OI"] = pcr_oi
@@ -195,7 +195,8 @@ def load_kotak_decision_snapshot(
             )
 
         return DecisionSnapshot(
-            "KOTAK_NEO", "LIVE", quality.status, "Kotak Neo is the primary decision source.",
+            "KOTAK_NEO", "LIVE", quality.status,
+            f"Kotak Neo option chain + {source} 5m candles are the primary decision source.",
             now, enriched, contracts, quality.status, tuple(quality.reasons),
             pcr_oi, pcr_volume, len(contracts), signal,
         )
