@@ -22,30 +22,53 @@ class KotakNeoProvider(MarketDataProvider):
         self.client = client
 
     def get_account_state(self) -> dict:
-        """Return one authoritative account snapshot from Neo; never synthesize values."""
-        candidates = ("limits", "margin", "positions")
-        raw = None
-        for name in candidates:
-            fn = getattr(self.client, name, None)
-            if callable(fn):
-                try:
-                    raw = fn()
-                    if raw is not None:
-                        break
-                except Exception:
-                    continue
+        """Return the authoritative Neo limits/account snapshot.
+
+        Account truth must come from the dedicated limits endpoint. We do not
+        guess between positions, margin or other endpoints because those
+        payloads have different semantics and can turn an incomplete response
+        into a false equity/margin value.
+        """
+        fn = getattr(self.client, "limits", None)
+        if not callable(fn):
+            raise RuntimeError("Kotak Neo limits endpoint is unavailable.")
+        raw = fn()
         if not isinstance(raw, dict):
-            raise RuntimeError("Kotak Neo account-state endpoint is unavailable.")
+            raise RuntimeError("Kotak Neo limits endpoint returned an invalid response.")
+        error = self._response_error(raw)
+        if error:
+            raise RuntimeError(f"Kotak Neo account-state error: {error}")
         data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
-        def pick(*keys):
-            for k in keys:
-                if data.get(k) not in (None, ""):
-                    return data[k]
-            raise RuntimeError("Kotak Neo account response is missing required field.")
-        timestamp = pick("timestamp", "updatedAt", "updateTime", "lastUpdated")
+        if not isinstance(data, dict):
+            raise RuntimeError("Kotak Neo account-state payload is invalid.")
+
+        def required_number(keys: tuple[str, ...], name: str, *, allow_zero: bool) -> float:
+            for key in keys:
+                value = data.get(key)
+                if value not in (None, ""):
+                    parsed = self._float(value, float("nan"))
+                    if parsed == parsed and parsed != float("inf") and parsed != float("-inf"):
+                        if parsed > 0 or (allow_zero and parsed == 0):
+                            return parsed
+                    break
+            raise RuntimeError(f"Kotak Neo account response is missing valid {name}.")
+
+        timestamp = next(
+            (data.get(k) for k in ("timestamp", "updatedAt", "updateTime", "lastUpdated") if data.get(k) not in (None, "")),
+            None,
+        )
+        if timestamp is None:
+            raise RuntimeError("Kotak Neo account response is missing authoritative timestamp.")
+
+        equity = required_number(("equity", "netWorth", "net"), "equity", allow_zero=False)
+        available_margin = required_number(
+            ("availableMargin", "available_margin", "availableCash", "cash"),
+            "available margin",
+            allow_zero=True,
+        )
         return {
-            "equity": self._float(pick("equity", "net", "netWorth")),
-            "available_margin": self._float(pick("available_margin", "availableMargin", "availableCash", "cash")),
+            "equity": equity,
+            "available_margin": available_margin,
             "timestamp": timestamp,
             "source": "KOTAK_NEO",
         }
