@@ -11,6 +11,7 @@ from features.technical.indicators import add_indicators
 from marketdata.providers.kotak_neo import KotakNeoProvider
 from strategy.rules import StrategyConfig, StrategySignal, _generate_signal_from_enriched
 from features.option_chain import OptionContract
+from strategy.production_hardening import validate_candle_frame, validate_option_contract, validate_contract_identity, runtime_clock_ok
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,22 @@ def load_kotak_decision_snapshot(
             contracts, cached_captured_at = _cached_option_contracts(instrument_upper, now)
         pcr_oi, pcr_volume = _option_features(contracts)
 
+        if market_open:
+            valid_contracts = []
+            for contract in contracts:
+                ok, _ = validate_option_contract(
+                    contract, now=now, max_quote_age_seconds=60.0,
+                    require_broker_quote=True, max_spread_pct=0.05,
+                )
+                identity_ok, _ = validate_contract_identity(
+                    contract, expected_instrument=instrument_upper,
+                    expected_exchange=chain_exchange.lower(),
+                )
+                if ok and identity_ok:
+                    valid_contracts.append(contract)
+            contracts = valid_contracts
+            pcr_oi, pcr_volume = _option_features(contracts)
+
         # Option-chain availability is an independent hard gate. Do this
         # before candle history so the UI/test result explains the actual
         # CE/PE blocker instead of masking it behind candle readiness.
@@ -187,6 +204,35 @@ def load_kotak_decision_snapshot(
                     now,
                 ),
             )
+
+        if market_open:
+            sides = {str(getattr(c, "option_type", "")).upper() for c in contracts}
+            if not {"CE", "PE"}.issubset(sides):
+                return DecisionSnapshot(
+                    "KOTAK_NEO", "LIVE", "RED",
+                    "Broker option-chain did not contain executable CE and PE quotes.",
+                    now, None, contracts, "RED",
+                    ("Both CE and PE must have current broker quotes.",),
+                    pcr_oi, pcr_volume, len(contracts),
+                    _wait("Both CE and PE must have current broker quotes.", now),
+                )
+            if instrument_upper == "NIFTY":
+                underlying_quote = provider.get_index_quote("Nifty 50")
+                underlying_ts = pd.Timestamp(underlying_quote.timestamp)
+            else:
+                mcx_contract = provider.resolve_mcx_futures(_MCX_SYMBOLS[instrument_upper])
+                underlying_quote = provider.get_mcx_quote(mcx_contract)
+                raw_ts = underlying_quote.get("timestamp")
+                underlying_ts = pd.Timestamp(raw_ts) if raw_ts not in (None, "") else None
+            if underlying_ts is None or not runtime_clock_ok(reference_timestamp=underlying_ts):
+                return DecisionSnapshot(
+                    "KOTAK_NEO", "LIVE", "RED",
+                    "Broker underlying quote timestamp is missing, stale or not clock-aligned.",
+                    now, None, contracts, "RED",
+                    ("Underlying broker timestamp validation failed.",),
+                    pcr_oi, pcr_volume, len(contracts),
+                    _wait("Underlying broker quote is not decision-ready.", now),
+                )
 
         if not market_open:
             return DecisionSnapshot(
@@ -243,7 +289,20 @@ def load_kotak_decision_snapshot(
         )
 
         expected_minutes = 5 if timeframe == "5m" else 15
+        candle_valid, candle_reasons = validate_candle_frame(
+            frame, timeframe_minutes=expected_minutes, now=now,
+            max_age_minutes=20.0 if timeframe == "5m" else 40.0, minimum_rows=60,
+        )
         quality = assess_ohlcv(frame, expected_minutes=expected_minutes)
+        if not candle_valid:
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                "Broker-captured candle evidence is not decision-ready.",
+                now, frame, contracts, "RED",
+                tuple(candle_reasons) or tuple(quality.reasons) or ("Captured candle validation failed.",),
+                pcr_oi, pcr_volume, len(contracts),
+                _wait("Captured candle validation failed; trade is blocked.", now),
+            )
         if quality.status == "RED" or len(frame) < 60:
             reason = " | ".join(quality.reasons) or "insufficient completed captured candles"
             return DecisionSnapshot(
