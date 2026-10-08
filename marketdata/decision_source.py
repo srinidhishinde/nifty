@@ -171,11 +171,16 @@ def load_kotak_decision_snapshot(
             )
         else:
             contracts, cached_captured_at = _cached_option_contracts(instrument_upper, now)
-        pcr_oi, pcr_volume = _option_features(contracts)
+        # Preserve the broker-returned chain for read-only display and audit.
+        # A separate eligible set controls every executable decision; displaying
+        # an unverified contract must never make it tradeable.
+        display_contracts = list(contracts)
+        pcr_oi, pcr_volume = _option_features(display_contracts)
+        executable_contracts = display_contracts
 
         if market_open:
-            valid_contracts = []
-            for contract in contracts:
+            executable_contracts = []
+            for contract in display_contracts:
                 ok, _ = validate_option_contract(
                     contract, now=now, max_quote_age_seconds=60.0,
                     require_broker_quote=True, max_spread_pct=0.05,
@@ -185,14 +190,12 @@ def load_kotak_decision_snapshot(
                     expected_exchange=chain_exchange.lower(),
                 )
                 if ok and identity_ok:
-                    valid_contracts.append(contract)
-            contracts = valid_contracts
-            pcr_oi, pcr_volume = _option_features(contracts)
+                    executable_contracts.append(contract)
+            pcr_oi, pcr_volume = _option_features(executable_contracts)
 
-        # Option-chain availability is an independent hard gate. Do this
-        # before candle history so the UI/test result explains the actual
-        # CE/PE blocker instead of masking it behind candle readiness.
-        if not contracts:
+        # Chain visibility and execution readiness are different states. Keep
+        # the real raw chain visible even if the identity/quote gates reject it.
+        if not display_contracts:
             return DecisionSnapshot(
                 "KOTAK_NEO", "LIVE", "RED",
                 f"Real {instrument_upper} option-chain data is unavailable.",
@@ -206,16 +209,17 @@ def load_kotak_decision_snapshot(
             )
 
         if market_open:
-            sides = {str(getattr(c, "option_type", "")).upper() for c in contracts}
+            sides = {str(getattr(c, "option_type", "")).upper() for c in executable_contracts}
             if not {"CE", "PE"}.issubset(sides):
                 return DecisionSnapshot(
                     "KOTAK_NEO", "LIVE", "RED",
-                    "Broker option-chain did not contain executable CE and PE quotes.",
-                    now, None, contracts, "RED",
-                    ("Both CE and PE must have current broker quotes.",),
-                    pcr_oi, pcr_volume, len(contracts),
-                    _wait("Both CE and PE must have current broker quotes.", now),
+                    "Broker option-chain is visible, but verified executable CE and PE quotes are unavailable.",
+                    now, None, display_contracts, "RED",
+                    ("Both CE and PE must pass current quote and scrip-master identity validation.",),
+                    pcr_oi, pcr_volume, len(display_contracts),
+                    _wait("Verified CE and PE broker quotes are required; trade is blocked.", now),
                 )
+            contracts = executable_contracts
             if instrument_upper == "NIFTY":
                 underlying_quote = provider.get_index_quote("Nifty 50")
                 underlying_ts = pd.Timestamp(underlying_quote.timestamp)
