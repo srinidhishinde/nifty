@@ -24,6 +24,13 @@ class OptionContract:
     ltp_change_pct: float = 0.0
     quote_timestamp: object | None = None
     quote_source: str = ""
+    exchange: str = ""
+    underlying: str = ""
+    instrument_token: str = ""
+    identity_verified: bool = False
+    scrip_master_hash: str = ""
+    lot_size: float | None = None
+    tick_size: float | None = None
 
 @dataclass(frozen=True)
 class OptionAnalysis:
