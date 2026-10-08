@@ -10,6 +10,7 @@ from analysis.data_quality import assess_ohlcv
 from features.technical.indicators import add_indicators
 from marketdata.providers.kotak_neo import KotakNeoProvider
 from strategy.rules import StrategyConfig, StrategySignal, _generate_signal_from_enriched
+from features.option_chain import OptionContract
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,43 @@ _MCX_SYMBOLS = {
     "SILVER": "SILVER",
     "GOLD": "GOLD",
 }
+
+def _option_market_open(instrument: str, now: pd.Timestamp) -> bool:
+    if now.weekday() >= 5:
+        return False
+    if instrument.upper() == "NIFTY":
+        return pd.Timestamp("09:15").time() <= now.time() <= pd.Timestamp("15:30").time()
+    return pd.Timestamp("09:00").time() <= now.time() <= pd.Timestamp("23:30").time()
+
+
+def _cached_option_contracts(instrument: str, now: pd.Timestamp) -> tuple[list[OptionContract], pd.Timestamp | None]:
+    from marketdata.daily_store import DailyMarketStore
+    frame, captured_at = DailyMarketStore().load_latest_option_chain_snapshot(instrument, before=now)
+    contracts: list[OptionContract] = []
+    for row in frame.to_dict("records"):
+        try:
+            contracts.append(OptionContract(
+                symbol=str(row.get("symbol") or ""),
+                expiry=str(row.get("expiry") or ""),
+                strike=float(row["strike"]),
+                option_type=str(row.get("option_type") or "").upper(),
+                ltp=float(row.get("ltp") or 0),
+                bid=float(row["bid"]) if pd.notna(row.get("bid")) else None,
+                ask=float(row["ask"]) if pd.notna(row.get("ask")) else None,
+                volume=float(row.get("volume") or 0),
+                open_interest=float(row.get("open_interest") or 0),
+                oi_change=float(row.get("oi_change") or 0),
+                implied_volatility=float(row.get("implied_volatility") or 0),
+                built_up=str(row.get("built_up") or ""),
+                delta=float(row["delta"]) if pd.notna(row.get("delta")) else None,
+                theta=float(row["theta"]) if pd.notna(row.get("theta")) else None,
+                vega=float(row["vega"]) if pd.notna(row.get("vega")) else None,
+                gamma=float(row["gamma"]) if pd.notna(row.get("gamma")) else None,
+                ltp_change_pct=float(row.get("ltp_change_pct") or 0),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return contracts, captured_at
 
 
 def _option_features(contracts: list[Any]) -> tuple[float | None, float | None]:
@@ -111,16 +149,20 @@ def load_kotak_decision_snapshot(
         else:
             chain_exchange, chain_underlying = "MCX_FO", instrument_upper
 
-        # Fetch the real broker option chain independently of candle readiness.
-        # This keeps real CE/PE candidates visible even when the underlying
-        # 5m decision gate is WAIT.
-        contracts = provider.get_option_chain(
-            underlying=chain_underlying,
-            exchange=chain_exchange,
-            expiry=option_expiry,
-            count=option_count,
-            enrich_quotes=False,
-        )
+        # OPEN: fetch the current broker chain. CLOSED: do not poll a live
+        # endpoint; load the latest completed real broker snapshot instead.
+        market_open = _option_market_open(instrument_upper, now)
+        cached_captured_at = None
+        if market_open:
+            contracts = provider.get_option_chain(
+                underlying=chain_underlying,
+                exchange=chain_exchange,
+                expiry=option_expiry,
+                count=option_count,
+                enrich_quotes=False,
+            )
+        else:
+            contracts, cached_captured_at = _cached_option_contracts(instrument_upper, now)
         pcr_oi, pcr_volume = _option_features(contracts)
 
         # Option-chain availability is an independent hard gate. Do this
@@ -137,6 +179,20 @@ def load_kotak_decision_snapshot(
                     f"Real {instrument_upper} option-chain data is unavailable; CE/PE trade is blocked.",
                     now,
                 ),
+            )
+
+        if not market_open:
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LAST_SESSION", "GREEN" if contracts else "RED",
+                (
+                    f"Market closed. Showing the latest completed {instrument_upper} Kotak option-chain snapshot"
+                    + (f" from {cached_captured_at.strftime('%Y-%m-%d %H:%M:%S %Z')}." if cached_captured_at is not None else ".")
+                    + " No current trade decision is generated while the market is closed."
+                ),
+                now, None, contracts, "GREEN" if contracts else "RED",
+                ("Market closed; last completed broker snapshot only",),
+                pcr_oi, pcr_volume, len(contracts),
+                _wait("Market closed; current CE/PE trade decision is blocked.", now),
             )
 
         # Live decision candles come only from the persisted Kotak SFeed
