@@ -1614,6 +1614,53 @@ if chain_config:
         else []
     )
 
+    # Recover the newest persisted real Kotak chain as a UI failover cache.
+    # This survives Streamlit reruns/restarts and is never treated as current
+    # live data unless the broker refresh succeeds in this same run.
+    cached_chain_timestamp = None
+    try:
+        from marketdata.daily_store import DailyMarketStore
+        cached_chain_frame, cached_chain_timestamp = DailyMarketStore().load_latest_option_chain_snapshot(
+            instrument,
+            before=now,
+        )
+        if not cached_chain_frame.empty:
+            cached_contracts = []
+            for row in cached_chain_frame.to_dict("records"):
+                try:
+                    cached_contracts.append(
+                        OptionContract(
+                            symbol=str(row.get("symbol") or ""),
+                            expiry=str(row.get("expiry") or ""),
+                            strike=float(row.get("strike") or 0),
+                            option_type=str(row.get("option_type") or "").upper(),
+                            ltp=float(row.get("ltp") or 0),
+                            bid=float(row["bid"]) if pd.notna(row.get("bid")) else None,
+                            ask=float(row["ask"]) if pd.notna(row.get("ask")) else None,
+                            volume=float(row.get("volume") or 0),
+                            open_interest=float(row.get("open_interest") or 0),
+                            oi_change=float(row.get("oi_change") or 0),
+                            implied_volatility=float(row.get("implied_volatility") or 0),
+                            built_up=str(row.get("built_up") or ""),
+                            delta=float(row["delta"]) if pd.notna(row.get("delta")) else None,
+                            theta=float(row["theta"]) if pd.notna(row.get("theta")) else None,
+                            vega=float(row["vega"]) if pd.notna(row.get("vega")) else None,
+                            gamma=float(row["gamma"]) if pd.notna(row.get("gamma")) else None,
+                            ltp_change_pct=float(row.get("ltp_change_pct") or 0),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+            if cached_contracts:
+                # Prefer the in-memory decision snapshot when it is newer;
+                # otherwise recover the persisted real broker snapshot.
+                if not snapshot_contracts or snapshot is None or cached_chain_timestamp > snapshot.timestamp:
+                    snapshot_contracts = cached_contracts
+    except Exception:
+        # Cache recovery is deliberately best-effort. It must never make the
+        # broker/live path fail or introduce synthetic data.
+        cached_chain_timestamp = None
+
     if chain_market_open and authenticated:
         try:
             provider = KotakNeoProvider(neo_broker.client)
@@ -1625,6 +1672,18 @@ if chain_config:
                 enrich_quotes=False,
             )
             if live_contracts:
+                # Persist only a successful real broker refresh. This becomes
+                # the fallback shown when the next refresh fails or the market
+                # is closed; it is never used to claim a live refresh succeeded.
+                try:
+                    from marketdata.daily_store import DailyMarketStore
+                    DailyMarketStore().save_option_chain_snapshot(
+                        instrument,
+                        live_contracts,
+                        captured_at=now,
+                    )
+                except Exception:
+                    pass
                 chain_status_label = "LIVE KOTAK NEO"
                 chain_status_detail = (
                     f"Current broker chain · {len(live_contracts)} contracts · "
@@ -1642,7 +1701,7 @@ if chain_config:
             live_contracts = snapshot_contracts
             chain_status_label = "LIVE REFRESH FAILED"
             chain_status_detail = (
-                f"{exc}. Showing the last Kotak snapshot only."
+                f"{exc}. Showing the last updated real Kotak snapshot."
                 if snapshot_contracts
                 else f"{exc}. No broker chain is available."
             )
@@ -1660,9 +1719,9 @@ if chain_config:
         chain_status_detail = (
             "Live polling paused. "
             + (
-                f"Showing the last Kotak snapshot from "
-                f"{snapshot.timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')}."
-                if snapshot is not None and snapshot_contracts
+                f"Showing the last updated real Kotak snapshot from "
+                f"{(cached_chain_timestamp or snapshot.timestamp).strftime('%Y-%m-%d %H:%M:%S %Z')}."
+                if snapshot_contracts and (cached_chain_timestamp is not None or snapshot is not None)
                 else "No Kotak option-chain snapshot is available yet."
             )
         )
