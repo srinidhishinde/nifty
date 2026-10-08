@@ -64,3 +64,5 @@ class OptionContract:
     vega: Optional[float] = None
     gamma: Optional[float] = None
     ltp_change_pct: float = 0.0
+    quote_timestamp: Optional[datetime] = None
+    quote_source: str = ""
