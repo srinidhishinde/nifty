@@ -136,6 +136,8 @@ class DailyMarketStore:
         folder = self.directory(instrument, day)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{instrument.upper()}_option_chain_latest.csv"
+        archive = folder / f"{instrument.upper()}_option_chain_{timestamp.strftime('%H%M%S%f')}.csv"
+        frame.to_csv(archive, index=False)
         frame.to_csv(path, index=False)
         return path
 
