@@ -357,8 +357,9 @@ def build_decision_evidence(**kwargs: Any) -> DecisionEvidence:
     return DecisionEvidence(**kwargs)
 
 
-def live_permission(evidence: DecisionEvidence, *, config_enabled: bool) -> bool:
-    return bool(config_enabled and evidence.mandatory_pass and evidence.ml_validated and evidence.ensemble_valid)
+def live_permission(evidence: DecisionEvidence, *, config_enabled: bool | None = None) -> bool:
+    # Configuration may lock execution OFF, but it can never authorize it.
+    return bool(evidence.mandatory_pass and evidence.ml_validated and evidence.ensemble_valid and config_enabled is not False)
 
 
 def ml_validation_ok(artifact: Any) -> bool:
@@ -376,7 +377,7 @@ def runtime_clock_ok(*, max_drift_seconds: float = 5.0, reference_timestamp: Any
     if reference_timestamp is None:
         return False
     age = timestamp_age_seconds(reference_timestamp)
-    return age is not None and abs(age) <= float(max_drift_seconds)
+    return age is not None and 0.0 <= age <= float(max_drift_seconds)
 
 
 def option_expiry_valid(expiry: Any, *, now: Any | None = None) -> bool:
