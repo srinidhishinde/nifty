@@ -70,6 +70,7 @@ def test_kotak_option_chain_normalizes_current_response():
     assert {x.option_type for x in chain} == {"CE", "PE"}
     assert chain[0].instrument_token.startswith("nse_fo|")
     assert all(x.ltp > 0 for x in chain)
+    assert all(hasattr(x, "implied_volatility") for x in chain)
     assert all(x.bid is not None and x.ask is not None for x in chain)
 
 
