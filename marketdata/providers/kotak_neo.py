@@ -284,9 +284,18 @@ class KotakNeoProvider(MarketDataProvider):
         # avoids rejecting a valid chain when the expiry endpoint is temporarily
         # unavailable. If the caller supplied an expiry, preserve it exactly.
         request_expiry = str(expiry).strip() if expiry else None
+        # MCX option-chain requests must use the broker's canonical
+        # pSymbolName (for example CRUDEOIL/CRUDEOILM), not the UI label
+        # blindly. This prevents valid MCX option chains from being rejected
+        # because of an underlying-name mismatch.
+        request_underlying = (
+            self.resolve_option_underlying(underlying, exchange_segment)
+            if exchange_segment == "mcx_fo"
+            else underlying.upper()
+        )
         response = self.client.option_chain(
             exchange=exchange_segment,
-            underlying=underlying.upper(),
+            underlying=request_underlying,
             expiry=request_expiry,
             instrument_type="option",
             count=count,
