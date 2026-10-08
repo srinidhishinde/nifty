@@ -145,8 +145,15 @@ def load_kotak_decision_snapshot(
             _wait("Kotak Neo connection required", now),
         )
 
+    # Retain read-only broker evidence if a later processing step fails.
+    # Initialize before entering the pipeline so exception handling never hides
+    # a chain that was already received from Kotak.
+    display_contracts: list[Any] = []
+    pcr_oi: float | None = None
+    pcr_volume: float | None = None
+    instrument_upper = instrument.upper()
+
     try:
-        instrument_upper = instrument.upper()
         if instrument_upper not in {"NIFTY", *_MCX_SYMBOLS}:
             raise RuntimeError(f"Live instrument mapping is not configured for {instrument_upper}.")
 
@@ -357,9 +364,12 @@ def load_kotak_decision_snapshot(
             pcr_oi, pcr_volume, len(contracts), signal,
         )
     except Exception as exc:
+        # Preserve raw chain visibility and diagnostics, but never preserve an
+        # executable signal after an unexpected error.
         return DecisionSnapshot(
             "KOTAK_NEO", "LIVE", "RED",
             f"Kotak Neo decision-data error: {exc}",
-            now, None, [], "RED", (str(exc),), None, None, 0,
-            _wait(f"Kotak Neo decision-data error: {exc}", now),
+            now, None, display_contracts, "RED", (str(exc),), pcr_oi, pcr_volume,
+            len(display_contracts),
+            _wait(f"Kotak Neo decision-data error: {exc}; trade is blocked.", now),
         )
