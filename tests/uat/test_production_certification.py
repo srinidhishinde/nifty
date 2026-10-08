@@ -77,6 +77,8 @@ def test_cert_5_live_permission_requires_every_mandatory_gate():
     assert live_permission(evidence, config_enabled=True)
     assert not live_permission(evidence, config_enabled=False)
     assert not live_permission(evidence)
+    assert not live_permission(evidence, config_enabled=True, broker_orders_allowed=False)
+    assert live_permission(evidence, config_enabled=True, broker_orders_allowed=True)
     blocked = DecisionEvidence(**{**fields, "reconciliation_valid": False})
     assert not live_permission(blocked, config_enabled=True)
 
