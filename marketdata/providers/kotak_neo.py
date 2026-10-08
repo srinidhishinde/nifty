@@ -367,6 +367,13 @@ class KotakNeoProvider(MarketDataProvider):
             symbol = str(row.get("pTrdSymbol") or "").strip()
             if token and symbol:
                 mapping[token] = symbol
+            # Neo option-chain instruments may expose neoSymbol as
+            # "nse_fo|<pSymbol>" while scrip-master pSymbol is bare. Keep both
+            # forms so the canonical broker trading symbol is always usable.
+            if "|" in token:
+                mapping[token.split("|")[-1]] = symbol
+            else:
+                mapping[f"{exchange}|{token}"] = symbol
         return mapping
 
     def get_option_chain(
@@ -489,6 +496,8 @@ class KotakNeoProvider(MarketDataProvider):
         symbol = instrument.get("symbol")
         neo_symbol = instrument.get("neoSymbol")
         canonical_symbol = (canonical_symbols or {}).get(str(neo_symbol).strip())
+        if not canonical_symbol and "|" in str(neo_symbol):
+            canonical_symbol = (canonical_symbols or {}).get(str(neo_symbol).split("|")[-1])
         if canonical_symbol:
             symbol = canonical_symbol
         if not symbol or not neo_symbol:
