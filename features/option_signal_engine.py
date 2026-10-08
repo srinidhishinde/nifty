@@ -137,7 +137,7 @@ def generate_option_chain_signal(
         stop_loss=float(sl) if sl is not None else None,
         take_profit=float(tp) if tp is not None else None,
         underlying_entry=float(winner["Underlying Entry"]),
-        underlying_stop_loss=float(winner["Underlying SL"]),
-        underlying_take_profit=float(winner["Underlying TP"]) if pd.notna(winner["Underlying TP"]) else float(spot),
+        underlying_stop_loss=(float(winner["Underlying SL"]) if pd.notna(winner["Underlying SL"]) else float(spot)),
+        underlying_take_profit=(float(winner["Underlying TP"]) if pd.notna(winner["Underlying TP"]) else float(spot)),
         reasons=(reason, f"Global news sentiment={global_news_score:.2f}"),
     ), frame
