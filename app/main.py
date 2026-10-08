@@ -1498,44 +1498,69 @@ if environment == "RESEARCH":
         "Synthetic research selector only. It is not the canonical Kotak Neo "
         "decision and must not be used as a paper/live trade signal."
     )
+    display_signal = signal
+    ce_score = float(signal.ce_score)
+    pe_score = float(signal.pe_score)
+    wait_edge = float(signal.edge)
+    selected_side = signal.decision
 else:
     st.subheader(f"{instrument} CE / WAIT / PE")
     st.caption(
-        "Broker-derived CE/PE candidates remain visible in PAPER/UAT/LIVE. "
-        "The canonical signal and data-quality gates control the decision; "
-        "this view cannot override them."
+        "Real Kotak Neo CE/PE candidates remain visible in PAPER/UAT/LIVE. "
+        "They are read-only: the canonical signal, data-quality, risk and "
+        "execution gates control the decision."
+    )
+    broker_contracts = list(snapshot.option_chain) if snapshot is not None else []
+    ce_contracts = [x for x in broker_contracts if getattr(x, "option_type", "") == "CE"]
+    pe_contracts = [x for x in broker_contracts if getattr(x, "option_type", "") == "PE"]
+    ce_analyses = [analyze_option(x) for x in ce_contracts]
+    pe_analyses = [analyze_option(x) for x in pe_contracts]
+    best_ce = max(ce_analyses, key=lambda x: float(x.score)) if ce_analyses else None
+    best_pe = max(pe_analyses, key=lambda x: float(x.score)) if pe_analyses else None
+    ce_score = float(best_ce.score) if best_ce is not None else 0.0
+    pe_score = float(best_pe.score) if best_pe is not None else 0.0
+    wait_edge = abs(ce_score - pe_score)
+    selected_side = (
+        "CE" if canonical_signal.direction == "CE"
+        else "PE" if canonical_signal.direction == "PE"
+        else "WAIT"
     )
 
 left, middle, right = st.columns(3)
 
 with left:
     st.subheader("CE")
-    st.metric("Score", f"{signal.ce_score:.1f}")
-    if signal.decision == "CE":
-        st.success("Selected by canonical signal")
-    else:
-        st.write("Candidate / not selected")
+    st.metric("Candidate score", f"{ce_score:.1f}")
+    if selected_side == "CE":
+        st.success("Canonical side")
+    elif environment == "RESEARCH":
+        st.write("Not selected")
+    elif best_ce is not None:
+        st.write(f"Broker candidate · {getattr(best_ce, 'strike', '—')}")
 
 with middle:
     st.subheader("WAIT")
-    st.metric("Edge", f"{signal.edge:.1f}")
-    if signal.decision == "WAIT":
-        st.warning("Canonical decision: WAIT")
+    st.metric("CE/PE edge", f"{wait_edge:.1f}")
+    if selected_side == "WAIT":
+        st.warning(f"Canonical decision: {canonical_signal.direction}")
     else:
         st.write("Available when evidence conflicts")
 
 with right:
     st.subheader("PE")
-    st.metric("Score", f"{signal.pe_score:.1f}")
-    if signal.decision == "PE":
-        st.success("Selected by canonical signal")
-    else:
-        st.write("Candidate / not selected")
+    st.metric("Candidate score", f"{pe_score:.1f}")
+    if selected_side == "PE":
+        st.success("Canonical side")
+    elif environment == "RESEARCH":
+        st.write("Not selected")
+    elif best_pe is not None:
+        st.write(f"Broker candidate · {getattr(best_pe, 'strike', '—')}")
 
 if environment != "RESEARCH":
     st.info(
         f"{environment} safety rule: CE/PE selection is read-only. "
-        "It cannot override the canonical signal, data-quality gate, risk gate, or execution lock."
+        "No manual selector can override the canonical signal, data-quality gate, "
+        "risk gate, or execution lock."
     )
 
 st.divider()
