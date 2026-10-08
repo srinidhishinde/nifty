@@ -319,7 +319,7 @@ class KotakNeoProvider(MarketDataProvider):
         exchange: str,
         expiry: str | None = None,
         count: int = 40,
-        enrich_quotes: bool = True,
+        enrich_quotes: bool = False,
     ) -> List[OptionContract]:
         exchange_segment = self.normalize_exchange(exchange)
         if exchange_segment not in {"nse_fo", "bse_fo", "mcx_fo"}:
@@ -403,6 +403,11 @@ class KotakNeoProvider(MarketDataProvider):
             if contract:
                 contracts.append(contract)
 
+        # The option-chain endpoint already returns broker LTP/volume/OI and
+        # option analytics. Quote enrichment is opt-in because Neo limits a
+        # quotes request to 50 symbols and some SDK/backend combinations have
+        # produced oversized quote requests despite provider-side batching.
+        # Depth enrichment remains available explicitly through enrich_quotes=True.
         if enrich_quotes and contracts:
             self._enrich_quotes(contracts)
 
