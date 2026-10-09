@@ -672,7 +672,7 @@ class KotakNeoProvider(MarketDataProvider):
             if not tokens:
                 return []
             try:
-                response = self.client.quotes(instrument_tokens=tokens[:50], quote_type="all")
+                response = self.client.quotes(instrument_tokens=tokens[:25], quote_type="all")
             except Exception:
                 if len(batch) <= 1:
                     return []
@@ -683,8 +683,8 @@ class KotakNeoProvider(MarketDataProvider):
                 response = data.get("quotes") or data.get("data") or []
             return response if isinstance(response, list) else []
 
-        for start in range(0, len(contracts), 50):
-            batch = contracts[start:start + 50]
+        for start in range(0, len(contracts), 25):
+            batch = contracts[start:start + 25]
             response = fetch_batch(batch)
             by_token = {}
             for quote in response:
