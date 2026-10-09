@@ -399,3 +399,51 @@ def test_kotak_limits_bridge_error_is_not_treated_as_account_data():
         assert "bridge API error out" in str(exc)
     else:
         raise AssertionError("broker limits bridge errors must fail closed")
+
+
+def test_quote_enrichment_never_sends_more_than_25_symbols_per_request():
+    class TrackingQuotesNeo:
+        def __init__(self):
+            self.batch_sizes = []
+
+        def quotes(self, **kwargs):
+            tokens = kwargs["instrument_tokens"]
+            self.batch_sizes.append(len(tokens))
+            return [
+                {
+                    "exchange_token": item["instrument_token"],
+                    "ltp": "101.0",
+                    "timestamp": "2026-10-09T10:00:00+05:30",
+                    "depth": {
+                        "buy": [{"price": "100.9"}],
+                        "sell": [{"price": "101.1"}],
+                    },
+                }
+                for item in tokens
+            ]
+
+    client = TrackingQuotesNeo()
+    provider = KotakNeoProvider(client)
+    contracts = [
+        OptionContract(
+            symbol=f"NIFTY26OCT{22000 + i}CE",
+            exchange="nse_fo",
+            underlying="NIFTY",
+            expiry="2026-10-15",
+            strike=float(22000 + i),
+            option_type="CE",
+            instrument_token=f"nse_fo|{100000 + i}",
+            ltp=100.0,
+            bid=None,
+            ask=None,
+            volume=1.0,
+            open_interest=1.0,
+            oi_change=0.0,
+        )
+        for i in range(51)
+    ]
+
+    provider._enrich_quotes(contracts)
+
+    assert client.batch_sizes == [25, 25, 1]
+    assert all(contract.bid == 100.9 and contract.ask == 101.1 for contract in contracts)
