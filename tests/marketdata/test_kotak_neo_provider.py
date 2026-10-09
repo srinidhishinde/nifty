@@ -447,3 +447,40 @@ def test_quote_enrichment_never_sends_more_than_25_symbols_per_request():
 
     assert client.batch_sizes == [25, 25, 1]
     assert all(contract.bid == 100.9 and contract.ask == 101.1 for contract in contracts)
+
+
+def test_mcx_crude_strike_uses_explicit_field_not_expiry_digits_in_symbol():
+    class CompactCrudeNeo(FakeNeo):
+        def option_chain(self, **kwargs):
+            return {
+                "data": {
+                    "common_data": {"unlSymbol": "CRUDEOIL", "expiryDt": "2026-10-26"},
+                    "call": [{
+                        "instrument": {
+                            "neoSymbol": "mcx_fo|700101",
+                            "symbol": "CRUDEOIL263200CE",
+                            "strikePrice": "3200",
+                            "expiryDt": "2026-10-26",
+                        },
+                        "quote": {"ltp": "120", "volume": 10},
+                        "openInterest": {"current": 20, "change": 1},
+                    }],
+                    "put": [{
+                        "instrument": {
+                            "neoSymbol": "mcx_fo|700102",
+                            "symbol": "CRUDEOIL263200PE",
+                            "strikePrice": "3200",
+                            "expiryDt": "2026-10-26",
+                        },
+                        "quote": {"ltp": "110", "volume": 8},
+                        "openInterest": {"current": 15, "change": 0},
+                    }],
+                }
+            }
+
+    chain = KotakNeoProvider(CompactCrudeNeo()).get_option_chain(
+        underlying="CRUDEOIL", exchange="MCX", count=40, enrich_quotes=False
+    )
+
+    assert len(chain) == 2
+    assert {contract.strike for contract in chain} == {3200.0}
