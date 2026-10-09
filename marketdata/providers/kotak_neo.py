@@ -598,9 +598,20 @@ class KotakNeoProvider(MarketDataProvider):
         explicit_strike = self._float(raw_explicit)
 
         if exchange == "mcx_fo" and explicit_strike > 0:
-            # Do not let expiry digits embedded in the compact symbol override
-            # the broker's explicit numeric strike for commodity options.
-            strike = validate_option_strike(underlying, explicit_strike)
+            # Prefer the scrip-master canonical trading symbol when it has an
+            # explicit month token (e.g. CRUDEOIL19OCT20268800CE). In that
+            # format the final digits are the strike, while the chain's
+            # strikePrice field has occasionally disagreed with the real
+            # contract. Compact symbols without a month token remain ambiguous
+            # and use the broker's numeric strike only as a fallback.
+            canonical_has_month = bool(
+                canonical_symbol
+                and re.search(r"\\d{1,2}[A-Z]{3}", str(canonical_symbol).upper())
+            )
+            if canonical_has_month and symbol_strike > 0:
+                strike = validate_option_strike(underlying, symbol_strike)
+            else:
+                strike = validate_option_strike(underlying, explicit_strike)
         else:
             # For other segments, preserve canonical-symbol validation: a valid
             # trading-symbol strike wins over a conflicting malformed payload.
