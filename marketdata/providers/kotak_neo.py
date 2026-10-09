@@ -575,12 +575,11 @@ class KotakNeoProvider(MarketDataProvider):
             or item.get("strike")
         )
 
-        # Kotak's compact trading symbol is not safely parseable by simply
-        # taking all digits before CE/PE. For example:
-        #   NIFTY26O1320250CE
-        # contains expiry day 13 + strike 20250, so a suffix regex produces
-        # the false strike 1320250. The instrument's strkPrc is the explicit
-        # strike field and must win when supplied.
+        # Kotak/MCX compact symbols can concatenate the expiry day and strike
+        # without a month delimiter (for example CRUDEOIL263200CE). A greedy
+        # suffix regex then misreads day 26 + strike 3200 as strike 263200.
+        # For MCX, prefer the broker's dedicated strike fields; only infer a
+        # strike from the trading symbol when the payload has no usable value.
         import re
         symbol_match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", str(symbol).upper())
         symbol_strike = (
@@ -588,28 +587,37 @@ class KotakNeoProvider(MarketDataProvider):
             if symbol_match
             else 0.0
         )
-        explicit_strike = payload_strike
-        if explicit_strike <= 0:
-            explicit_strike = self._float(instrument.get("strkPrc") or item.get("strkPrc"))
+        raw_explicit = (
+            instrument.get("strkPrc")
+            or item.get("strkPrc")
+            or instrument.get("strikePrice")
+            or instrument.get("strike")
+            or item.get("strikePrice")
+            or item.get("strike")
+        )
+        explicit_strike = self._float(raw_explicit)
 
-        # The canonical trading symbol is the final identity of an option
-        # contract. If the payload strike disagrees with a valid symbol strike,
-        # treat the payload value as stale/malformed rather than exposing a
-        # potentially different tradable contract. Never silently rescale.
-        symbol_valid = False
-        if symbol_strike > 0:
-            try:
-                validate_option_strike(underlying, symbol_strike)
-                symbol_valid = True
-            except ValueError:
-                pass
-
-        if symbol_valid:
-            strike = float(symbol_strike)
-        elif explicit_strike > 0:
+        if exchange == "mcx_fo" and explicit_strike > 0:
+            # Do not let expiry digits embedded in the compact symbol override
+            # the broker's explicit numeric strike for commodity options.
             strike = validate_option_strike(underlying, explicit_strike)
         else:
-            raise ValueError(f"Invalid {underlying} option strike: {explicit_strike}")
+            # For other segments, preserve canonical-symbol validation: a valid
+            # trading-symbol strike wins over a conflicting malformed payload.
+            symbol_valid = False
+            if symbol_strike > 0:
+                try:
+                    validate_option_strike(underlying, symbol_strike)
+                    symbol_valid = True
+                except ValueError:
+                    pass
+
+            if symbol_valid:
+                strike = float(symbol_strike)
+            elif explicit_strike > 0:
+                strike = validate_option_strike(underlying, explicit_strike)
+            else:
+                raise ValueError(f"Invalid {underlying} option strike: {explicit_strike}")
         ltp = self._quote_ltp(quote)
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
