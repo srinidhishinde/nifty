@@ -451,6 +451,14 @@ def test_quote_enrichment_never_sends_more_than_25_symbols_per_request():
 
 def test_mcx_crude_strike_uses_explicit_field_not_expiry_digits_in_symbol():
     class CompactCrudeNeo(FakeNeo):
+        def search_scrip(self, **kwargs):
+            return [{
+                "pSymbol": "700100",
+                "pExchSeg": "mcx_fo",
+                "pSymbolName": "CRUDEOIL",
+                "pTrdSymbol": "CRUDEOIL26OCTFUT",
+            }]
+
         def option_chain(self, **kwargs):
             return {
                 "data": {
