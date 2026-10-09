@@ -344,3 +344,151 @@ def test_daily_store_loader_uses_only_captured_partitions(tmp_path):
     assert source == "KOTAK_CAPTURED"
     assert len(loaded) == 2
     assert set(loaded["data_source"]) == {"KOTAK_CAPTURED"}
+
+
+
+def test_nifty_index_quote_uses_documented_name_not_numeric_scrip_token():
+    class IndexNeo:
+        def __init__(self):
+            self.search_calls = []
+            self.quote_calls = []
+
+        def search_scrip(self, **kwargs):
+            self.search_calls.append(kwargs)
+            return [{"pSymbol": "26000", "pExchSeg": "nse_cm", "pSymbolName": "NIFTY 50", "pTrdSymbol": "NIFTY"}]
+
+        def quotes(self, **kwargs):
+            self.quote_calls.append(kwargs)
+            return [{
+                "ltp": "25000.5",
+                "timestamp": "2026-10-09T10:00:00+05:30",
+                "exchange_segment": "nse_cm",
+            }]
+
+    client = IndexNeo()
+    provider = KotakNeoProvider(client)
+
+    assert provider.resolve_nifty_index_neosymbol("NIFTY") == "nse_cm|Nifty 50"
+    quote = provider.get_index_quote("Nifty 50")
+
+    assert quote.ltp == 25000.5
+    assert client.search_calls == []
+    assert client.quote_calls[0]["instrument_tokens"] == [
+        {"instrument_token": "Nifty 50", "exchange_segment": "nse_cm"}
+    ]
+
+
+def test_nifty_index_resolver_rejects_unknown_index_instead_of_guessing():
+    provider = KotakNeoProvider(FakeNeo())
+    try:
+        provider.resolve_nifty_index_neosymbol("MADE UP INDEX")
+    except ValueError as exc:
+        assert "Unsupported Kotak index identifier" in str(exc)
+    else:
+        raise AssertionError("unknown index names must fail closed")
+
+
+def test_kotak_limits_bridge_error_is_not_treated_as_account_data():
+    class LimitsErrorNeo:
+        def limits(self):
+            return {"stat": "Not_Ok", "stCode": 300015, "errMsg": "bridge API error out"}
+
+    try:
+        KotakNeoProvider(LimitsErrorNeo()).get_account_state()
+    except RuntimeError as exc:
+        assert "bridge API error out" in str(exc)
+    else:
+        raise AssertionError("broker limits bridge errors must fail closed")
+
+
+def test_quote_enrichment_never_sends_more_than_25_symbols_per_request():
+    class TrackingQuotesNeo:
+        def __init__(self):
+            self.batch_sizes = []
+
+        def quotes(self, **kwargs):
+            tokens = kwargs["instrument_tokens"]
+            self.batch_sizes.append(len(tokens))
+            return [
+                {
+                    "exchange_token": item["instrument_token"],
+                    "ltp": "101.0",
+                    "timestamp": "2026-10-09T10:00:00+05:30",
+                    "depth": {
+                        "buy": [{"price": "100.9"}],
+                        "sell": [{"price": "101.1"}],
+                    },
+                }
+                for item in tokens
+            ]
+
+    client = TrackingQuotesNeo()
+    provider = KotakNeoProvider(client)
+    contracts = [
+        OptionContract(
+            symbol=f"NIFTY26OCT{22000 + i}CE",
+            exchange="nse_fo",
+            underlying="NIFTY",
+            expiry="2026-10-15",
+            strike=float(22000 + i),
+            option_type="CE",
+            instrument_token=f"nse_fo|{100000 + i}",
+            ltp=100.0,
+            bid=None,
+            ask=None,
+            volume=1.0,
+            open_interest=1.0,
+            oi_change=0.0,
+        )
+        for i in range(51)
+    ]
+
+    provider._enrich_quotes(contracts)
+
+    assert client.batch_sizes == [25, 25, 1]
+    assert all(contract.bid == 100.9 and contract.ask == 101.1 for contract in contracts)
+
+
+def test_mcx_crude_strike_uses_explicit_field_not_expiry_digits_in_symbol():
+    class CompactCrudeNeo(FakeNeo):
+        def search_scrip(self, **kwargs):
+            return [{
+                "pSymbol": "700100",
+                "pExchSeg": "mcx_fo",
+                "pSymbolName": "CRUDEOIL",
+                "pTrdSymbol": "CRUDEOIL26OCTFUT",
+            }]
+
+        def option_chain(self, **kwargs):
+            return {
+                "data": {
+                    "common_data": {"unlSymbol": "CRUDEOIL", "expiryDt": "2026-10-26"},
+                    "call": [{
+                        "instrument": {
+                            "neoSymbol": "mcx_fo|700101",
+                            "symbol": "CRUDEOIL263200CE",
+                            "strikePrice": "3200",
+                            "expiryDt": "2026-10-26",
+                        },
+                        "quote": {"ltp": "120", "volume": 10},
+                        "openInterest": {"current": 20, "change": 1},
+                    }],
+                    "put": [{
+                        "instrument": {
+                            "neoSymbol": "mcx_fo|700102",
+                            "symbol": "CRUDEOIL263200PE",
+                            "strikePrice": "3200",
+                            "expiryDt": "2026-10-26",
+                        },
+                        "quote": {"ltp": "110", "volume": 8},
+                        "openInterest": {"current": 15, "change": 0},
+                    }],
+                }
+            }
+
+    chain = KotakNeoProvider(CompactCrudeNeo()).get_option_chain(
+        underlying="CRUDEOIL", exchange="MCX", count=40, enrich_quotes=False
+    )
+
+    assert len(chain) == 2
+    assert {contract.strike for contract in chain} == {3200.0}

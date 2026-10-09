@@ -21,6 +21,58 @@ class KotakNeoProvider(MarketDataProvider):
     def __init__(self, client):
         self.client = client
 
+    def get_account_state(self) -> dict:
+        """Return the authoritative Neo limits/account snapshot.
+
+        Account truth must come from the dedicated limits endpoint. We do not
+        guess between positions, margin or other endpoints because those
+        payloads have different semantics and can turn an incomplete response
+        into a false equity/margin value.
+        """
+        fn = getattr(self.client, "limits", None)
+        if not callable(fn):
+            raise RuntimeError("Kotak Neo limits endpoint is unavailable.")
+        raw = fn()
+        if not isinstance(raw, dict):
+            raise RuntimeError("Kotak Neo limits endpoint returned an invalid response.")
+        error = self._response_error(raw)
+        if error:
+            raise RuntimeError(f"Kotak Neo account-state error: {error}")
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+        if not isinstance(data, dict):
+            raise RuntimeError("Kotak Neo account-state payload is invalid.")
+
+        def required_number(keys: tuple[str, ...], name: str, *, allow_zero: bool) -> float:
+            for key in keys:
+                value = data.get(key)
+                if value not in (None, ""):
+                    parsed = self._float(value, float("nan"))
+                    if parsed == parsed and parsed != float("inf") and parsed != float("-inf"):
+                        if parsed > 0 or (allow_zero and parsed == 0):
+                            return parsed
+                    break
+            raise RuntimeError(f"Kotak Neo account response is missing valid {name}.")
+
+        timestamp = next(
+            (data.get(k) for k in ("timestamp", "updatedAt", "updateTime", "lastUpdated") if data.get(k) not in (None, "")),
+            None,
+        )
+        if timestamp is None:
+            raise RuntimeError("Kotak Neo account response is missing authoritative timestamp.")
+
+        equity = required_number(("equity", "netWorth", "net"), "equity", allow_zero=False)
+        available_margin = required_number(
+            ("availableMargin", "available_margin", "availableCash", "cash"),
+            "available margin",
+            allow_zero=True,
+        )
+        return {
+            "equity": equity,
+            "available_margin": available_margin,
+            "timestamp": timestamp,
+            "source": "KOTAK_NEO",
+        }
+
     @classmethod
     def normalize_exchange(cls, exchange: str) -> str:
         value = str(exchange or "").strip()
@@ -127,53 +179,32 @@ class KotakNeoProvider(MarketDataProvider):
         return "Kotak Neo returned no market-data records."
 
     def resolve_nifty_index_neosymbol(self, index_name: str = "Nifty 50") -> str:
-        """Resolve the current NIFTY index Neo symbol from Kotak's scrip master."""
-        queries = [index_name.strip(), "NIFTY", "Nifty 50"]
-        rows = []
-        seen = set()
-        for query in queries:
-            if not query or query.upper() in seen:
-                continue
-            seen.add(query.upper())
-            result = self.client.search_scrip(
-                exchange_segment="nse_cm",
-                symbol=query,
-                expiry="",
-                option_type="",
-                strike_price="",
+        """Return Kotak's documented index identifier, not the numeric scrip token.
+
+        Kotak's Quotes API identifies indices by their names, for example
+        nse_cm|Nifty 50, unlike equities which use numeric scrip tokens.
+        The scrip master can return pSymbol 26000 for NIFTY 50, but passing
+        that numeric token to the quote endpoint produces HTTP 400
+        Invalid neosymbol values. Do not query scrip master for this index.
+        """
+        aliases = {
+            "NIFTY": "Nifty 50",
+            "NIFTY 50": "Nifty 50",
+            "NIFTY50": "Nifty 50",
+            "NIFTY BANK": "Nifty Bank",
+            "BANKNIFTY": "Nifty Bank",
+            "NIFTY FIN SERVICE": "Nifty Fin Service",
+            "FINNIFTY": "Nifty Fin Service",
+            "INDIA VIX": "INDIA VIX",
+        }
+        normalized = " ".join(str(index_name or "").strip().upper().split())
+        canonical = aliases.get(normalized)
+        if canonical is None:
+            raise ValueError(
+                f"Unsupported Kotak index identifier '{index_name}'. "
+                "Add an explicitly documented index alias before requesting quotes."
             )
-            if isinstance(result, list):
-                rows.extend(result)
-
-        if not rows:
-            raise RuntimeError(
-                f"Kotak Neo scrip master returned no NSE cash instrument for '{index_name}'."
-            )
-
-        target_names = {"NIFTY", "NIFTY 50", "NIFTY50"}
-        candidates = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            token = str(row.get("pSymbol") or "").strip()
-            segment = str(row.get("pExchSeg") or "nse_cm").strip().lower()
-            name = str(row.get("pSymbolName") or "").strip()
-            trading_symbol = str(row.get("pTrdSymbol") or "").strip()
-            if not token or segment != "nse_cm":
-                continue
-
-            upper_name = name.upper()
-            upper_trading_symbol = trading_symbol.upper()
-            exact = 0 if upper_name in target_names or upper_trading_symbol in target_names else 1
-            candidates.append((exact, token, name))
-
-        if not candidates:
-            raise RuntimeError(
-                f"Kotak Neo scrip master returned no valid nse_cm NIFTY token for '{index_name}'."
-            )
-
-        candidates.sort(key=lambda item: (item[0], item[1]))
-        return f"nse_cm|{candidates[0][1]}"
+        return f"nse_cm|{canonical}"
 
     def get_quote(self, symbol: str, exchange: str) -> Quote:
         raise NotImplementedError(
@@ -181,34 +212,39 @@ class KotakNeoProvider(MarketDataProvider):
         )
 
     def get_index_quote(self, index_name: str = "Nifty 50") -> Quote:
-        """Fetch the current NIFTY index quote using Neo's index-name identifier."""
+        """Fetch NIFTY using a current scrip-master token and broker timestamp."""
+        neosymbol = self.resolve_nifty_index_neosymbol(index_name)
+        segment, token = neosymbol.split("|", 1)
         response = self.client.quotes(
-            instrument_tokens=[{
-                "instrument_token": index_name,
-                "exchange_segment": "nse_cm",
-            }],
+            instrument_tokens=[{"instrument_token": token, "exchange_segment": segment}],
             quote_type="all",
         )
         if isinstance(response, dict):
             data = self._response_data(response)
             response = data.get("quotes") or data.get("data") or []
-        if not isinstance(response, list) or not response:
+        if not isinstance(response, list) or not response or not isinstance(response[0], dict):
             raise RuntimeError("Kotak Neo returned no NIFTY index quote.")
         row = response[0]
         ltp = self._float(row.get("ltp"))
         if ltp <= 0:
             raise RuntimeError("Kotak Neo returned an invalid NIFTY index price.")
+        raw_ts = row.get("timestamp") or row.get("quoteTimestamp") or row.get("quote_timestamp") or row.get("lastTradeTime") or row.get("last_traded_time")
+        quote_ts = None
+        if raw_ts not in (None, ""):
+            try:
+                quote_ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                try:
+                    quote_ts = datetime.fromtimestamp(float(raw_ts))
+                except (TypeError, ValueError, OSError):
+                    raise RuntimeError("Kotak Neo NIFTY quote did not contain a parseable broker timestamp.")
+        if quote_ts is None:
+            raise RuntimeError("Kotak Neo NIFTY quote did not contain an authoritative broker timestamp.")
         return Quote(
-            timestamp=datetime.now(),
-            symbol=index_name,
-            exchange="nse_cm",
-            ltp=ltp,
-            volume=self._float(row.get("last_volume") or row.get("volume")),
-            open_interest=self._float(row.get("open_int")),
-            bid=None,
-            ask=None,
+            timestamp=quote_ts, symbol=index_name, exchange=segment,
+            ltp=ltp, volume=self._float(row.get("last_volume") or row.get("volume")),
+            open_interest=self._float(row.get("open_int")), bid=None, ask=None,
         )
-
     def _nearest_expiry(self, exchange: str, underlying: str) -> str:
         """Resolve the nearest available option expiry from Neo."""
         exchange_segment = self.normalize_exchange(exchange)
@@ -518,6 +554,7 @@ class KotakNeoProvider(MarketDataProvider):
         canonical_symbol = (canonical_symbols or {}).get(str(neo_symbol).strip())
         if not canonical_symbol and "|" in str(neo_symbol):
             canonical_symbol = (canonical_symbols or {}).get(str(neo_symbol).split("|")[-1])
+        identity_verified = bool(canonical_symbol)
         if canonical_symbol:
             symbol = canonical_symbol
         if not symbol or not neo_symbol:
@@ -538,12 +575,11 @@ class KotakNeoProvider(MarketDataProvider):
             or item.get("strike")
         )
 
-        # Kotak's compact trading symbol is not safely parseable by simply
-        # taking all digits before CE/PE. For example:
-        #   NIFTY26O1320250CE
-        # contains expiry day 13 + strike 20250, so a suffix regex produces
-        # the false strike 1320250. The instrument's strkPrc is the explicit
-        # strike field and must win when supplied.
+        # Kotak/MCX compact symbols can concatenate the expiry day and strike
+        # without a month delimiter (for example CRUDEOIL263200CE). A greedy
+        # suffix regex then misreads day 26 + strike 3200 as strike 263200.
+        # For MCX, prefer the broker's dedicated strike fields; only infer a
+        # strike from the trading symbol when the payload has no usable value.
         import re
         symbol_match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", str(symbol).upper())
         symbol_strike = (
@@ -551,28 +587,48 @@ class KotakNeoProvider(MarketDataProvider):
             if symbol_match
             else 0.0
         )
-        explicit_strike = payload_strike
-        if explicit_strike <= 0:
-            explicit_strike = self._float(instrument.get("strkPrc") or item.get("strkPrc"))
+        raw_explicit = (
+            instrument.get("strkPrc")
+            or item.get("strkPrc")
+            or instrument.get("strikePrice")
+            or instrument.get("strike")
+            or item.get("strikePrice")
+            or item.get("strike")
+        )
+        explicit_strike = self._float(raw_explicit)
 
-        # The canonical trading symbol is the final identity of an option
-        # contract. If the payload strike disagrees with a valid symbol strike,
-        # treat the payload value as stale/malformed rather than exposing a
-        # potentially different tradable contract. Never silently rescale.
-        symbol_valid = False
-        if symbol_strike > 0:
-            try:
-                validate_option_strike(underlying, symbol_strike)
-                symbol_valid = True
-            except ValueError:
-                pass
-
-        if symbol_valid:
-            strike = float(symbol_strike)
-        elif explicit_strike > 0:
-            strike = validate_option_strike(underlying, explicit_strike)
+        if exchange == "mcx_fo" and explicit_strike > 0:
+            # Prefer the scrip-master canonical trading symbol when it has an
+            # explicit month token (e.g. CRUDEOIL19OCT20268800CE). In that
+            # format the final digits are the strike, while the chain's
+            # strikePrice field has occasionally disagreed with the real
+            # contract. Compact symbols without a month token remain ambiguous
+            # and use the broker's numeric strike only as a fallback.
+            canonical_has_month = bool(
+                canonical_symbol
+                and re.search(r"\\d{1,2}[A-Z]{3}", str(canonical_symbol).upper())
+            )
+            if canonical_has_month and symbol_strike > 0:
+                strike = validate_option_strike(underlying, symbol_strike)
+            else:
+                strike = validate_option_strike(underlying, explicit_strike)
         else:
-            raise ValueError(f"Invalid {underlying} option strike: {explicit_strike}")
+            # For other segments, preserve canonical-symbol validation: a valid
+            # trading-symbol strike wins over a conflicting malformed payload.
+            symbol_valid = False
+            if symbol_strike > 0:
+                try:
+                    validate_option_strike(underlying, symbol_strike)
+                    symbol_valid = True
+                except ValueError:
+                    pass
+
+            if symbol_valid:
+                strike = float(symbol_strike)
+            elif explicit_strike > 0:
+                strike = validate_option_strike(underlying, explicit_strike)
+            else:
+                raise ValueError(f"Invalid {underlying} option strike: {explicit_strike}")
         ltp = self._quote_ltp(quote)
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
@@ -610,6 +666,12 @@ class KotakNeoProvider(MarketDataProvider):
             vega=vega,
             gamma=gamma,
             ltp_change_pct=ltp_change_pct,
+            # The option-chain payload itself is a broker response even when
+            # quote-depth enrichment cannot provide a timestamped bid/ask.
+            # Execution validation still requires fresh quote timestamp/depth.
+            quote_source="KOTAK_NEO",
+            identity_verified=identity_verified,
+            scrip_master_hash=__import__("hashlib").sha256(str(canonical_symbol or "").encode("utf-8")).hexdigest(),
         )
 
     def _enrich_quotes(self, contracts: list[OptionContract]) -> None:
@@ -629,7 +691,7 @@ class KotakNeoProvider(MarketDataProvider):
             if not tokens:
                 return []
             try:
-                response = self.client.quotes(instrument_tokens=tokens[:50], quote_type="all")
+                response = self.client.quotes(instrument_tokens=tokens[:25], quote_type="all")
             except Exception:
                 if len(batch) <= 1:
                     return []
@@ -640,8 +702,8 @@ class KotakNeoProvider(MarketDataProvider):
                 response = data.get("quotes") or data.get("data") or []
             return response if isinstance(response, list) else []
 
-        for start in range(0, len(contracts), 50):
-            batch = contracts[start:start + 50]
+        for start in range(0, len(contracts), 25):
+            batch = contracts[start:start + 25]
             response = fetch_batch(batch)
             by_token = {}
             for quote in response:
@@ -685,6 +747,10 @@ class KotakNeoProvider(MarketDataProvider):
                     ltp_change_pct=contract.ltp_change_pct,
                     quote_timestamp=quote_timestamp,
                     quote_source="KOTAK_NEO",
+                    identity_verified=contract.identity_verified,
+                    scrip_master_hash=contract.scrip_master_hash,
+                    lot_size=contract.lot_size,
+                    tick_size=contract.tick_size,
                 )
     def resolve_mcx_futures(self, symbol: str) -> dict:
         """Resolve the nearest tradable MCX futures contract from Neo scrip master.
@@ -766,6 +832,7 @@ class KotakNeoProvider(MarketDataProvider):
             raise RuntimeError(f"Kotak Neo returned no quote for {contract.get('trading_symbol') or token}.")
         row = response[0]
         ohlc = row.get("ohlc") or {}
+        raw_ts = row.get("timestamp") or row.get("quoteTimestamp") or row.get("lastTradeTime") or row.get("last_traded_time")
         return {
             "open": self._float(ohlc.get("open")),
             "high": self._float(ohlc.get("high")),
@@ -774,6 +841,9 @@ class KotakNeoProvider(MarketDataProvider):
             "volume": self._float(row.get("last_volume") or row.get("volume")),
             "open_interest": self._float(row.get("open_int") or row.get("openInterest")),
             "ltp": self._float(row.get("ltp")),
+            "timestamp": raw_ts,
+            "source": "KOTAK_NEO",
+            "instrument_token": token,
         }
 
     def get_historical_candles(

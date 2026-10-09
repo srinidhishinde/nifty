@@ -136,6 +136,8 @@ class DailyMarketStore:
         folder = self.directory(instrument, day)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{instrument.upper()}_option_chain_latest.csv"
+        archive = folder / f"{instrument.upper()}_option_chain_{timestamp.strftime('%H%M%S%f')}.csv"
+        frame.to_csv(archive, index=False)
         frame.to_csv(path, index=False)
         return path
 
@@ -193,8 +195,14 @@ class DailyMarketStore:
         else:
             cutoff = cutoff.tz_convert("Asia/Kolkata")
 
-        candidates = list(base.glob("*/" + f"{instrument.upper()}_option_chain_latest.csv"))
-        candidates += list(base.glob("*/" + f"{instrument.upper()}_option_chain.csv"))
+        # Prefer immutable timestamped archives. The latest pointer is a
+        # recovery fallback only when no archive is available: the writer
+        # commits the archive before updating this pointer, so a crash during
+        # capture does not make an incomplete pointer outrank a completed file.
+        candidates = list(base.glob("*/" + f"{instrument.upper()}_option_chain_*.csv"))
+        archives = [path for path in candidates if not path.name.endswith("_latest.csv")]
+        if archives:
+            candidates = archives
         newest: tuple[pd.Timestamp, Path, pd.DataFrame] | None = None
 
         for path in candidates:
@@ -229,6 +237,13 @@ class DailyMarketStore:
                     continue
                 if "option_type" not in frame.columns:
                     continue
+                if "quote_source" in frame.columns:
+                    sources = frame["quote_source"].astype(str).str.upper().str.strip()
+                    if not sources.eq("KOTAK_NEO").any():
+                        continue
+                    frame = frame.loc[sources.eq("KOTAK_NEO")].copy()
+                    if frame.empty:
+                        continue
                 frame["option_type"] = frame["option_type"].astype(str).str.upper().str.strip()
                 frame = frame[frame["option_type"].isin({"CE", "PE"})].copy()
                 if frame.empty:

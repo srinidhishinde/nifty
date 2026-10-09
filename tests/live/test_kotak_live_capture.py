@@ -2,6 +2,8 @@ from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 from marketdata.kotak_live import FiveMinuteCandleBuilder, normalize_sfeed_message
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -117,6 +119,7 @@ def test_capture_option_chain_persists_real_nifty_snapshot(tmp_path):
                     symbol="NIFTY26OCT25000CE", exchange="NSE_FO", underlying="NIFTY",
                     expiry="2026-10-13", strike=25000.0, option_type="CE",
                     instrument_token="1", ltp=125.5, bid=125.0, ask=126.0,
+                    quote_source="KOTAK_NEO",
                     volume=1000, open_interest=2000, oi_change=100,
                     implied_volatility=12.5, built_up="Long Built Up",
                     delta=0.5, theta=-2.0, vega=1.2, gamma=0.01, ltp_change_pct=2.0,
@@ -125,6 +128,7 @@ def test_capture_option_chain_persists_real_nifty_snapshot(tmp_path):
                     symbol="NIFTY26OCT25000PE", exchange="NSE_FO", underlying="NIFTY",
                     expiry="2026-10-13", strike=25000.0, option_type="PE",
                     instrument_token="2", ltp=120.5, bid=120.0, ask=121.0,
+                    quote_source="KOTAK_NEO",
                     volume=900, open_interest=1800, oi_change=-50,
                     implied_volatility=13.0, built_up="Short Built Up",
                     delta=-0.5, theta=-2.1, vega=1.3, gamma=0.01, ltp_change_pct=-1.0,
@@ -152,6 +156,9 @@ def test_option_trade_levels_follow_live_entry_and_never_use_static_target():
         option_type="CE", ltp=11.0, bid=10.8, ask=11.2,
         volume=10000, open_interest=20000, oi_change=500,
         implied_volatility=20.0, ltp_change_pct=1.0,
+        exchange="NSE_FO", underlying="NIFTY", instrument_token="nse_fo|123",
+        quote_timestamp=pd.Timestamp.now(tz="Asia/Kolkata").to_pydatetime(),
+        quote_source="KOTAK_NEO", identity_verified=True, scrip_master_hash="test-fixture-scrip-master",
     )
     signal_a, _ = generate_option_chain_signal(
         [base], spot=25000.0, direction_hint="CE", require_two_sided_quote=True

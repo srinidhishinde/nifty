@@ -11,6 +11,7 @@ from features.technical.indicators import add_indicators
 from marketdata.providers.kotak_neo import KotakNeoProvider
 from strategy.rules import StrategyConfig, StrategySignal, _generate_signal_from_enriched
 from features.option_chain import OptionContract
+from strategy.production_hardening import validate_candle_frame, validate_option_contract, validate_contract_identity, runtime_clock_ok
 
 
 @dataclass(frozen=True)
@@ -144,8 +145,15 @@ def load_kotak_decision_snapshot(
             _wait("Kotak Neo connection required", now),
         )
 
+    # Retain read-only broker evidence if a later processing step fails.
+    # Initialize before entering the pipeline so exception handling never hides
+    # a chain that was already received from Kotak.
+    display_contracts: list[Any] = []
+    pcr_oi: float | None = None
+    pcr_volume: float | None = None
+    instrument_upper = instrument.upper()
+
     try:
-        instrument_upper = instrument.upper()
         if instrument_upper not in {"NIFTY", *_MCX_SYMBOLS}:
             raise RuntimeError(f"Live instrument mapping is not configured for {instrument_upper}.")
 
@@ -170,12 +178,31 @@ def load_kotak_decision_snapshot(
             )
         else:
             contracts, cached_captured_at = _cached_option_contracts(instrument_upper, now)
-        pcr_oi, pcr_volume = _option_features(contracts)
+        # Preserve the broker-returned chain for read-only display and audit.
+        # A separate eligible set controls every executable decision; displaying
+        # an unverified contract must never make it tradeable.
+        display_contracts = list(contracts)
+        pcr_oi, pcr_volume = _option_features(display_contracts)
+        executable_contracts = display_contracts
 
-        # Option-chain availability is an independent hard gate. Do this
-        # before candle history so the UI/test result explains the actual
-        # CE/PE blocker instead of masking it behind candle readiness.
-        if not contracts:
+        if market_open:
+            executable_contracts = []
+            for contract in display_contracts:
+                ok, _ = validate_option_contract(
+                    contract, now=now, max_quote_age_seconds=60.0,
+                    require_broker_quote=True, max_spread_pct=0.05,
+                )
+                identity_ok, _ = validate_contract_identity(
+                    contract, expected_instrument=instrument_upper,
+                    expected_exchange=chain_exchange.lower(),
+                )
+                if ok and identity_ok:
+                    executable_contracts.append(contract)
+            pcr_oi, pcr_volume = _option_features(executable_contracts)
+
+        # Chain visibility and execution readiness are different states. Keep
+        # the real raw chain visible even if the identity/quote gates reject it.
+        if not display_contracts:
             return DecisionSnapshot(
                 "KOTAK_NEO", "LIVE", "RED",
                 f"Real {instrument_upper} option-chain data is unavailable.",
@@ -187,6 +214,35 @@ def load_kotak_decision_snapshot(
                     now,
                 ),
             )
+
+        missing_executable_sides = False
+        if market_open:
+            sides = {str(getattr(c, "option_type", "")).upper() for c in executable_contracts}
+            missing_executable_sides = not {"CE", "PE"}.issubset(sides)
+            contracts = executable_contracts
+            # Do not return yet when CE/PE evidence is incomplete: first report
+            # the independent candle-capture state. Missing quotes still block
+            # every decision below; this only improves diagnostics and visibility.
+            if not missing_executable_sides:
+                if instrument_upper == "NIFTY":
+                    underlying_quote = provider.get_index_quote("Nifty 50")
+                    underlying_ts = pd.Timestamp(underlying_quote.timestamp)
+                    if getattr(underlying_quote, "timestamp_source", "BROKER") != "BROKER":
+                        raise RuntimeError("NIFTY underlying quote lacks authoritative broker timestamp.")
+                else:
+                    mcx_contract = provider.resolve_mcx_futures(_MCX_SYMBOLS[instrument_upper])
+                    underlying_quote = provider.get_mcx_quote(mcx_contract)
+                    raw_ts = underlying_quote.get("timestamp")
+                    underlying_ts = pd.Timestamp(raw_ts) if raw_ts not in (None, "") else None
+                if underlying_ts is None or not runtime_clock_ok(reference_timestamp=underlying_ts):
+                    return DecisionSnapshot(
+                        "KOTAK_NEO", "LIVE", "RED",
+                        "Broker underlying quote timestamp is missing, stale or not clock-aligned.",
+                        now, None, contracts, "RED",
+                        ("Underlying broker timestamp validation failed.",),
+                        pcr_oi, pcr_volume, len(contracts),
+                        _wait("Underlying broker quote is not decision-ready.", now),
+                    )
 
         if not market_open:
             return DecisionSnapshot(
@@ -222,16 +278,31 @@ def load_kotak_decision_snapshot(
                     f"Real {instrument_upper} {timeframe} candle history is unavailable. "
                     "Start the Kotak SFeed recorder; no synthetic/Yahoo fallback is permitted."
                 ),
-                now, None, contracts, "RED",
+                now, None, display_contracts, "RED",
                 (
                     f"{instrument_upper} captured SFeed candle history unavailable",
                     "Run the real Kotak SFeed capture before enabling this decision path.",
+                    *(
+                        ("Both CE and PE must pass current quote and scrip-master identity validation.",)
+                        if market_open and missing_executable_sides
+                        else ()
+                    ),
                 ),
-                pcr_oi, pcr_volume, len(contracts),
+                pcr_oi, pcr_volume, len(display_contracts),
                 _wait(
                     f"Real {instrument_upper} {timeframe} candle history is unavailable.",
                     now,
                 ),
+            )
+
+        if market_open and missing_executable_sides:
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                f"Broker option-chain is visible, but verified executable CE and PE quotes are unavailable; captured candle source is {source}.",
+                now, frame, display_contracts, "RED",
+                ("Both CE and PE must pass current quote and scrip-master identity validation.",),
+                pcr_oi, pcr_volume, len(display_contracts),
+                _wait("Verified CE and PE broker quotes are required; trade is blocked.", now),
             )
 
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dt.tz_convert("Asia/Kolkata")
@@ -243,7 +314,20 @@ def load_kotak_decision_snapshot(
         )
 
         expected_minutes = 5 if timeframe == "5m" else 15
+        candle_valid, candle_reasons = validate_candle_frame(
+            frame, timeframe_minutes=expected_minutes, now=now,
+            max_age_minutes=20.0 if timeframe == "5m" else 40.0, minimum_rows=60,
+        )
         quality = assess_ohlcv(frame, expected_minutes=expected_minutes)
+        if not candle_valid:
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                "Broker-captured candle evidence is not decision-ready.",
+                now, frame, contracts, "RED",
+                tuple(candle_reasons) or tuple(quality.reasons) or ("Captured candle validation failed.",),
+                pcr_oi, pcr_volume, len(contracts),
+                _wait("Captured candle validation failed; trade is blocked.", now),
+            )
         if quality.status == "RED" or len(frame) < 60:
             reason = " | ".join(quality.reasons) or "insufficient completed captured candles"
             return DecisionSnapshot(
@@ -280,9 +364,12 @@ def load_kotak_decision_snapshot(
             pcr_oi, pcr_volume, len(contracts), signal,
         )
     except Exception as exc:
+        # Preserve raw chain visibility and diagnostics, but never preserve an
+        # executable signal after an unexpected error.
         return DecisionSnapshot(
             "KOTAK_NEO", "LIVE", "RED",
             f"Kotak Neo decision-data error: {exc}",
-            now, None, [], "RED", (str(exc),), None, None, 0,
-            _wait(f"Kotak Neo decision-data error: {exc}", now),
+            now, None, display_contracts, "RED", (str(exc),), pcr_oi, pcr_volume,
+            len(display_contracts),
+            _wait(f"Kotak Neo decision-data error: {exc}; trade is blocked.", now),
         )

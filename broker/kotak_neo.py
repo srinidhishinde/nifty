@@ -315,6 +315,55 @@ class KotakNeoBroker:
             self.base_url = ""
 
     # --------------------------------------------------
+    # Canonical account state
+    # --------------------------------------------------
+
+    def get_account_state(self) -> dict[str, Any]:
+        """Return a broker-authoritative account snapshot.
+
+        The exact Neo response varies by SDK version, so this adapter accepts
+        only explicit numeric fields and requires a broker-provided timestamp.
+        Missing/ambiguous account evidence fails closed.
+        """
+        if not self.connected or self.client is None:
+            raise RuntimeError("Kotak Neo is not connected.")
+
+        for name in ("limits", "get_limits", "margins", "get_margins"):
+            fn = getattr(self.client, name, None)
+            if not callable(fn):
+                continue
+            try:
+                response = fn()
+            except Exception:
+                continue
+            rows = response.get("data", response) if isinstance(response, dict) else {}
+            if isinstance(rows, list):
+                rows = rows[0] if rows and isinstance(rows[0], dict) else {}
+            if not isinstance(rows, dict):
+                continue
+            def num(*keys):
+                for key in keys:
+                    if key in rows and rows[key] not in (None, ""):
+                        try:
+                            value = float(rows[key])
+                            if value == value and abs(value) != float("inf"):
+                                return value
+                        except (TypeError, ValueError):
+                            pass
+                return None
+            equity = num("equity", "net", "net_equity", "availableEquity", "available_equity")
+            available = num("available_margin", "availableMargin", "available_cash", "availableCash")
+            ts = rows.get("timestamp") or rows.get("timeStamp") or rows.get("updatedAt")
+            if equity is not None and available is not None and ts not in (None, ""):
+                return {
+                    "equity": equity,
+                    "available_margin": available,
+                    "timestamp": ts,
+                    "source": "KOTAK_NEO",
+                }
+        raise RuntimeError("Kotak Neo did not expose an unambiguous account-state snapshot.")
+
+    # --------------------------------------------------
     # Order safety
     # --------------------------------------------------
 

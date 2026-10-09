@@ -46,5 +46,5 @@ def classify_regime(
     if adx >= min_adx and ema_spread < 0:
         return RegimeSnapshot("TREND_DOWN", True, min(100.0, 50.0 + adx), f"ADX {adx:.1f} with negative EMA spread")
     if vwap_dev <= 0.01:
-        return RegimeSnapshot("RANGE", True, 50.0, "Price is close to VWAP and trend strength is limited")
-    return RegimeSnapshot("MIXED", True, 40.0, "No dominant trend or volatility regime detected")
+        return RegimeSnapshot("RANGE", False, 50.0, "Price is close to VWAP and trend strength is limited; option trend entry is blocked")
+    return RegimeSnapshot("MIXED", False, 40.0, "No dominant trend or volatility regime detected; trade is blocked")
