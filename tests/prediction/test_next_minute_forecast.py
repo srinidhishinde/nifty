@@ -35,3 +35,23 @@ def test_does_not_require_future_candle():
     forecast = forecast_next_minute(candles, lookback=3)
     assert forecast.history_bars == 3
     assert forecast.predicted_low < forecast.predicted_high
+
+
+
+def test_adaptive_forecast_labels_model_and_uses_previous_close_excursions():
+    candles = sample_candles(10)
+    # Introduce a gap relative to the previous completed close.
+    candles.loc[5, "open"] = 108.0
+    candles.loc[5, "high"] = 110.0
+    candles.loc[5, "low"] = 107.5
+    candles.loc[5, "close"] = 109.0
+    adaptive = forecast_next_minute(candles, lookback=10, quantile=0.90, range_method="adaptive")
+    baseline = forecast_next_minute(candles, lookback=10, quantile=0.90, range_method="baseline")
+    assert "adaptive" in adaptive.method
+    assert "baseline" in baseline.method
+    assert adaptive.predicted_high >= baseline.predicted_high
+
+
+def test_rejects_unknown_range_method():
+    with pytest.raises(ValueError, match="range_method"):
+        forecast_next_minute(sample_candles(), range_method="magic")
