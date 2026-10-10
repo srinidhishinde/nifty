@@ -67,6 +67,30 @@ def _walk_forward(frame: pd.DataFrame, *, quantile: float = 0.90, lookback: int 
     return pd.DataFrame(results)
 
 
+def _comparison_summary(frame: pd.DataFrame, *, quantile: float, lookback: int) -> pd.DataFrame:
+    """Evaluate both range methods on identical walk-forward target candles."""
+    summaries = []
+    for method in ("adaptive", "baseline"):
+        replay = _walk_forward(frame, quantile=quantile, lookback=lookback, range_method=method)
+        if replay.empty:
+            continue
+        predicted_width = float(replay["predicted_range_width"].mean())
+        actual_width = float(replay["actual_range_width"].mean())
+        summaries.append({
+            "Model": "Adaptive (previous-close excursions)" if method == "adaptive" else "Baseline (open-to-extreme)",
+            "Forecasts": len(replay),
+            "Low coverage %": 100.0 * float(replay["low_covered"].mean()),
+            "High coverage %": 100.0 * float(replay["high_covered"].mean()),
+            "Full-range coverage %": 100.0 * float(replay["full_range_covered"].mean()),
+            "Low MAE (₹)": float(replay["low_abs_error"].mean()),
+            "High MAE (₹)": float(replay["high_abs_error"].mean()),
+            "Avg predicted width (₹)": predicted_width,
+            "Avg actual width (₹)": actual_width,
+            "Width ratio (×)": predicted_width / actual_width if actual_width > 0 else float("nan"),
+        })
+    return pd.DataFrame(summaries)
+
+
 def render_one_minute_forecast_panel() -> None:
     st.divider()
     st.header("One-minute High / Low Forecast")
@@ -175,7 +199,49 @@ def render_one_minute_forecast_panel() -> None:
     )
     st.plotly_chart(chart, width="stretch")
 
-    with st.expander("Walk-forward historical accuracy", expanded=True):
+    with st.expander("Adaptive vs baseline — same-candle comparison", expanded=True):
+        comparison = _comparison_summary(frame, quantile=quantile, lookback=lookback)
+        if comparison.empty:
+            st.info("Not enough candles to compare the two range methods.")
+        else:
+            st.caption(
+                "Both methods are tested against exactly the same target candles, using the same range quantile "
+                f"({quantile_pct}%) and lookback ({lookback} completed candles). This is a historical comparison, not a live-performance guarantee."
+            )
+            st.dataframe(
+                comparison.round({
+                    "Low coverage %": 2,
+                    "High coverage %": 2,
+                    "Full-range coverage %": 2,
+                    "Low MAE (₹)": 3,
+                    "High MAE (₹)": 3,
+                    "Avg predicted width (₹)": 3,
+                    "Avg actual width (₹)": 3,
+                    "Width ratio (×)": 3,
+                }),
+                width="stretch",
+                hide_index=True,
+            )
+            if len(comparison) == 2:
+                adaptive_row = comparison.iloc[0]
+                baseline_row = comparison.iloc[1]
+                st.write(
+                    "**Adaptive minus baseline:** "
+                    f"full-range coverage {adaptive_row['Full-range coverage %'] - baseline_row['Full-range coverage %']:+.2f} pp; "
+                    f"low MAE ₹{adaptive_row['Low MAE (₹)'] - baseline_row['Low MAE (₹)']:+.3f}; "
+                    f"high MAE ₹{adaptive_row['High MAE (₹)'] - baseline_row['High MAE (₹)']:+.3f}; "
+                    f"predicted width ₹{adaptive_row['Avg predicted width (₹)'] - baseline_row['Avg predicted width (₹)']:+.3f}."
+                )
+                st.caption("Higher coverage is not automatically better if it is achieved by much wider ranges. Review coverage, both MAEs, and width together.")
+            st.download_button(
+                "Download adaptive-vs-baseline comparison (CSV)",
+                data=comparison.to_csv(index=False).encode("utf-8"),
+                file_name="nifty_adaptive_vs_baseline_comparison.csv",
+                mime="text/csv",
+                key="one_minute_model_comparison_download",
+            )
+
+    with st.expander("Selected model — walk-forward historical accuracy", expanded=True):
         replay = _walk_forward(frame, quantile=quantile, lookback=lookback, range_method=range_method)
         if replay.empty:
             st.info("Not enough candles to calculate walk-forward metrics.")
