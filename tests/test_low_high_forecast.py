@@ -34,7 +34,8 @@ def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
     assert result.predictions["forecast_method"].notna().all()
     assert result.predictions.iloc[0]["forecast_method"] == "OPEN_FALLBACK_NO_PRIOR_HISTORY"
     assert result.metrics["fallback_forecast_rows"] > 0
-    assert (result.predictions["target_timestamp"] > result.predictions["origin_timestamp"]).all()
+    assert result.predictions["origin_timestamp"].isna().iloc[0]
+    assert (result.predictions["target_timestamp"].iloc[1:].reset_index(drop=True) > result.predictions["origin_timestamp"].iloc[1:].reset_index(drop=True)).all()
     assert (result.predictions["predicted_low"] <= result.predictions["predicted_high"]).all()
     assert 0 <= result.metrics["full_range_coverage_pct"] <= 100
     assert result.metrics["low_mae"] >= 0
