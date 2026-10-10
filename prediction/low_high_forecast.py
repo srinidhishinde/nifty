@@ -164,9 +164,34 @@ def walk_forward_low_high(
                     high_model = _model(seed + 1, estimator)
                     low_model.fit(x_train.loc[valid], y_low.loc[valid])
                     high_model.fit(x_train.loc[valid], y_high.loc[valid])
-                    predicted_low = anchor * (1.0 + float(low_model.predict(x_now)[0]))
-                    predicted_high = anchor * (1.0 + float(high_model.predict(x_now)[0]))
-                    method = f"MODEL_{estimator.upper()}"
+                    raw_low = anchor * (1.0 + float(low_model.predict(x_now)[0]))
+                    raw_high = anchor * (1.0 + float(high_model.predict(x_now)[0]))
+
+                    # Calibrate the model's excursions using only completed
+                    # candles. This shrinks extreme regression outputs toward
+                    # robust empirical excursion quantiles and caps runaway
+                    # bounds; it never reads the target candle's OHLC.
+                    hist = frame.iloc[1:target_idx]
+                    hist_anchor = frame["close"].iloc[:target_idx - 1].to_numpy(dtype=float)
+                    down_excursions = np.maximum(hist_anchor - hist["low"].to_numpy(dtype=float), 0.0)
+                    up_excursions = np.maximum(hist["high"].to_numpy(dtype=float) - hist_anchor, 0.0)
+                    if len(down_excursions) >= 20:
+                        down_q80 = float(np.quantile(down_excursions, 0.80))
+                        up_q80 = float(np.quantile(up_excursions, 0.80))
+                        down_q95 = float(np.quantile(down_excursions, 0.95))
+                        up_q95 = float(np.quantile(up_excursions, 0.95))
+                    else:
+                        down_q80 = up_q80 = band
+                        down_q95 = up_q95 = max(2.0 * band, band)
+                    model_down = max(0.0, anchor - raw_low)
+                    model_up = max(0.0, raw_high - anchor)
+                    # A 50/50 blend dampens unstable tails; quantile caps
+                    # prevent the model from emitting excessively wide bounds.
+                    down = min(0.5 * model_down + 0.5 * down_q80, max(down_q95, down_q80, anchor * 0.0005))
+                    up = min(0.5 * model_up + 0.5 * up_q80, max(up_q95, up_q80, anchor * 0.0005))
+                    predicted_low = anchor - down
+                    predicted_high = anchor + up
+                    method = f"CALIBRATED_MODEL_{estimator.upper()}"
                 else:
                     predicted_low, predicted_high = anchor - band, anchor + band
                     method = "HISTORICAL_RANGE_FALLBACK"
@@ -201,8 +226,8 @@ def walk_forward_low_high(
         "rows": int(len(predictions)),
         "expected_rows": int(len(frame)),
         "forecast_rows_complete": bool(len(predictions) == len(frame)),
-        "model_forecast_rows": int(predictions["forecast_method"].str.startswith("MODEL_").sum()),
-        "fallback_forecast_rows": int((~predictions["forecast_method"].str.startswith("MODEL_")).sum()),
+        "model_forecast_rows": int(predictions["forecast_method"].str.contains("MODEL_").sum()),
+        "fallback_forecast_rows": int((~predictions["forecast_method"].str.contains("MODEL_")).sum()),
         "low_mae": float(mean_absolute_error(predictions["actual_low"], predictions["predicted_low"])),
         "high_mae": float(mean_absolute_error(predictions["actual_high"], predictions["predicted_high"])),
         "low_coverage_pct": float(predictions["low_covered"].mean() * 100),
