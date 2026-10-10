@@ -190,8 +190,8 @@ def render_one_minute_forecast_panel() -> None:
             f"Each historical forecast used only candles before its target candle, with {range_method_label} and the selected {quantile_pct}% excursion quantile. "
             "Higher range quantiles can increase coverage by widening bounds; they do not improve exact high/low timing, directional accuracy, or profitability. This one-session sample may not generalize."
         )
-        st.dataframe(
-            replay.tail(50).rename(columns={
+        st.caption(f"Showing all {total:,} walk-forward forecast rows. The table is scrollable; use the CSV download for the complete history.")
+        export_df = replay.rename(columns={
                 "timestamp": "Target time",
                 "predicted_low": "Predicted low",
                 "predicted_high": "Predicted high",
@@ -202,7 +202,17 @@ def render_one_minute_forecast_panel() -> None:
                 "full_range_covered": "Full range covered",
                 "low_abs_error": "Low abs error",
                 "high_abs_error": "High abs error",
-            }),
+            })
+        st.download_button(
+            "Download complete candle forecast history (CSV)",
+            data=export_df.to_csv(index=False).encode("utf-8"),
+            file_name="nifty_one_minute_forecast_history.csv",
+            mime="text/csv",
+            key="one_minute_forecast_history_download",
+        )
+        st.dataframe(
+            export_df,
             width="stretch",
             hide_index=True,
+            height=600,
         )
