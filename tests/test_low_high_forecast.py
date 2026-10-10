@@ -58,3 +58,24 @@ def test_walk_forward_forecast_does_not_require_volume():
     assert result.status == "EVALUATED"
     assert len(result.predictions) == len(data)
     assert not result.predictions.empty
+
+
+
+def test_forecast_is_not_affected_by_future_candles():
+    data = _candles(180)
+    original = walk_forward_low_high(data, min_train=80, estimator="ridge").predictions
+    changed = data.copy()
+    changed.loc[130:, ["open", "high", "low", "close"]] *= 1.08
+    changed_result = walk_forward_low_high(changed, min_train=80, estimator="ridge").predictions
+    # Target 120 is forecast from data available before that target candle;
+    # modifications beginning at candle 130 cannot change that prediction.
+    assert original.loc[120, "predicted_low"] == pytest.approx(changed_result.loc[120, "predicted_low"])
+    assert original.loc[120, "predicted_high"] == pytest.approx(changed_result.loc[120, "predicted_high"])
+
+
+def test_model_forecasts_are_calibrated_and_counted():
+    result = walk_forward_low_high(_candles(180), min_train=80, estimator="ridge")
+    model_rows = result.predictions["forecast_method"].str.contains("MODEL_")
+    assert model_rows.any()
+    assert int(model_rows.sum()) == result.metrics["model_forecast_rows"]
+    assert (result.predictions["predicted_low"] <= result.predictions["predicted_high"]).all()
