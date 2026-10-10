@@ -94,7 +94,7 @@ def render_one_minute_forecast_panel() -> None:
     quantile_pct = st.slider(
         "Range width / historical excursion quantile",
         min_value=60,
-        max_value=98,
+        max_value=95,
         value=90,
         step=5,
         help="Higher values usually widen the estimated range and may improve candle-range coverage, but increase the range width. This is not a probability guarantee.",
