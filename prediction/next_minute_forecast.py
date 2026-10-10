@@ -39,6 +39,7 @@ def forecast_next_minute(
     generated_at: str | pd.Timestamp | None = None,
     lookback: int = 30,
     quantile: float = 0.80,
+    range_method: str = "adaptive",
 ) -> NextCandleForecast:
     """Forecast the next minute before it begins.
 
@@ -58,6 +59,8 @@ def forecast_next_minute(
         raise ValueError("lookback must be at least 3")
     if not 0.5 < quantile < 1:
         raise ValueError("quantile must be between 0.5 and 1.0")
+    if range_method not in {"baseline", "adaptive"}:
+        raise ValueError("range_method must be baseline or adaptive")
 
     df = completed_candles.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
@@ -70,11 +73,19 @@ def forecast_next_minute(
     history = df.tail(lookback)
     reference = float(last["close"])
 
-    # Use the distribution of recent intraminute extremes, scaled to the
-    # reference price. This is a transparent baseline to replace after
-    # walk-forward validation, not a claim of high predictive accuracy.
-    down = (history["open"] - history["low"]).clip(lower=0).quantile(quantile)
-    up = (history["high"] - history["open"]).clip(lower=0).quantile(quantile)
+    # The baseline measures each candle's open-to-extreme excursion. The
+    # adaptive model measures extremes relative to the previous completed
+    # close, matching the anchor used for the next-candle forecast. It
+    # includes gaps and does not inspect any target/future candle.
+    if range_method == "adaptive":
+        previous_close = history["close"].shift(1)
+        down_excursions = (previous_close - history["low"]).clip(lower=0).dropna()
+        up_excursions = (history["high"] - previous_close).clip(lower=0).dropna()
+    else:
+        down_excursions = (history["open"] - history["low"]).clip(lower=0)
+        up_excursions = (history["high"] - history["open"]).clip(lower=0)
+    down = down_excursions.quantile(quantile)
+    up = up_excursions.quantile(quantile)
     floor = max(reference * 0.0005, 0.01)
     down = max(float(down), floor)
     up = max(float(up), floor)
@@ -101,6 +112,6 @@ def forecast_next_minute(
         predicted_high=round(reference + up, 2),
         direction=direction,
         confidence_label=confidence_label,
-        method=f"rolling_{lookback}_bar_open_extreme_q{int(quantile * 100)}",
+        method=f"rolling_{lookback}_{range_method}_extreme_q{int(quantile * 100)}",
         history_bars=len(history),
     )
