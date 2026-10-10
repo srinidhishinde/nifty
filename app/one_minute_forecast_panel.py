@@ -59,6 +59,10 @@ def _walk_forward(frame: pd.DataFrame, *, quantile: float = 0.90, lookback: int 
             ),
             "low_abs_error": abs(forecast.predicted_low - float(actual["low"])),
             "high_abs_error": abs(forecast.predicted_high - float(actual["high"])),
+            "low_signed_error": forecast.predicted_low - float(actual["low"]),
+            "high_signed_error": forecast.predicted_high - float(actual["high"]),
+            "predicted_range_width": forecast.predicted_high - forecast.predicted_low,
+            "actual_range_width": float(actual["high"]) - float(actual["low"]),
         })
     return pd.DataFrame(results)
 
@@ -186,6 +190,28 @@ def render_one_minute_forecast_panel() -> None:
         e3.metric("High bound coverage", f"{high_rate:.1f}%")
         e4.metric("Full candle range covered", f"{range_rate:.1f}%")
         e5.metric("Low / high MAE", f"₹{replay['low_abs_error'].mean():.2f} / ₹{replay['high_abs_error'].mean():.2f}")
+
+        predicted_width = float(replay["predicted_range_width"].mean())
+        actual_width = float(replay["actual_range_width"].mean())
+        width_ratio = predicted_width / actual_width if actual_width > 0 else float("inf")
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Average predicted range", f"₹{predicted_width:.2f}")
+        b2.metric("Average actual candle range", f"₹{actual_width:.2f}")
+        b3.metric("Predicted / actual width", f"{width_ratio:.2f}×" if pd.notna(width_ratio) else "N/A")
+        st.caption(
+            f"Mean signed low/high error: ₹{replay['low_signed_error'].mean():+.2f} / ₹{replay['high_signed_error'].mean():+.2f}. "
+            "Negative low error means the predicted low was below the actual low; positive high error means the predicted high was above the actual high."
+        )
+        if total < 100:
+            st.warning(
+                f"INSUFFICIENT DATA: only {total} walk-forward forecasts are available. "
+                "Do not treat 100% coverage as evidence of reliability; collect at least 100 predictions across multiple sessions before judging the model."
+            )
+        if width_ratio >= 2.5:
+            st.warning(
+                f"RANGE TOO WIDE: the average predicted range is {width_ratio:.2f}× the actual candle range. "
+                "Coverage may be high because the bounds are broad; compare MAE and width on unseen sessions before using for scalping."
+            )
         st.caption(
             f"Each historical forecast used only candles before its target candle, with {range_method_label} and the selected {quantile_pct}% excursion quantile. "
             "Higher range quantiles can increase coverage by widening bounds; they do not improve exact high/low timing, directional accuracy, or profitability. This one-session sample may not generalize."
