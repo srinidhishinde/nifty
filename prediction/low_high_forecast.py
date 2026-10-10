@@ -122,7 +122,11 @@ def walk_forward_low_high(
         raise ValueError("estimator must be 'hist_gradient_boosting' or 'ridge'")
     frame = _prepare(data)
     features = _features(frame)
+    # Predict relative moves from the origin close, not raw prices.
+    origin_close = frame["close"].replace(0, np.nan)
     targets = pd.DataFrame({
+        "low_return": frame["low"].shift(-1) / origin_close - 1.0,
+        "high_return": frame["high"].shift(-1) / origin_close - 1.0,
         "actual_low": frame["low"].shift(-1),
         "actual_high": frame["high"].shift(-1),
         "target_timestamp": frame["timestamp"].shift(-1),
@@ -130,8 +134,8 @@ def walk_forward_low_high(
     rows: list[dict[str, Any]] = []
     for i in range(min_train, len(frame) - 1, step):
         x_train = features.iloc[:i]
-        y_low = targets["actual_low"].iloc[:i]
-        y_high = targets["actual_high"].iloc[:i]
+        y_low = targets["low_return"].iloc[:i]
+        y_high = targets["high_return"].iloc[:i]
         valid = x_train.notna().all(axis=1) & y_low.notna() & y_high.notna()
         if int(valid.sum()) < min_train or features.iloc[[i]].isna().any(axis=None):
             continue
@@ -140,8 +144,9 @@ def walk_forward_low_high(
         high_model = _model(seed + 1, estimator)
         low_model.fit(x_train.loc[valid], y_low.loc[valid])
         high_model.fit(x_train.loc[valid], y_high.loc[valid])
-        predicted_low = float(low_model.predict(x_now)[0])
-        predicted_high = float(high_model.predict(x_now)[0])
+        anchor_close = float(frame.iloc[i]["close"])
+        predicted_low = anchor_close * (1.0 + float(low_model.predict(x_now)[0]))
+        predicted_high = anchor_close * (1.0 + float(high_model.predict(x_now)[0]))
         predicted_low, predicted_high = min(predicted_low, predicted_high), max(predicted_low, predicted_high)
         actual_low = float(targets.iloc[i]["actual_low"])
         actual_high = float(targets.iloc[i]["actual_high"])
