@@ -5,6 +5,8 @@ broker prices and are not used for order execution.
 """
 from __future__ import annotations
 
+import hashlib
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -90,6 +92,29 @@ def _comparison_summary(frame: pd.DataFrame, *, quantile: float, lookback: int) 
         })
     return pd.DataFrame(summaries)
 
+
+def _comparison_detail(frame: pd.DataFrame, *, quantile: float, lookback: int) -> pd.DataFrame:
+    """Return per-candle paired forecasts with reproducibility metadata."""
+    normalized_csv = frame.to_csv(index=False, date_format="%Y-%m-%dT%H:%M:%S.%f")
+    fingerprint = hashlib.sha256(normalized_csv.encode("utf-8")).hexdigest()
+    generated_at = pd.Timestamp.now(tz="UTC").isoformat()
+    adaptive = _walk_forward(frame, quantile=quantile, lookback=lookback, range_method="adaptive")
+    baseline = _walk_forward(frame, quantile=quantile, lookback=lookback, range_method="baseline")
+    if adaptive.empty or baseline.empty:
+        return pd.DataFrame()
+    paired = adaptive[["timestamp", "actual_low", "actual_high", "actual_range_width"]].copy()
+    fields = ["predicted_low", "predicted_high", "low_covered", "high_covered", "full_range_covered", "low_abs_error", "high_abs_error", "low_signed_error", "high_signed_error", "predicted_range_width"]
+    for method, replay in (("adaptive", adaptive), ("baseline", baseline)):
+        values = replay[["timestamp", *fields]].copy()
+        values = values.rename(columns={column: f"{method}_{column}" for column in fields})
+        paired = paired.merge(values, on="timestamp", how="inner", validate="one_to_one")
+    paired.insert(0, "generated_at_utc", generated_at)
+    paired.insert(1, "input_sha256", fingerprint)
+    paired.insert(2, "model_version", "rolling-excursion-v1")
+    paired.insert(3, "quantile", quantile)
+    paired.insert(4, "lookback", lookback)
+    paired.insert(5, "forecast_count", len(paired))
+    return paired
 
 def render_one_minute_forecast_panel() -> None:
     st.divider()
@@ -201,12 +226,21 @@ def render_one_minute_forecast_panel() -> None:
 
     with st.expander("Adaptive vs baseline — same-candle comparison", expanded=True):
         comparison = _comparison_summary(frame, quantile=quantile, lookback=lookback)
-        if comparison.empty:
+        detail = _comparison_detail(frame, quantile=quantile, lookback=lookback)
+        if comparison.empty or detail.empty:
             st.info("Not enough candles to compare the two range methods.")
         else:
+            fingerprint = str(detail["input_sha256"].iloc[0])
             st.caption(
-                "Both methods are tested against exactly the same target candles, using the same range quantile "
-                f"({quantile_pct}%) and lookback ({lookback} completed candles). This is a historical comparison, not a live-performance guarantee."
+                "Both methods use the same target candles, quantile and lookback. Historical replay is deterministic: "
+                "identical normalized input candles and settings should reproduce identical predictions. Repeated values "
+                "are expected unless the input data or settings change; this is not a live-performance guarantee."
+            )
+            st.code(
+                f"Model version: rolling-excursion-v1\nInput SHA-256: {fingerprint}\n"
+                f"Run generated (UTC): {detail['generated_at_utc'].iloc[0]}\n"
+                f"Quantile: {quantile_pct}% | Lookback: {lookback} | Paired forecasts: {len(detail)}",
+                language="text",
             )
             st.dataframe(
                 comparison.round({
@@ -234,11 +268,18 @@ def render_one_minute_forecast_panel() -> None:
                 )
                 st.caption("Higher coverage is not automatically better if it is achieved by much wider ranges. Review coverage, both MAEs, and width together.")
             st.download_button(
-                "Download adaptive-vs-baseline comparison (CSV)",
+                "Download adaptive-vs-baseline summary (CSV)",
                 data=comparison.to_csv(index=False).encode("utf-8"),
-                file_name="nifty_adaptive_vs_baseline_comparison.csv",
+                file_name="nifty_adaptive_vs_baseline_summary.csv",
                 mime="text/csv",
                 key="one_minute_model_comparison_download",
+            )
+            st.download_button(
+                "Download row-level paired forecasts + run metadata (CSV)",
+                data=detail.to_csv(index=False).encode("utf-8"),
+                file_name="nifty_adaptive_vs_baseline_detail.csv",
+                mime="text/csv",
+                key="one_minute_model_comparison_detail_download",
             )
 
     with st.expander("Selected model — walk-forward historical accuracy", expanded=True):
