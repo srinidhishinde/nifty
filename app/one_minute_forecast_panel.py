@@ -38,13 +38,13 @@ def _normalize_csv(upload) -> pd.DataFrame:
     return frame.sort_values("timestamp").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
 
 
-def _walk_forward(frame: pd.DataFrame, *, quantile: float = 0.90, lookback: int = 30) -> pd.DataFrame:
+def _walk_forward(frame: pd.DataFrame, *, quantile: float = 0.90, lookback: int = 30, range_method: str = "adaptive") -> pd.DataFrame:
     """Forecast row i from rows strictly before i; never pass the target row in."""
     results = []
     for target_index in range(3, len(frame)):
         history = frame.iloc[:target_index]
         actual = frame.iloc[target_index]
-        forecast = forecast_next_minute(history, underlying="NIFTY", lookback=lookback, quantile=quantile)
+        forecast = forecast_next_minute(history, underlying="NIFTY", lookback=lookback, quantile=quantile, range_method=range_method)
         results.append({
             "timestamp": actual["timestamp"],
             "predicted_low": forecast.predicted_low,
@@ -101,6 +101,14 @@ def render_one_minute_forecast_panel() -> None:
         key="one_minute_forecast_quantile",
     )
     quantile = quantile_pct / 100.0
+    range_method_label = st.selectbox(
+        "Forecast model",
+        options=["Adaptive (previous-close excursions)", "Baseline (open-to-extreme)"],
+        index=0,
+        key="one_minute_forecast_model",
+        help="Adaptive ranges include gaps relative to the previous close. The walk-forward panel compares only past data; check results rather than assuming one model is better.",
+    )
+    range_method = "adaptive" if range_method_label.startswith("Adaptive") else "baseline"
     lookback = st.slider(
         "Recent candles used",
         min_value=10,
@@ -110,7 +118,7 @@ def render_one_minute_forecast_panel() -> None:
         key="one_minute_forecast_lookback",
     )
     forecast = forecast_next_minute(
-        frame, underlying="NIFTY", lookback=lookback, quantile=quantile
+        frame, underlying="NIFTY", lookback=lookback, quantile=quantile, range_method=range_method
     )
     target_time = pd.Timestamp(forecast.target_candle_time)
     latest = frame.iloc[-1]
@@ -124,7 +132,7 @@ def render_one_minute_forecast_panel() -> None:
     m2.metric("Next-minute estimated low", f"₹{forecast.predicted_low:.2f}")
     m3.metric("Next-minute estimated high", f"₹{forecast.predicted_high:.2f}")
     m4.metric("Direction context", forecast.direction)
-    st.write(f"**Target candle:** {target_time}  |  **Method:** {forecast.method}  |  **Range quantile:** {quantile_pct}%  |  **History:** {lookback} bars")
+    st.write(f"**Target candle:** {target_time}  |  **Method:** {forecast.method}  |  **Model:** {range_method_label}  |  **Range quantile:** {quantile_pct}%  |  **History:** {lookback} bars")
     st.caption(forecast.disclaimer)
 
     visible = frame.tail(120)
@@ -163,7 +171,7 @@ def render_one_minute_forecast_panel() -> None:
     st.plotly_chart(chart, width="stretch")
 
     with st.expander("Walk-forward historical accuracy", expanded=True):
-        replay = _walk_forward(frame, quantile=quantile, lookback=lookback)
+        replay = _walk_forward(frame, quantile=quantile, lookback=lookback, range_method=range_method)
         if replay.empty:
             st.info("Not enough candles to calculate walk-forward metrics.")
             return
@@ -178,7 +186,7 @@ def render_one_minute_forecast_panel() -> None:
         e4.metric("Full candle range covered", f"{range_rate:.1f}%")
         e5.metric("Low / high MAE", f"₹{replay['low_abs_error'].mean():.2f} / ₹{replay['high_abs_error'].mean():.2f}")
         st.caption(
-            f"Each historical forecast used only candles before its target candle, with the selected {quantile_pct}% excursion quantile. "
+            f"Each historical forecast used only candles before its target candle, with {range_method_label} and the selected {quantile_pct}% excursion quantile. "
             "Higher range quantiles can increase coverage by widening bounds; they do not improve exact high/low timing, directional accuracy, or profitability. This one-session sample may not generalize."
         )
         st.dataframe(
