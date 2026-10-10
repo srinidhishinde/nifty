@@ -132,27 +132,53 @@ def walk_forward_low_high(
         "target_timestamp": frame["timestamp"].shift(-1),
     })
     rows: list[dict[str, Any]] = []
-    for i in range(min_train, len(frame) - 1, step):
-        x_train = features.iloc[:i]
-        y_low = targets["low_return"].iloc[:i]
-        y_high = targets["high_return"].iloc[:i]
-        valid = x_train.notna().all(axis=1) & y_low.notna() & y_high.notna()
-        if int(valid.sum()) < min_train or features.iloc[[i]].isna().any(axis=None):
-            continue
-        x_now = features.iloc[[i]]
-        low_model = _model(seed, estimator)
-        high_model = _model(seed + 1, estimator)
-        low_model.fit(x_train.loc[valid], y_low.loc[valid])
-        high_model.fit(x_train.loc[valid], y_high.loc[valid])
-        anchor_close = float(frame.iloc[i]["close"])
-        predicted_low = anchor_close * (1.0 + float(low_model.predict(x_now)[0]))
-        predicted_high = anchor_close * (1.0 + float(high_model.predict(x_now)[0]))
-        predicted_low, predicted_high = min(predicted_low, predicted_high), max(predicted_low, predicted_high)
-        actual_low = float(targets.iloc[i]["actual_low"])
-        actual_high = float(targets.iloc[i]["actual_high"])
+    # Emit one row for every target candle. Before enough labelled history
+    # exists, use a clearly marked range-based fallback; never use target high/
+    # low to construct its prediction. The first row has no preceding candle,
+    # so its open-anchored fallback is explicitly marked as not pre-open.
+    for target_idx in range(len(frame)):
+        target = frame.iloc[target_idx]
+        if target_idx == 0:
+            anchor = float(target["open"])
+            band = max(anchor * 0.005, 0.01)
+            predicted_low, predicted_high = anchor - band, anchor + band
+            method = "OPEN_FALLBACK_NO_PRIOR_HISTORY"
+            origin_ts = pd.NaT
+        else:
+            origin_idx = target_idx - 1
+            anchor = float(frame.iloc[origin_idx]["close"])
+            origin_ts = frame.iloc[origin_idx]["timestamp"]
+            prior = frame.iloc[:target_idx]
+            prior_ranges = (prior["high"] - prior["low"]).tail(20)
+            band = float(prior_ranges.median()) if not prior_ranges.empty else max(anchor * 0.005, 0.01)
+            band = max(band / 2.0, anchor * 0.0005, 0.01)
+            method = "HISTORICAL_RANGE_FALLBACK"
+            if origin_idx >= min_train and not features.iloc[[origin_idx]].isna().any(axis=None):
+                x_train = features.iloc[:origin_idx]
+                y_low = targets["low_return"].iloc[:origin_idx]
+                y_high = targets["high_return"].iloc[:origin_idx]
+                valid = x_train.notna().all(axis=1) & y_low.notna() & y_high.notna()
+                if int(valid.sum()) >= min_train:
+                    x_now = features.iloc[[origin_idx]]
+                    low_model = _model(seed, estimator)
+                    high_model = _model(seed + 1, estimator)
+                    low_model.fit(x_train.loc[valid], y_low.loc[valid])
+                    high_model.fit(x_train.loc[valid], y_high.loc[valid])
+                    predicted_low = anchor * (1.0 + float(low_model.predict(x_now)[0]))
+                    predicted_high = anchor * (1.0 + float(high_model.predict(x_now)[0]))
+                    method = f"MODEL_{estimator.upper()}"
+                else:
+                    predicted_low, predicted_high = anchor - band, anchor + band
+                    method = "HISTORICAL_RANGE_FALLBACK"
+            else:
+                predicted_low, predicted_high = anchor - band, anchor + band
+        predicted_low = max(0.01, min(predicted_low, predicted_high))
+        predicted_high = max(predicted_low, predicted_high)
+        actual_low = float(target["low"])
+        actual_high = float(target["high"])
         rows.append({
-            "origin_timestamp": frame.iloc[i]["timestamp"],
-            "target_timestamp": targets.iloc[i]["target_timestamp"],
+            "origin_timestamp": origin_ts,
+            "target_timestamp": target["timestamp"],
             "predicted_low": predicted_low,
             "predicted_high": predicted_high,
             "actual_low": actual_low,
@@ -164,6 +190,7 @@ def walk_forward_low_high(
             "full_range_covered": predicted_low <= actual_low and predicted_high >= actual_high,
             "predicted_width": predicted_high - predicted_low,
             "actual_width": actual_high - actual_low,
+            "forecast_method": method,
         })
     predictions = pd.DataFrame(rows)
     if predictions.empty:
@@ -172,6 +199,10 @@ def walk_forward_low_high(
     predicted_width = float(predictions["predicted_width"].mean())
     metrics: dict[str, float | int | str] = {
         "rows": int(len(predictions)),
+        "expected_rows": int(len(frame)),
+        "forecast_rows_complete": bool(len(predictions) == len(frame)),
+        "model_forecast_rows": int(predictions["forecast_method"].str.startswith("MODEL_").sum()),
+        "fallback_forecast_rows": int((~predictions["forecast_method"].str.startswith("MODEL_")).sum()),
         "low_mae": float(mean_absolute_error(predictions["actual_low"], predictions["predicted_low"])),
         "high_mae": float(mean_absolute_error(predictions["actual_high"], predictions["predicted_high"])),
         "low_coverage_pct": float(predictions["low_covered"].mean() * 100),
