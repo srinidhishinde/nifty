@@ -95,6 +95,7 @@ def simulate_recursive_low_high(
         position = None
 
     for _, bar in bars.iterrows():
+        had_position_at_bar_start = position is not None
         ts = bar["timestamp"]
         op, hi, lo, cl = (float(bar[c]) for c in ("open", "high", "low", "close"))
 
@@ -112,7 +113,8 @@ def simulate_recursive_low_high(
                     close_position(ts, stop, "STOP_LOSS" if not hit_target else "STOP_FIRST_BOTH_TOUCHED")
                 elif hit_target:
                     close_position(ts, target, "TARGET")
-            if position is not None:
+            # Do not re-enter on the same candle used to close an earlier position.
+            if had_position_at_bar_start:
                 continue
 
         if ts not in pred_by_time.index or equity <= 0:
@@ -174,7 +176,7 @@ def simulate_recursive_low_high(
         ledger_df["capital_after"].reset_index(drop=True),
     ], ignore_index=True)
     peaks = equity_curve.cummax()
-    drawdowns = (equity_curve - peaks) / peaks.replace(0, pd.NA)
+    drawdowns = (equity_curve - peaks) / peaks.where(peaks != 0)
     net_profit = float(equity - initial_capital)
     summary = {
         "status": "EVALUATED",
