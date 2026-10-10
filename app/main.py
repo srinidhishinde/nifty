@@ -59,6 +59,7 @@ from alerts.recipient_store import WhatsAppRecipientStore
 from alerts.runtime_settings import WhatsAppSettingsStore
 from alerts.whatsapp import WhatsAppAlertService
 from analytics.signal_journal import SignalJournal
+from app.one_minute_forecast_panel import render_one_minute_forecast_panel
 
 
 # ============================================================
@@ -2203,3 +2204,7 @@ with candidate_col2:
         st.write(
             f"LTP: Rs {best_pe_row['PE LTP']:.2f}"
         )
+
+
+# Historical one-minute option forecasting and sequential validation panel.
+render_one_minute_forecast_panel()

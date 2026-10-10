@@ -555,14 +555,28 @@ class KotakNeoProvider(MarketDataProvider):
         if explicit_strike <= 0:
             explicit_strike = self._float(instrument.get("strkPrc") or item.get("strkPrc"))
 
-        # Prefer Kotak's explicit strike field. The symbol is used only as a
-        # fallback because expiry/day digits can be adjacent to the strike.
-        strike = explicit_strike if explicit_strike > 0 else symbol_strike
-        strike = validate_option_strike(
-            underlying,
-            strike,
-            symbol_strike=explicit_strike if explicit_strike > 0 else None,
+        # Prefer the contract symbol when its trailing strike is plausible.
+        # Kotak payload strike fields can be wrong (for example, a premium or
+        # another numeric field copied into strikePrice). Conversely, some
+        # compact symbols include expiry-day digits immediately before the
+        # strike, which makes the naive suffix match too large (e.g. 1320250).
+        # For NIFTY, accept the symbol candidate only when it is a plausible
+        # exchange strike; otherwise fall back to the explicit broker field.
+        symbol_strike_is_plausible = False
+        if str(underlying).strip().upper() == "NIFTY":
+            step = 50.0
+            symbol_strike_is_plausible = (
+                symbol_strike > 0
+                and symbol_strike <= 100_000
+                and abs((symbol_strike / step) - round(symbol_strike / step)) <= 1e-9
+            )
+        strike = (
+            symbol_strike
+            if symbol_strike_is_plausible
+            else explicit_strike if explicit_strike > 0
+            else symbol_strike
         )
+        strike = validate_option_strike(underlying, strike)
         ltp = self._quote_ltp(quote)
         volume = self._float(quote.get("volume") or quote.get("vol"))
         current_oi = self._float(oi.get("current") or oi.get("cur"))
