@@ -84,7 +84,7 @@ def _features(frame: pd.DataFrame) -> pd.DataFrame:
     feats["ema_gap_9_21"] = (ema9 - ema21) / close.replace(0, np.nan)
     feats["close_vs_sma_20"] = close / close.rolling(20, min_periods=5).mean() - 1
     volume_mean = volume.rolling(20, min_periods=5).mean()
-    feats["volume_ratio"] = volume / volume_mean.replace(0, np.nan)
+    feats["volume_ratio"] = (volume / volume_mean.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(1.0)
     return feats.replace([np.inf, -np.inf], np.nan)
 
 
