@@ -28,7 +28,12 @@ def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
     data = _candles()
     result = walk_forward_low_high(data, min_train=80, estimator="ridge")
     assert result.status == "EVALUATED"
-    assert 0 < len(result.predictions) <= len(data) - 80 - 1
+    assert len(result.predictions) == len(data)
+    assert result.metrics["forecast_rows_complete"] is True
+    assert result.predictions["target_timestamp"].reset_index(drop=True).equals(pd.to_datetime(data["timestamp"], utc=True).reset_index(drop=True))
+    assert result.predictions["forecast_method"].notna().all()
+    assert result.predictions.iloc[0]["forecast_method"] == "OPEN_FALLBACK_NO_PRIOR_HISTORY"
+    assert result.metrics["fallback_forecast_rows"] > 0
     assert (result.predictions["target_timestamp"] > result.predictions["origin_timestamp"]).all()
     assert (result.predictions["predicted_low"] <= result.predictions["predicted_high"]).all()
     assert 0 <= result.metrics["full_range_coverage_pct"] <= 100
@@ -50,4 +55,5 @@ def test_walk_forward_forecast_does_not_require_volume():
     data = _candles().drop(columns=["volume"])
     result = walk_forward_low_high(data, min_train=80, estimator="ridge")
     assert result.status == "EVALUATED"
+    assert len(result.predictions) == len(data)
     assert not result.predictions.empty
