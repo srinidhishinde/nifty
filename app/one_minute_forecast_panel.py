@@ -112,10 +112,11 @@ def render_one_minute_forecast_panel() -> None:
     lookback = st.slider(
         "Recent candles used",
         min_value=10,
-        max_value=60,
-        value=30,
+        max_value=385,
+        value=385,
         step=5,
         key="one_minute_forecast_lookback",
+        help="Use up to 385 completed candles when the uploaded file contains enough history. Forecasts still use only candles available before the target candle.",
     )
     forecast = forecast_next_minute(
         frame, underlying="NIFTY", lookback=lookback, quantile=quantile, range_method=range_method
@@ -135,7 +136,7 @@ def render_one_minute_forecast_panel() -> None:
     st.write(f"**Target candle:** {target_time}  |  **Method:** {forecast.method}  |  **Model:** {range_method_label}  |  **Range quantile:** {quantile_pct}%  |  **History:** {lookback} bars")
     st.caption(forecast.disclaimer)
 
-    visible = frame.tail(120)
+    visible = frame.tail(385)
     chart = go.Figure(data=[go.Candlestick(
         x=visible["timestamp"],
         open=visible["open"],
@@ -160,7 +161,7 @@ def render_one_minute_forecast_panel() -> None:
         line={"dash": "dot", "width": 1},
     ))
     chart.update_layout(
-        title="Option premium — last 120 candles and next-minute estimate",
+        title="Option premium — last 385 candles and next-minute estimate",
         xaxis_title="Candle time",
         yaxis_title="Premium (₹)",
         xaxis_rangeslider_visible=False,
