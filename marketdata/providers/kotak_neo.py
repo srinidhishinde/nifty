@@ -562,11 +562,11 @@ class KotakNeoProvider(MarketDataProvider):
         # strike, which makes the naive suffix match too large (e.g. 1320250).
         # For NIFTY, accept the symbol candidate only when it is a plausible
         # exchange strike; otherwise fall back to the explicit broker field.
-        symbol_strike_is_plausible = symbol_strike > 0
+        symbol_strike_is_plausible = False
         if str(underlying).strip().upper() == "NIFTY":
             step = 50.0
             symbol_strike_is_plausible = (
-                symbol_strike_is_plausible
+                symbol_strike > 0
                 and symbol_strike <= 100_000
                 and abs((symbol_strike / step) - round(symbol_strike / step)) <= 1e-9
             )
