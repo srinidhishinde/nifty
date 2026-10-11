@@ -63,7 +63,7 @@ def test_online_calibration_does_not_use_future_candles():
                 "asymmetric_conformal_low", "asymmetric_conformal_high",
                 "historical_quantile_low", "historical_quantile_high",
                 "historical_asymmetric_quantile_low", "historical_asymmetric_quantile_high",
-                "point_predicted_low", "point_predicted_high"):
+                "point_predicted_low", "point_predicted_high", "predicted_close", "predicted_direction"):
         assert first.loc[110, col] == pytest.approx(second.loc[110, col], nan_ok=True)
 
 
