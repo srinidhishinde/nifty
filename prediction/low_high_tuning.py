@@ -1,8 +1,9 @@
 """Leakage-free online calibration and baseline comparison for low/high forecasts.
 
 Calibration for target candle t uses only forecast errors from targets < t.
-The first candle is excluded because a single-session file has no prior close
-from which to issue a forecast before that candle opens.
+The first candle's open-anchored fallback is preserved as a separate opening
+forecast, but excluded from pre-open model/calibration metrics. A single-session
+file cannot provide prior-session context for a genuine pre-open opening forecast.
 """
 from __future__ import annotations
 
@@ -131,13 +132,18 @@ def tune_and_compare(
 
     base = walk_forward_low_high(frame, min_train=min_train, estimator=estimator, seed=seed)
     out = base.predictions.copy()
-    # Explicitly mark the first candle as not forecastable before its open from
-    # this file alone. Do not score its open-anchored legacy fallback.
-    for col in ("predicted_low", "predicted_high"):
-        out.loc[0, col] = np.nan
-    out.loc[0, "forecast_method"] = "NO_PRIOR_CANDLE_NOT_PREOPEN"
+    # Keep the 09:15 open-anchored estimate visible as a separate forecast.
+    # It is not a pre-open forecast and is excluded from model/calibration scores.
+    out["opening_predicted_low"] = np.nan
+    out["opening_predicted_high"] = np.nan
+    out["opening_forecast_method"] = ""
+    out.loc[0, "opening_predicted_low"] = out.loc[0, "predicted_low"]
+    out.loc[0, "opening_predicted_high"] = out.loc[0, "predicted_high"]
+    out.loc[0, "opening_forecast_method"] = "OPENING_CANDLE_OPEN_ANCHORED_FALLBACK"
+    out.loc[0, "forecast_method"] = "OPENING_CANDLE_OPEN_ANCHORED_NOT_PREOPEN"
     out["model_low"] = out["predicted_low"]
     out["model_high"] = out["predicted_high"]
+    out.loc[0, ["model_low", "model_high"]] = np.nan
     out["conformal_low"] = np.nan
     out["conformal_high"] = np.nan
     out["asymmetric_conformal_low"] = np.nan
@@ -148,10 +154,10 @@ def tune_and_compare(
     out["median_range_high"] = np.nan
     out["historical_quantile_low"] = np.nan
     out["historical_quantile_high"] = np.nan
-    out["optimized_quantile_low"] = np.nan
-    out["optimized_quantile_high"] = np.nan
-    out["optimized_down_quantile"] = np.nan
-    out["optimized_up_quantile"] = np.nan
+    out["historical_asymmetric_quantile_low"] = np.nan
+    out["historical_asymmetric_quantile_high"] = np.nan
+    out["historical_down_quantile_level"] = np.nan
+    out["historical_up_quantile_level"] = np.nan
     out["conformal_expansion"] = np.nan
     out["historical_down_quantile"] = np.nan
     out["historical_up_quantile"] = np.nan
@@ -208,31 +214,17 @@ def tune_and_compare(
             out.loc[i, "historical_quantile_low"] = max(0.01, anchor - down_q)
             out.loc[i, "historical_quantile_high"] = anchor + up_q
 
-            # Select the narrowest asymmetric empirical interval whose joint
-            # coverage on prior completed excursions meets the requested target.
-            # Require a minimum calibration sample; before that use a
-            # conservative equal-tail quantile rather than overfit tiny samples.
-            grid = (0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.925,
-                    0.95, 0.975, 0.99, 1.0)
-            candidates = []
-            if len(down) >= 20:
-                for qd in grid:
-                    dq = float(np.quantile(down, qd))
-                    for qu in grid:
-                        uq = float(np.quantile(up, qu))
-                        joint_coverage = float(((down <= dq) & (up <= uq)).mean())
-                        if joint_coverage >= target_coverage:
-                            candidates.append((dq + uq, -joint_coverage, dq, uq, qd, qu))
-            if candidates:
-                _, neg_coverage, opt_down, opt_up, qd, qu = min(candidates)
-            else:
-                qd = qu = q_each_side
-                opt_down = _finite_sample_quantile(down, qd)
-                opt_up = _finite_sample_quantile(up, qu)
-            out.loc[i, "optimized_quantile_low"] = max(0.01, anchor - opt_down)
-            out.loc[i, "optimized_quantile_high"] = anchor + opt_up
-            out.loc[i, "optimized_down_quantile"] = qd
-            out.loc[i, "optimized_up_quantile"] = qu
+            # Use a fixed, predeclared equal-tail quantile rule. Do not search a
+            # grid of asymmetric quantile pairs on this short rolling sample:
+            # that adds selection noise and can make in-sample coverage look
+            # better without reliable out-of-sample improvement.
+            qd = qu = q_each_side
+            hist_down = _finite_sample_quantile(down, qd)
+            hist_up = _finite_sample_quantile(up, qu)
+            out.loc[i, "historical_asymmetric_quantile_low"] = max(0.01, anchor - hist_down)
+            out.loc[i, "historical_asymmetric_quantile_high"] = anchor + hist_up
+            out.loc[i, "historical_down_quantile_level"] = qd
+            out.loc[i, "historical_up_quantile_level"] = qu
             out.loc[i, "historical_down_quantile"] = down_q
             out.loc[i, "historical_up_quantile"] = up_q
 
@@ -243,14 +235,23 @@ def tune_and_compare(
         "online_asymmetric_conformal_model": ("asymmetric_conformal_low", "asymmetric_conformal_high"),
         "rolling_median_range": ("median_range_low", "median_range_high"),
         "historical_excursion_quantile": ("historical_quantile_low", "historical_quantile_high"),
-        "optimized_asymmetric_quantile": ("optimized_quantile_low", "optimized_quantile_high"),
+        "historical_asymmetric_quantile": ("historical_asymmetric_quantile_low", "historical_asymmetric_quantile_high"),
     }
     summary: dict[str, Any] = {
         "status": "EVALUATED",
         "target_full_range_coverage": target_coverage,
         "target_coverage_pct": target_coverage * 100,
         "forecast_timing": "before_target_candle_open",
-        "first_candle": "excluded_no_prior_candle_in_input",
+        "first_candle": "opening_forecast_reported_separately_and_excluded_from_preopen_metrics",
+        "opening_forecast": {
+            "method": str(out.loc[0, "opening_forecast_method"]),
+            "predicted_low": float(out.loc[0, "opening_predicted_low"]),
+            "predicted_high": float(out.loc[0, "opening_predicted_high"]),
+            "actual_low": float(out.loc[0, "actual_low"]),
+            "actual_high": float(out.loc[0, "actual_high"]),
+            "full_range_covered": bool(out.loc[0, "opening_predicted_low"] <= out.loc[0, "actual_low"] and out.loc[0, "opening_predicted_high"] >= out.loc[0, "actual_high"]),
+            "note": "Open-anchored fallback available after the 09:15 open; not a pre-open forecast and not included in the main model metrics."
+        },
         "input_candles": int(len(frame)),
         "evaluated_forecasts": int(len(evaluated)),
         "estimator": estimator,
@@ -259,9 +260,7 @@ def tune_and_compare(
         "point_forecast": _point_metrics(evaluated),
         "calibration_note": (
             "Online conformal expansion uses only earlier model forecast misses. The asymmetric conformal variant estimates lower and upper misses separately with finite-sample tail quantiles. "
-            "Optimized asymmetric quantiles select the narrowest historical down/up excursion pair "
-            "meeting target joint coverage on prior completed candles (minimum 20 observations; "
-            "equal-tail fallback before that). All methods are evaluated on later candles only. "
+            "Historical asymmetric quantiles use a fixed equal-tail quantile level from completed prior excursions; no rolling grid search is used. All main methods are evaluated on later candles only. "
             "Metrics are out-of-sample walk-forward results, not proof of future performance."
         ),
     }
