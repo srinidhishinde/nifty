@@ -7,11 +7,13 @@ on:
       - master
       - "feature/**"
       - "ci/**"
+      - "improve/**"
   pull_request:
     branches:
       - main
       - master
       - "feature/**"
+      - "ci/**"
   workflow_dispatch:
 
 permissions:

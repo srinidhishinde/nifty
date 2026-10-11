@@ -175,15 +175,31 @@ def tune_and_compare(
     out["historical_down_quantile_level"] = np.nan
     out["historical_up_quantile_level"] = np.nan
     out["conformal_expansion"] = np.nan
-    # Audit trail: number of earlier trained-model forecasts used to calibrate
-    # each row. Zero means calibration is not yet mature.
+    # Audit trail for calibration maturity and warm-up policy.
     out["calibration_model_rows"] = 0
+    out["calibration_source"] = ""
+    out["asymmetric_calibration_source"] = ""
     out["historical_down_quantile"] = np.nan
     out["historical_up_quantile"] = np.nan
+    # Additional interval centered on the model's low/high point estimates.
+    # Calibration scores are normalized by the forecast-origin's recent range
+    # so the interval can adapt when option volatility changes.
+    out["point_residual_conformal_low"] = np.nan
+    out["point_residual_conformal_high"] = np.nan
+    out["point_interval_scale"] = np.nan
+    out["point_interval_calibration_rows"] = 0
+    out["point_interval_calibration_source"] = ""
 
     q_each_side = (1.0 + target_coverage) / 2.0
     for i in range(1, len(frame)):
         anchor = float(frame.loc[i - 1, "close"])
+        recent_ranges = (frame.iloc[:i]["high"] - frame.iloc[:i]["low"]).tail(40)
+        current_scale = max(
+            float(recent_ranges.median()) if len(recent_ranges) else 0.0,
+            anchor * 0.0005,
+            0.01,
+        )
+        out.loc[i, "point_interval_scale"] = current_scale
         model_low = float(out.loc[i, "model_low"])
         model_high = float(out.loc[i, "model_high"])
         # Calibrate only on matured forecasts produced by the trained model.
@@ -196,40 +212,93 @@ def tune_and_compare(
             prior_rows["forecast_method"].astype(str).str.contains("MODEL_", regex=False)
         ]
         out.loc[i, "calibration_model_rows"] = int(len(past))
-        scores = np.maximum(
-            np.maximum(past["model_low"].to_numpy(dtype=float) - past["actual_low"].to_numpy(dtype=float), 0.0),
-            np.maximum(past["actual_high"].to_numpy(dtype=float) - past["model_high"].to_numpy(dtype=float), 0.0),
+
+        # During calibration warm-up, zero expansion is dangerously optimistic:
+        # the model has not yet accumulated enough genuine out-of-sample errors.
+        # Use a predeclared historical-excursion envelope until 20 model errors
+        # exist. These excursions are from completed candles only; no target
+        # candle data enters the fallback interval.
+        hist = frame.iloc[1:i]
+        hist_anchor = frame["close"].iloc[: i - 1].to_numpy(dtype=float)
+        down = np.maximum(hist_anchor - hist["low"].to_numpy(dtype=float), 0.0)
+        up = np.maximum(hist["high"].to_numpy(dtype=float) - hist_anchor, 0.0)
+        min_calibration_rows = 20
+        warmup = len(past) < min_calibration_rows
+        if warmup:
+            down_q = _adaptive_historical_quantile(down, q_each_side)
+            up_q = _adaptive_historical_quantile(up, q_each_side)
+            fallback_low = max(0.01, anchor - down_q)
+            fallback_high = anchor + up_q
+            expansion = max(model_low - fallback_low, fallback_high - model_high, 0.0)
+            out.loc[i, "calibration_source"] = "HISTORICAL_EXCURSION_WARMUP"
+            point_low = float(out.loc[i, "point_predicted_low"])
+            point_high = float(out.loc[i, "point_predicted_high"])
+            point_low_expansion = max(point_low - fallback_low, 0.0)
+            point_high_expansion = max(fallback_high - point_high, 0.0)
+            out.loc[i, "point_interval_calibration_source"] = "HISTORICAL_EXCURSION_WARMUP"
+        else:
+            scores = np.maximum(
+                np.maximum(past["model_low"].to_numpy(dtype=float) - past["actual_low"].to_numpy(dtype=float), 0.0),
+                np.maximum(past["actual_high"].to_numpy(dtype=float) - past["model_high"].to_numpy(dtype=float), 0.0),
+            )
+            expansion = _finite_sample_quantile(scores, target_coverage)
+            out.loc[i, "calibration_source"] = "ONLINE_CONFORMAL_MODEL_RESIDUALS"
+            # Calibrate each predicted extreme separately, not only the
+            # previous-close-anchored band. Normalize past misses by their
+            # contemporaneous scale, then apply the score quantile at today's
+            # scale to handle changing volatility without future information.
+            past_scales = np.maximum(
+                past["point_interval_scale"].to_numpy(dtype=float),
+                0.01,
+            )
+            low_scores = np.maximum(
+                past["point_predicted_low"].to_numpy(dtype=float)
+                - past["actual_low"].to_numpy(dtype=float),
+                0.0,
+            ) / past_scales
+            high_scores = np.maximum(
+                past["actual_high"].to_numpy(dtype=float)
+                - past["point_predicted_high"].to_numpy(dtype=float),
+                0.0,
+            ) / past_scales
+            point_low_expansion = _finite_sample_quantile(low_scores, q_each_side) * current_scale
+            point_high_expansion = _finite_sample_quantile(high_scores, q_each_side) * current_scale
+            out.loc[i, "point_interval_calibration_source"] = "ONLINE_NORMALIZED_ASYMMETRIC_RESIDUALS"
+        out.loc[i, "point_interval_calibration_rows"] = int(len(past))
+        point_low = float(out.loc[i, "point_predicted_low"])
+        point_high = float(out.loc[i, "point_predicted_high"])
+        out.loc[i, "point_residual_conformal_low"] = max(0.01, point_low - point_low_expansion)
+        out.loc[i, "point_residual_conformal_high"] = max(
+            out.loc[i, "point_residual_conformal_low"],
+            point_high + point_high_expansion,
         )
-        expansion = _finite_sample_quantile(scores, target_coverage) if len(scores) else 0.0
         out.loc[i, "conformal_expansion"] = expansion
         out.loc[i, "conformal_low"] = max(0.01, model_low - expansion)
         out.loc[i, "conformal_high"] = max(out.loc[i, "conformal_low"], model_high + expansion)
 
-        # Split asymmetric online calibration: estimate lower- and upper-bound
-        # misses separately from prior forecast rows whose target candles have
-        # already closed. Bonferroni tail allocation (1 + coverage) / 2 on each
-        # side gives a conservative joint target without forcing the larger
-        # miss on both sides, which can make intervals unnecessarily wide.
-        past_low_miss = np.maximum(
-            past["model_low"].to_numpy(dtype=float) - past["actual_low"].to_numpy(dtype=float), 0.0
-        )
-        past_high_miss = np.maximum(
-            past["actual_high"].to_numpy(dtype=float) - past["model_high"].to_numpy(dtype=float), 0.0
-        )
-        low_expansion = _finite_sample_quantile(past_low_miss, q_each_side) if len(past_low_miss) else 0.0
-        high_expansion = _finite_sample_quantile(past_high_miss, q_each_side) if len(past_high_miss) else 0.0
+        # Split asymmetric online calibration. Until 20 matured model forecasts
+        # are available, use the same historical warm-up envelope; after that,
+        # estimate lower/upper misses separately using finite-sample tail quantiles.
+        if warmup:
+            low_expansion = max(model_low - fallback_low, 0.0)
+            high_expansion = max(fallback_high - model_high, 0.0)
+            out.loc[i, "asymmetric_calibration_source"] = "HISTORICAL_EXCURSION_WARMUP"
+        else:
+            past_low_miss = np.maximum(
+                past["model_low"].to_numpy(dtype=float) - past["actual_low"].to_numpy(dtype=float), 0.0
+            )
+            past_high_miss = np.maximum(
+                past["actual_high"].to_numpy(dtype=float) - past["model_high"].to_numpy(dtype=float), 0.0
+            )
+            low_expansion = _finite_sample_quantile(past_low_miss, q_each_side)
+            high_expansion = _finite_sample_quantile(past_high_miss, q_each_side)
+            out.loc[i, "asymmetric_calibration_source"] = "ONLINE_ASYMMETRIC_MODEL_RESIDUALS"
         out.loc[i, "asymmetric_low_expansion"] = low_expansion
         out.loc[i, "asymmetric_high_expansion"] = high_expansion
         out.loc[i, "asymmetric_conformal_low"] = max(0.01, model_low - low_expansion)
         out.loc[i, "asymmetric_conformal_high"] = max(
             out.loc[i, "asymmetric_conformal_low"], model_high + high_expansion
         )
-
-        # Historical excursion samples are from completed candles only.
-        hist = frame.iloc[1:i]
-        hist_anchor = frame["close"].iloc[: i - 1].to_numpy(dtype=float)
-        down = np.maximum(hist_anchor - hist["low"].to_numpy(dtype=float), 0.0)
-        up = np.maximum(hist["high"].to_numpy(dtype=float) - hist_anchor, 0.0)
         ranges = (hist["high"] - hist["low"]).to_numpy(dtype=float)
         if len(ranges):
             half_median = max(float(np.median(ranges)) / 2.0, anchor * 0.0005, 0.01)
@@ -262,6 +331,7 @@ def tune_and_compare(
         "model": ("model_low", "model_high"),
         "online_conformal_model": ("conformal_low", "conformal_high"),
         "online_asymmetric_conformal_model": ("asymmetric_conformal_low", "asymmetric_conformal_high"),
+        "point_residual_conformal": ("point_residual_conformal_low", "point_residual_conformal_high"),
         "rolling_median_range": ("median_range_low", "median_range_high"),
         "historical_excursion_quantile": ("historical_quantile_low", "historical_quantile_high"),
         "historical_asymmetric_quantile": ("historical_asymmetric_quantile_low", "historical_asymmetric_quantile_high"),
@@ -291,9 +361,14 @@ def tune_and_compare(
         "methods": {name: _metrics(evaluated, low, high, target_coverage) for name, (low, high) in methods.items()},
         "point_forecast": _point_metrics(evaluated),
         "calibration_note": (
-            "Online conformal expansion uses only earlier model forecast misses. The asymmetric conformal variant estimates lower and upper misses separately with finite-sample tail quantiles. "
-            "Historical asymmetric quantiles use a fixed equal-tail quantile level from completed prior excursions; no rolling grid search is used. All main methods are evaluated on later candles only. "
-            "Metrics are out-of-sample walk-forward results, not proof of future performance."
+            "Online conformal expansion uses only earlier trained-model forecast misses after a 20-row calibration warm-up. "
+            "During warm-up, a historical-excursion envelope from completed candles prevents zero-width/zero-expansion under-calibration; the source is recorded per row. "
+            "The asymmetric conformal variant estimates lower and upper misses separately with finite-sample tail quantiles after warm-up. "
+            "The point-residual conformal interval is centered on predicted low/high point estimates, calibrates lower/upper misses separately, "
+            "and scales past errors by each forecast origin's recent median range before applying them at the current scale. "
+            "Historical excursions are used during its 20-model-forecast warm-up; calibration rows are logged per forecast. "
+            "Historical asymmetric quantiles use a fixed equal-tail quantile level from completed prior excursions; no rolling grid search is used. "
+            "All main methods are evaluated on later candles only. Metrics are out-of-sample walk-forward results, not proof of future performance."
         ),
     }
     return out, summary

@@ -66,9 +66,28 @@ def forecast_next_minute(
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     for col in ("open", "high", "low", "close", "volume"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    if df[list(required)].isna().any().any():
+    numeric_columns = ["open", "high", "low", "close", "volume"]
+    if df["timestamp"].isna().any() or df[numeric_columns].isna().any().any():
         raise ValueError("OHLCV input contains missing or invalid values")
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    if not np.isfinite(df[numeric_columns].to_numpy(dtype=float)).all():
+        raise ValueError("OHLCV input contains non-finite numeric values")
+    if (df[["open", "high", "low", "close"]] <= 0).any().any():
+        raise ValueError("OHLC prices must be positive")
+    invalid_ohlc = (
+        (df["high"] < df[["open", "low", "close"]].max(axis=1))
+        | (df["low"] > df[["open", "high", "close"]].min(axis=1))
+    )
+    if invalid_ohlc.any():
+        raise ValueError("Invalid OHLC row: high/low do not contain open and close")
+    if (df["volume"] < 0).any():
+        raise ValueError("Volume cannot be negative")
+    df = (
+        df.sort_values("timestamp", kind="stable")
+        .drop_duplicates("timestamp", keep="last")
+        .reset_index(drop=True)
+    )
+    if len(df) < 3:
+        raise ValueError("At least 3 unique completed candles are required")
     last = df.iloc[-1]
     history = df.tail(lookback)
     reference = float(last["close"])
