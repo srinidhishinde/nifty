@@ -32,7 +32,11 @@ def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
     assert result.metrics["forecast_rows_complete"] is True
     assert result.predictions["target_timestamp"].reset_index(drop=True).equals(pd.to_datetime(data["timestamp"], utc=True).reset_index(drop=True))
     assert result.predictions["forecast_method"].notna().all()
-    assert {"point_predicted_low", "point_predicted_high"}.issubset(result.predictions.columns)
+    assert {"point_predicted_low", "point_predicted_high", "predicted_close", "predicted_direction"}.issubset(result.predictions.columns)
+    assert result.predictions["predicted_close"].notna().all()
+    assert set(result.predictions["predicted_direction"].unique()).issubset({"UP", "DOWN"})
+    assert result.metrics["close_mae"] >= 0
+    assert 0 <= result.metrics["directional_accuracy_pct"] <= 100
     assert result.predictions.loc[1:, "point_predicted_low"].notna().all()
     assert result.predictions.loc[1:, "point_predicted_high"].notna().all()
     assert result.metrics["point_low_mae"] >= 0
@@ -76,6 +80,8 @@ def test_forecast_is_not_affected_by_future_candles():
     # modifications beginning at candle 130 cannot change that prediction.
     assert original.loc[120, "predicted_low"] == pytest.approx(changed_result.loc[120, "predicted_low"])
     assert original.loc[120, "predicted_high"] == pytest.approx(changed_result.loc[120, "predicted_high"])
+    assert original.loc[120, "predicted_close"] == pytest.approx(changed_result.loc[120, "predicted_close"])
+    assert original.loc[120, "predicted_direction"] == changed_result.loc[120, "predicted_direction"]
 
 
 def test_model_forecasts_are_calibrated_and_counted():
@@ -84,3 +90,8 @@ def test_model_forecasts_are_calibrated_and_counted():
     assert model_rows.any()
     assert int(model_rows.sum()) == result.metrics["model_forecast_rows"]
     assert (result.predictions["predicted_low"] <= result.predictions["predicted_high"]).all()
+
+
+def test_step_must_remain_one_to_forecast_every_candle():
+    with pytest.raises(ValueError, match="step must be 1"):
+        walk_forward_low_high(_candles(), min_train=80, estimator="ridge", step=2)
