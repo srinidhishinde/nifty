@@ -92,6 +92,45 @@ def test_online_calibration_excludes_fallback_forecasts_and_reports_maturity():
     assert predictions.loc[fallback_rows, "calibration_model_rows"].ge(0).all()
 
 
+def test_calibration_warmup_uses_completed_candle_excursions_until_mature():
+    predictions, _ = tune_and_compare(_candles(145), min_train=80, estimator="ridge")
+    model_targets = predictions.index[
+        predictions["forecast_method"].astype(str).str.contains("MODEL_", regex=False)
+    ]
+    assert len(model_targets) > 20
+
+    first_model_target = int(model_targets[0])
+    first = predictions.loc[first_model_target]
+    assert first["calibration_model_rows"] == 0
+    assert first["calibration_source"] == "HISTORICAL_EXCURSION_WARMUP"
+    assert first["asymmetric_calibration_source"] == "HISTORICAL_EXCURSION_WARMUP"
+
+    # Calibration switches only after 20 earlier, matured model forecasts.
+    matured = predictions.loc[
+        predictions["calibration_model_rows"] >= 20
+    ]
+    assert not matured.empty
+    assert matured["calibration_source"].eq("ONLINE_CONFORMAL_MODEL_RESIDUALS").all()
+    assert matured["asymmetric_calibration_source"].eq("ONLINE_ASYMMETRIC_MODEL_RESIDUALS").all()
+
+
+def test_calibration_warmup_does_not_use_future_candles():
+    data = _candles(145)
+    first, _ = tune_and_compare(data, min_train=80, estimator="ridge")
+    changed = data.copy()
+    changed.loc[120:, ["open", "high", "low", "close"]] *= 1.07
+    second, _ = tune_and_compare(changed, min_train=80, estimator="ridge")
+    cols = [
+        "conformal_low", "conformal_high", "asymmetric_conformal_low",
+        "asymmetric_conformal_high", "calibration_source",
+        "asymmetric_calibration_source", "calibration_model_rows",
+    ]
+    for col in cols:
+        assert first.loc[110, col] == pytest.approx(second.loc[110, col], nan_ok=True) if col not in {
+            "calibration_source", "asymmetric_calibration_source"
+        } else first.loc[110, col] == second.loc[110, col]
+
+
 def test_invalid_coverage_is_rejected():
     with pytest.raises(ValueError, match="target_coverage"):
         tune_and_compare(_candles(), target_coverage=1.0, estimator="ridge")
