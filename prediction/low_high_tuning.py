@@ -311,9 +311,11 @@ def tune_and_compare(
         "methods": {name: _metrics(evaluated, low, high, target_coverage) for name, (low, high) in methods.items()},
         "point_forecast": _point_metrics(evaluated),
         "calibration_note": (
-            "Online conformal expansion uses only earlier model forecast misses. The asymmetric conformal variant estimates lower and upper misses separately with finite-sample tail quantiles. "
-            "Historical asymmetric quantiles use a fixed equal-tail quantile level from completed prior excursions; no rolling grid search is used. All main methods are evaluated on later candles only. "
-            "Metrics are out-of-sample walk-forward results, not proof of future performance."
+            "Online conformal expansion uses only earlier trained-model forecast misses after a 20-row calibration warm-up. "
+            "During warm-up, a historical-excursion envelope from completed candles prevents zero-width/zero-expansion under-calibration; the source is recorded per row. "
+            "The asymmetric conformal variant estimates lower and upper misses separately with finite-sample tail quantiles after warm-up. "
+            "Historical asymmetric quantiles use a fixed equal-tail quantile level from completed prior excursions; no rolling grid search is used. "
+            "All main methods are evaluated on later candles only. Metrics are out-of-sample walk-forward results, not proof of future performance."
         ),
     }
     return out, summary
