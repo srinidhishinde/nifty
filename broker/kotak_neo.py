@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from config.settings import settings
@@ -326,11 +327,20 @@ class KotakNeoBroker:
         The health report must come from reliability.failure_guard.assess_health.
         """
 
-        return bool(
-            settings.live_trading_allowed()
-            and health_report is not None
-            and getattr(health_report, "live_orders_allowed", False) is True
-        )
+        if not settings.live_trading_allowed() or health_report is None:
+            return False
+        if getattr(health_report, "live_orders_allowed", False) is not True:
+            return False
+        checked_at = getattr(health_report, "checked_at_utc", None)
+        try:
+            parsed = datetime.fromisoformat(str(checked_at).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return False
+            age_seconds = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            return False
+        # A future-dated or older-than-90-second report is not current evidence.
+        return 0 <= age_seconds <= 90
 
     def place_order(self, *args: Any, **kwargs: Any) -> Any:
         """
