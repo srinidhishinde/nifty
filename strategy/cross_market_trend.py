@@ -144,7 +144,8 @@ def aggregate_context(
     denominator = 0.0
     for instrument, snapshot in snapshots.items():
         weight = float(weights.get(instrument.upper(), 0.0))
-        if snapshot.direction == "DATA_INSUFFICIENT" or weight <= 0:
+        if snapshot.direction not in {"STRONG_UP", "UP", "RANGE", "DOWN", "STRONG_DOWN"} or weight <= 0:
+            # Missing/stale data must not dilute or bias the aggregate context score.
             continue
         numerator += snapshot.score * weight
         denominator += weight
