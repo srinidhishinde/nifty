@@ -47,7 +47,7 @@ def render_one_minute_live_workspace() -> None:
         historical_root = Path(__file__).resolve().parents[1] / "data" / "backtest" / "kotak"
         if historical_root.exists():
             for path in historical_root.glob("*_1min.csv"):
-                match = re.match(r"^(?P<symbol>.+?)(?P<strike>\\d+(?:\\.\\d+)?)(?P<type>CE|PE)_(?P<day>\\d{4}-\\d{2}-\\d{2})_1min\\.csv$", path.name, re.I)
+                match = re.match(r"^(?P<symbol>.+?)(?P<strike>\d+(?:\.\d+)?)(?P<type>CE|PE)_(?P<day>\d{4}-\d{2}-\d{2})_1min\.csv$", path.name, re.I)
                 if not match:
                     continue
                 try:
