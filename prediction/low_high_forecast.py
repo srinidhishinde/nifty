@@ -88,6 +88,28 @@ def _features(frame: pd.DataFrame) -> pd.DataFrame:
     return feats.replace([np.inf, -np.inf], np.nan)
 
 
+def _adaptive_excursion_quantiles(values: np.ndarray, recent_window: int = 40) -> tuple[float, float]:
+    """Return recency-weighted q80/q95 excursion sizes using past observations only.
+
+    A short recent window reacts to volatility regime changes faster than a
+    full-session quantile, while the full history retains a stabilizing anchor.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    values = np.maximum(values, 0.0)
+    if not len(values):
+        return 0.0, 0.0
+    recent = values[-max(1, recent_window):]
+    recent_q80 = float(np.quantile(recent, 0.80))
+    recent_q95 = float(np.quantile(recent, 0.95))
+    global_q80 = float(np.quantile(values, 0.80))
+    global_q95 = float(np.quantile(values, 0.95))
+    # Recent conditions get more weight, while longer history damps noise.
+    q80 = 0.75 * recent_q80 + 0.25 * global_q80
+    q95 = 0.75 * recent_q95 + 0.25 * global_q95
+    return q80, max(q80, q95)
+
+
 def _direction_label(value: float, reference: float, tolerance: float = 0.015) -> str:
     """Label price direction; keep tiny moves neutral to avoid noisy labels."""
     delta = float(value) - float(reference)
@@ -198,10 +220,10 @@ def walk_forward_low_high(
                     down_excursions = np.maximum(hist_anchor - hist["low"].to_numpy(dtype=float), 0.0)
                     up_excursions = np.maximum(hist["high"].to_numpy(dtype=float) - hist_anchor, 0.0)
                     if len(down_excursions) >= 20:
-                        down_q80 = float(np.quantile(down_excursions, 0.80))
-                        up_q80 = float(np.quantile(up_excursions, 0.80))
-                        down_q95 = float(np.quantile(down_excursions, 0.95))
-                        up_q95 = float(np.quantile(up_excursions, 0.95))
+                        # Recency-weighted quantiles adapt faster than a whole-session
+                        # quantile when the option's volatility regime changes.
+                        down_q80, down_q95 = _adaptive_excursion_quantiles(down_excursions)
+                        up_q80, up_q95 = _adaptive_excursion_quantiles(up_excursions)
                     else:
                         down_q80 = up_q80 = band
                         down_q95 = up_q95 = max(2.0 * band, band)
