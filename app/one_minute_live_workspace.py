@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from marketdata.daily_store import load_captured_candles
+from marketdata.daily_store import DailyMarketStore, load_captured_candles
 from prediction.live_direction_forecast import predict_live_direction
 from prediction.next_minute_forecast import forecast_next_minute
 
@@ -31,15 +31,72 @@ def render_one_minute_live_workspace() -> None:
             st.session_state["one_minute_live_force_refresh"] = True
 
         now = pd.Timestamp.now(tz="Asia/Kolkata")
+        st.markdown("#### Live mode · select an option contract")
+        try:
+            chain, chain_timestamp = DailyMarketStore().load_latest_option_chain_snapshot(
+                "NIFTY", before=now
+            )
+        except Exception as exc:
+            st.error(f"Could not load the latest real Kotak option chain: {exc}")
+            return
+
+        if chain.empty:
+            st.warning(
+                "No real Kotak NIFTY option-chain snapshot is available. Refresh the broker option chain "
+                "in the main dashboard while connected; live prediction is withheld until a real chain is available."
+            )
+            return
+
+        chain = chain.copy()
+        chain["option_type"] = chain["option_type"].astype(str).str.upper().str.strip()
+        chain["strike"] = pd.to_numeric(chain.get("strike"), errors="coerce")
+        chain = chain.dropna(subset=["strike"])
+        if "expiry" not in chain.columns:
+            chain["expiry"] = ""
+        if "symbol" not in chain.columns:
+            st.warning("The captured option chain does not contain contract symbols; cannot select a live contract.")
+            return
+
+        expiries = sorted(str(v) for v in chain["expiry"].dropna().unique() if str(v).strip())
+        if not expiries:
+            st.warning("The real option-chain snapshot has no usable expiry field.")
+            return
+        expiry = st.selectbox("Expiry", expiries, key="one_minute_live_expiry")
+        expiry_chain = chain[chain["expiry"].astype(str) == expiry].copy()
+        types = [t for t in ["CE", "PE"] if t in set(expiry_chain["option_type"])]
+        if not types:
+            st.warning("No CE/PE contracts are available for the selected expiry.")
+            return
+        option_type = st.selectbox("Option type", types, key="one_minute_live_option_type")
+        type_chain = expiry_chain[expiry_chain["option_type"] == option_type].copy()
+        strikes = sorted(float(v) for v in type_chain["strike"].dropna().unique())
+        if not strikes:
+            st.warning("No strikes are available for the selected option type.")
+            return
+        strike = st.selectbox("Strike", strikes, key="one_minute_live_strike")
+        matches = type_chain[type_chain["strike"] == strike]
+        if matches.empty:
+            st.warning("Selected contract is no longer present in the latest option-chain snapshot.")
+            return
+        contract = matches.iloc[0]
+        contract_symbol = str(contract["symbol"]).strip()
+        if not contract_symbol:
+            st.warning("Selected option contract has no broker symbol; prediction is withheld.")
+            return
+
+        st.caption(
+            f"Selected contract: {contract_symbol} · {option_type} {strike:g} · expiry {expiry} · "
+            f"option-chain snapshot: {chain_timestamp if chain_timestamp is not None else 'timestamp unavailable'}"
+        )
         try:
             start = now.date() - pd.Timedelta(days=5)
             frame, source = load_captured_candles(
-                "NIFTY",
+                contract_symbol,
                 start=start,
                 end=now.date(),
             )
         except Exception as exc:
-            st.error(f"Could not load persisted Kotak one-minute candles: {exc}")
+            st.error(f"Could not load captured one-minute candles for {contract_symbol}: {exc}")
             return
 
         required = ["timestamp", "open", "high", "low", "close", "volume"]
@@ -78,7 +135,7 @@ def render_one_minute_live_workspace() -> None:
         latest_ts = frame["timestamp"].iloc[-1]
         age_seconds = max(0.0, (pd.Timestamp.now(tz="UTC") - latest_ts).total_seconds())
         metrics = st.columns(4)
-        metrics[0].metric("Data source", "KOTAK SFEED")
+        metrics[0].metric("Mode", "LIVE")
         metrics[1].metric("Captured candles", f"{len(frame):,}")
         metrics[2].metric("Latest close", f"₹{float(frame['close'].iloc[-1]):,.2f}")
         metrics[3].metric("Latest candle age", f"{age_seconds / 60:.1f} min")
@@ -92,7 +149,7 @@ def render_one_minute_live_workspace() -> None:
                     high=chart_frame["high"],
                     low=chart_frame["low"],
                     close=chart_frame["close"],
-                    name="NIFTY 1m",
+                    name=f"{contract_symbol} 1m",
                 )
             ]
         )
@@ -125,7 +182,7 @@ def render_one_minute_live_workspace() -> None:
             )
             range_forecast = forecast_next_minute(
                 frame,
-                underlying="NIFTY",
+                underlying=contract_symbol,
                 lookback=min(30, max(5, len(frame) - 1)),
                 quantile=0.90,
                 range_method="adaptive",
@@ -149,4 +206,4 @@ def render_one_minute_live_workspace() -> None:
         )
         if direction["method"] == "MOMENTUM_FALLBACK":
             st.warning("Momentum fallback is active; this is not a trained classifier forecast.")
-        st.info("Research/paper guidance only. This panel does not submit or authorize broker orders.")
+        st.info("LIVE DATA FORECAST for the selected option contract only. Advisory/paper use; no broker orders are submitted.")
