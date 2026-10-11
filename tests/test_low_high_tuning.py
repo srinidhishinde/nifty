@@ -42,6 +42,8 @@ def test_tuning_compares_model_and_simple_baselines():
     assert point["rows"] == 144
     assert point["low_mae"] >= 0
     assert point["high_mae"] >= 0
+    assert point["close_mae"] >= 0
+    assert 0 <= point["directional_accuracy_pct"] <= 100
     assert point["low_p90_absolute_error"] >= point["low_median_absolute_error"]
     assert point["high_p90_absolute_error"] >= point["high_median_absolute_error"]
     assert "full_range_coverage_pct" not in point
