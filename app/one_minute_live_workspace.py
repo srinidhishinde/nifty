@@ -160,7 +160,17 @@ def render_one_minute_live_workspace() -> None:
             return
 
         frame = frame[required].copy()
-        frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
+        parsed_timestamps = pd.to_datetime(frame["timestamp"], errors="coerce")
+        try:
+            if parsed_timestamps.dt.tz is None:
+                # Historical CSV timestamps are typically naive IST; do not
+                # misinterpret them as UTC or the freshness check will be wrong.
+                parsed_timestamps = parsed_timestamps.dt.tz_localize("Asia/Kolkata")
+            else:
+                parsed_timestamps = parsed_timestamps.dt.tz_convert("Asia/Kolkata")
+            frame["timestamp"] = parsed_timestamps.dt.tz_convert("UTC")
+        except (AttributeError, TypeError, ValueError):
+            frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
         for column in required[1:]:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
         frame = (
