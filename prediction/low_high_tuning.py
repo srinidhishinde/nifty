@@ -16,6 +16,19 @@ import pandas as pd
 from prediction.low_high_forecast import walk_forward_low_high
 
 
+def _adaptive_historical_quantile(values: np.ndarray, quantile: float, recent_window: int = 40) -> float:
+    """Blend recent and full-history excursion quantiles without lookahead."""
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    values = np.maximum(values, 0.0)
+    if not len(values):
+        return 0.0
+    recent = values[-max(1, recent_window):]
+    recent_q = float(np.quantile(recent, quantile))
+    history_q = float(np.quantile(values, quantile))
+    return 0.75 * recent_q + 0.25 * history_q
+
+
 def _finite_sample_quantile(values: np.ndarray, coverage: float) -> float:
     """Conservative order-statistic quantile (finite-sample conformal form)."""
     values = np.asarray(values, dtype=float)
@@ -212,8 +225,10 @@ def tune_and_compare(
             out.loc[i, "median_range_low"] = max(0.01, anchor - half_median)
             out.loc[i, "median_range_high"] = anchor + half_median
         if len(down):
-            down_q = _finite_sample_quantile(down, q_each_side)
-            up_q = _finite_sample_quantile(up, q_each_side)
+            # Adapt to recent volatility while retaining a long-history
+            # anchor. The quantile sees completed candles only.
+            down_q = _adaptive_historical_quantile(down, q_each_side)
+            up_q = _adaptive_historical_quantile(up, q_each_side)
             out.loc[i, "historical_quantile_low"] = max(0.01, anchor - down_q)
             out.loc[i, "historical_quantile_high"] = anchor + up_q
 
@@ -222,8 +237,8 @@ def tune_and_compare(
             # that adds selection noise and can make in-sample coverage look
             # better without reliable out-of-sample improvement.
             qd = qu = q_each_side
-            hist_down = _finite_sample_quantile(down, qd)
-            hist_up = _finite_sample_quantile(up, qu)
+            hist_down = _adaptive_historical_quantile(down, qd)
+            hist_up = _adaptive_historical_quantile(up, qu)
             out.loc[i, "historical_asymmetric_quantile_low"] = max(0.01, anchor - hist_down)
             out.loc[i, "historical_asymmetric_quantile_high"] = anchor + hist_up
             out.loc[i, "historical_down_quantile_level"] = qd
