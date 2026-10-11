@@ -36,6 +36,58 @@ def load_session(path: Path) -> pd.DataFrame:
     return _prepare(frame)
 
 
+
+def _direction_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Build causal direction features from candles known at the forecast origin.
+
+    Every rolling statistic includes only the current and earlier candles.
+    Timestamp features use the exchange's local clock (Asia/Kolkata).
+    """
+    base = _features(frame).loc[:, list(FEATURE_COLUMNS)].copy()
+    close = frame["close"].astype(float)
+    open_ = frame["open"].astype(float)
+    high = frame["high"].astype(float)
+    low = frame["low"].astype(float)
+    volume = frame["volume"].astype(float) if "volume" in frame else pd.Series(0.0, index=frame.index)
+
+    returns = close.pct_change()
+    for lag in (3, 10):
+        base[f"ret_{lag}"] = close.pct_change(lag)
+    base["return_acceleration"] = returns - returns.shift(1)
+
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [(high - low), (high - previous_close).abs(), (low - previous_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    atr14 = true_range.rolling(14, min_periods=5).mean()
+    base["atr_pct_14"] = atr14 / close.replace(0, np.nan)
+    base["range_to_atr"] = (high - low) / atr14.replace(0, np.nan)
+    base["close_location"] = (
+        (close - low) / (high - low).replace(0, np.nan)
+    ).clip(0.0, 1.0)
+    base["gap_pct"] = (open_ / previous_close.replace(0, np.nan)) - 1.0
+
+    vol5 = returns.rolling(5, min_periods=3).std()
+    vol20 = returns.rolling(20, min_periods=8).std()
+    base["volatility_ratio_5_20"] = vol5 / vol20.replace(0, np.nan)
+    vol_mean = volume.rolling(20, min_periods=5).mean()
+    vol_std = volume.rolling(20, min_periods=5).std()
+    base["volume_zscore_20"] = ((volume - vol_mean) / vol_std.replace(0, np.nan)).clip(-8, 8)
+
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14, min_periods=5).mean()
+    loss = (-delta.clip(upper=0)).rolling(14, min_periods=5).mean()
+    rs = gain / loss.replace(0, np.nan)
+    base["rsi_14"] = (100.0 - (100.0 / (1.0 + rs))).fillna(50.0)
+
+    local_time = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dt.tz_convert("Asia/Kolkata")
+    minute = local_time.dt.hour * 60 + local_time.dt.minute
+    angle = 2.0 * np.pi * (minute - (9 * 60 + 15)) / (6 * 60 + 15)
+    base["session_time_sin"] = np.sin(angle)
+    base["session_time_cos"] = np.cos(angle)
+    return base.replace([np.inf, -np.inf], np.nan)
+
 def _classifier(name: str, seed: int):
     if name == "logistic":
         return make_pipeline(
@@ -64,7 +116,7 @@ def _classifier(name: str, seed: int):
 
 def evaluate(path: Path, *, min_train: int, estimator: str, tolerance: float) -> dict:
     frame = load_session(path)
-    features = _features(frame).loc[:, list(FEATURE_COLUMNS)]
+    features = _direction_features(frame)
     # A training row at origin j has label from candle j+1, never candle j.
     labels = []
     for j in range(len(frame) - 1):
