@@ -11,6 +11,7 @@ on:
     branches:
       - main
       - master
+      - "feature/**"
   workflow_dispatch:
 
 permissions:
