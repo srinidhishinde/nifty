@@ -242,26 +242,49 @@ def walk_forward_low_high(
     predictions = pd.DataFrame(rows)
     if predictions.empty:
         return LowHighForecastResult(predictions, {"rows": 0}, "INSUFFICIENT_DATA")
-    actual_width = float(predictions["actual_width"].mean())
-    predicted_width = float(predictions["predicted_width"].mean())
+    # Score pre-open forecasts separately from the first candle's open-anchored
+    # estimate. The first row is still emitted, but it must not inflate or distort
+    # the main walk-forward metrics.
+    scored = predictions.loc[predictions["origin_timestamp"].notna()].copy()
+    opening = predictions.iloc[0]
+    if scored.empty:
+        return LowHighForecastResult(predictions, {
+            "rows": int(len(predictions)),
+            "expected_rows": int(len(frame)),
+            "forecast_rows_complete": bool(len(predictions) == len(frame)),
+            "evaluated_forecast_rows": 0,
+            "opening_low_abs_error": float(opening["low_abs_error"]),
+            "opening_high_abs_error": float(opening["high_abs_error"]),
+            "opening_full_range_covered": int(bool(opening["full_range_covered"])),
+            "status": "INSUFFICIENT_DATA",
+        }, "INSUFFICIENT_DATA")
+    actual_width = float(scored["actual_width"].mean())
+    predicted_width = float(scored["predicted_width"].mean())
+    point_low_rows = scored.loc[scored["point_predicted_low"].notna()]
+    point_high_rows = scored.loc[scored["point_predicted_high"].notna()]
     metrics: dict[str, float | int | str] = {
         "rows": int(len(predictions)),
         "expected_rows": int(len(frame)),
         "forecast_rows_complete": bool(len(predictions) == len(frame)),
-        "model_forecast_rows": int(predictions["forecast_method"].str.contains("MODEL_").sum()),
-        "fallback_forecast_rows": int((~predictions["forecast_method"].str.contains("MODEL_")).sum()),
-        "low_mae": float(mean_absolute_error(predictions["actual_low"], predictions["predicted_low"])),
-        "high_mae": float(mean_absolute_error(predictions["actual_high"], predictions["predicted_high"])),
-        "point_low_mae": float(mean_absolute_error(predictions.loc[predictions["point_predicted_low"].notna(), "actual_low"], predictions.loc[predictions["point_predicted_low"].notna(), "point_predicted_low"])),
-        "point_high_mae": float(mean_absolute_error(predictions.loc[predictions["point_predicted_high"].notna(), "actual_high"], predictions.loc[predictions["point_predicted_high"].notna(), "point_predicted_high"])),
-        "close_mae": float(mean_absolute_error(predictions.loc[predictions["origin_timestamp"].notna(), "actual_close"], predictions.loc[predictions["origin_timestamp"].notna(), "predicted_close"])),
-        "directional_accuracy_pct": float((predictions.loc[predictions["origin_timestamp"].notna(), "predicted_direction"] == predictions.loc[predictions["origin_timestamp"].notna(), "actual_direction"]).mean() * 100),
-        "low_coverage_pct": float(predictions["low_covered"].mean() * 100),
-        "high_coverage_pct": float(predictions["high_covered"].mean() * 100),
-        "full_range_coverage_pct": float(predictions["full_range_covered"].mean() * 100),
+        "evaluated_forecast_rows": int(len(scored)),
+        "model_forecast_rows": int(scored["forecast_method"].str.contains("MODEL_").sum()),
+        "fallback_forecast_rows": int((~scored["forecast_method"].str.contains("MODEL_")).sum()),
+        "low_mae": float(mean_absolute_error(scored["actual_low"], scored["predicted_low"])),
+        "high_mae": float(mean_absolute_error(scored["actual_high"], scored["predicted_high"])),
+        "point_low_mae": float(mean_absolute_error(point_low_rows["actual_low"], point_low_rows["point_predicted_low"])),
+        "point_high_mae": float(mean_absolute_error(point_high_rows["actual_high"], point_high_rows["point_predicted_high"])),
+        "close_mae": float(mean_absolute_error(scored["actual_close"], scored["predicted_close"])),
+        "directional_accuracy_pct": float((scored["predicted_direction"] == scored["actual_direction"]).mean() * 100),
+        "low_coverage_pct": float(scored["low_covered"].mean() * 100),
+        "high_coverage_pct": float(scored["high_covered"].mean() * 100),
+        "full_range_coverage_pct": float(scored["full_range_covered"].mean() * 100),
         "mean_predicted_width": predicted_width,
         "mean_actual_width": actual_width,
         "width_ratio": predicted_width / max(actual_width, 1e-12),
+        "opening_low_abs_error": float(opening["low_abs_error"]),
+        "opening_high_abs_error": float(opening["high_abs_error"]),
+        "opening_full_range_covered": int(bool(opening["full_range_covered"])),
+        "opening_forecast_note": "Open-anchored estimate is scored separately and is not a pre-open forecast.",
         "status": "EVALUATED",
     }
     return LowHighForecastResult(predictions, metrics, "EVALUATED")
