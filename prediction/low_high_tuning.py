@@ -175,6 +175,9 @@ def tune_and_compare(
     out["historical_down_quantile_level"] = np.nan
     out["historical_up_quantile_level"] = np.nan
     out["conformal_expansion"] = np.nan
+    # Audit trail: number of earlier trained-model forecasts used to calibrate
+    # each row. Zero means calibration is not yet mature.
+    out["calibration_model_rows"] = 0
     out["historical_down_quantile"] = np.nan
     out["historical_up_quantile"] = np.nan
 
@@ -192,6 +195,7 @@ def tune_and_compare(
         past = prior_rows.loc[
             prior_rows["forecast_method"].astype(str).str.contains("MODEL_", regex=False)
         ]
+        out.loc[i, "calibration_model_rows"] = int(len(past))
         scores = np.maximum(
             np.maximum(past["model_low"].to_numpy(dtype=float) - past["actual_low"].to_numpy(dtype=float), 0.0),
             np.maximum(past["actual_high"].to_numpy(dtype=float) - past["model_high"].to_numpy(dtype=float), 0.0),
