@@ -129,7 +129,8 @@ def evaluate(path: Path, *, min_train: int, estimator: str, tolerance: float) ->
     baseline_arr = np.asarray(baseline, dtype=object)
     directional = np.isin(actual_arr, ["UP", "DOWN"])
     actual_dir, pred_dir = actual_arr[directional], pred_arr[directional]
-    classifier_rows = np.asarray(forecast_methods, dtype=object)[directional] == "WALK_FORWARD_CLASSIFIER"
+    classifier_rows = np.asarray(forecast_methods, dtype=object) == "WALK_FORWARD_CLASSIFIER"
+    directional_classifier_rows = classifier_rows[directional]
     all_correct = int((pred_arr == actual_arr).sum())
     all_targets = int(len(actual_arr))
     directional_correct = int((pred_dir == actual_dir).sum())
@@ -145,7 +146,8 @@ def evaluate(path: Path, *, min_train: int, estimator: str, tolerance: float) ->
         "momentum_baseline_accuracy_pct": round(float((baseline_arr == actual_arr).mean() * 100), 4) if all_targets else 0.0,
         "momentum_baseline_directional_accuracy_pct": round(float((baseline_arr[directional] == actual_dir).mean() * 100), 4) if len(actual_dir) else 0.0,
         "walk_forward_classifier_predictions": int(classifier_rows.sum()),
-        "fallback_predictions": int((~(np.asarray(forecast_methods, dtype=object) == "WALK_FORWARD_CLASSIFIER")).sum()),
+        "directional_classifier_predictions": int(directional_classifier_rows.sum()),
+        "fallback_predictions": int((~classifier_rows).sum()),
         "flat_actual_targets": int((~directional).sum()),
         "label_tolerance": tolerance,
         "prediction_policy": "always UP/DOWN; flat actual outcomes count as misses for binary forecasts",
