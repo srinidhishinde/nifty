@@ -81,3 +81,39 @@ def test_incident_log_is_append_only_jsonl(tmp_path):
     append_incident(path, report, context={"environment": "PAPER"})
     append_incident(path, report, context={"environment": "PAPER"})
     assert len(path.read_text(encoding="utf-8").splitlines()) == 2
+
+
+
+def test_broker_order_gate_requires_current_health_report(monkeypatch):
+    from types import SimpleNamespace
+    from broker.kotak_neo import KotakNeoBroker
+
+    monkeypatch.setattr("broker.kotak_neo.settings.live_trading_allowed", lambda: True)
+    broker = KotakNeoBroker()
+    assert broker.orders_allowed() is False
+    assert broker.orders_allowed(SimpleNamespace(live_orders_allowed=False)) is False
+    assert broker.orders_allowed(SimpleNamespace(live_orders_allowed=True)) is True
+
+
+def test_broker_place_order_fails_closed_without_health_report(monkeypatch):
+    import pytest
+    from broker.kotak_neo import KotakNeoBroker
+
+    monkeypatch.setattr("broker.kotak_neo.settings.live_trading_allowed", lambda: True)
+    broker = KotakNeoBroker()
+    with pytest.raises(RuntimeError, match="health report"):
+        broker.place_order(symbol="NIFTY", quantity=1)
+
+
+def test_broker_order_remains_unimplemented_even_when_guard_passes(monkeypatch):
+    import pytest
+    from types import SimpleNamespace
+    from broker.kotak_neo import KotakNeoBroker
+
+    monkeypatch.setattr("broker.kotak_neo.settings.live_trading_allowed", lambda: True)
+    broker = KotakNeoBroker()
+    with pytest.raises(NotImplementedError, match="order routing"):
+        broker.place_order(
+            symbol="NIFTY", quantity=1,
+            health_report=SimpleNamespace(live_orders_allowed=True),
+        )
