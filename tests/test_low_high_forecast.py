@@ -32,6 +32,11 @@ def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
     assert result.metrics["forecast_rows_complete"] is True
     assert result.predictions["target_timestamp"].reset_index(drop=True).equals(pd.to_datetime(data["timestamp"], utc=True).reset_index(drop=True))
     assert result.predictions["forecast_method"].notna().all()
+    assert {"point_predicted_low", "point_predicted_high"}.issubset(result.predictions.columns)
+    assert result.predictions.loc[1:, "point_predicted_low"].notna().all()
+    assert result.predictions.loc[1:, "point_predicted_high"].notna().all()
+    assert result.metrics["point_low_mae"] >= 0
+    assert result.metrics["point_high_mae"] >= 0
     assert result.predictions.iloc[0]["forecast_method"] == "OPEN_FALLBACK_NO_PRIOR_HISTORY"
     assert result.metrics["fallback_forecast_rows"] > 0
     assert result.predictions["origin_timestamp"].isna().iloc[0]
