@@ -318,13 +318,19 @@ class KotakNeoBroker:
     # Order safety
     # --------------------------------------------------
 
-    def orders_allowed(self) -> bool:
+    def orders_allowed(self, health_report: Any | None = None) -> bool:
         """
-        Deliberately refuses live order submission unless
-        the project's explicit safety gate is enabled.
+        Fail closed unless configuration AND current health evidence pass.
+
+        A missing/stale health report never inherits permission from settings.
+        The health report must come from reliability.failure_guard.assess_health.
         """
 
-        return settings.live_trading_allowed()
+        return bool(
+            settings.live_trading_allowed()
+            and health_report is not None
+            and getattr(health_report, "live_orders_allowed", False) is True
+        )
 
     def place_order(self, *args: Any, **kwargs: Any) -> Any:
         """
@@ -334,12 +340,13 @@ class KotakNeoBroker:
         option-selection, paper-execution and safety testing.
         """
 
-        if not self.orders_allowed():
+        health_report = kwargs.pop("health_report", None)
+        if not self.orders_allowed(health_report):
 
             raise RuntimeError(
-                "Live order submission is disabled. "
-                "Enable production live-trading configuration "
-                "only after completing validation."
+                "Live order submission is disabled: explicit configuration and "
+                "a current passing failure-health report are both required. "
+                "Missing or failed health evidence keeps execution locked."
             )
 
         raise NotImplementedError(
