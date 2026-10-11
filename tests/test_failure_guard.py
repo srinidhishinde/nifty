@@ -96,7 +96,8 @@ def test_broker_order_gate_requires_current_health_report(monkeypatch):
         live_orders_allowed=True,
         checked_at_utc=datetime.now(timezone.utc).isoformat(),
     )
-    assert broker.orders_allowed(fresh) is True
+    # Live order execution is hard-disabled even with a fresh passing report.
+    assert broker.orders_allowed(fresh) is False
     stale = SimpleNamespace(
         live_orders_allowed=True,
         checked_at_utc=(datetime.now(timezone.utc) - timedelta(seconds=91)).isoformat(),
@@ -121,7 +122,7 @@ def test_broker_order_remains_unimplemented_even_when_guard_passes(monkeypatch):
 
     monkeypatch.setattr("config.settings.Settings.live_trading_allowed", lambda self: True)
     broker = KotakNeoBroker()
-    with pytest.raises(NotImplementedError, match="order routing"):
+    with pytest.raises(RuntimeError, match="hard-disabled"):
         broker.place_order(
             symbol="NIFTY", quantity=1,
             health_report=SimpleNamespace(
