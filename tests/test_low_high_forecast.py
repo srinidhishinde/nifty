@@ -41,6 +41,11 @@ def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
     assert set(result.predictions["actual_direction"].unique()).issubset({"UP", "DOWN", "FLAT"})
     assert result.metrics["close_mae"] >= 0
     assert 0 <= result.metrics["directional_accuracy_pct"] <= 100
+    assert result.metrics["directional_target_rows"] >= result.metrics["conditional_directional_scored_rows"]
+    assert result.metrics["directional_correct_rows"] <= result.metrics["directional_target_rows"]
+    assert 0 <= result.metrics["directional_target_coverage_pct"] <= 100
+    assert 0 <= result.metrics["conditional_directional_accuracy_pct"] <= 100
+    assert 0 <= result.metrics["three_class_accuracy_pct"] <= 100
     assert result.predictions.loc[1:, "point_predicted_low"].notna().all()
     assert result.predictions.loc[1:, "point_predicted_high"].notna().all()
     assert result.metrics["point_low_mae"] >= 0
