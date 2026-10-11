@@ -129,6 +129,8 @@ def walk_forward_low_high(
         "high_return": frame["high"].shift(-1) / origin_close - 1.0,
         "actual_low": frame["low"].shift(-1),
         "actual_high": frame["high"].shift(-1),
+        "close_return": frame["close"].shift(-1) / origin_close - 1.0,
+        "actual_close": frame["close"].shift(-1),
         "target_timestamp": frame["timestamp"].shift(-1),
     })
     rows: list[dict[str, Any]] = []
@@ -142,6 +144,8 @@ def walk_forward_low_high(
             anchor = float(target["open"])
             band = max(anchor * 0.005, 0.01)
             predicted_low, predicted_high = anchor - band, anchor + band
+            point_low, point_high = anchor - band / 2.0, anchor + band / 2.0
+            predicted_close = anchor
             method = "OPEN_FALLBACK_NO_PRIOR_HISTORY"
             origin_ts = pd.NaT
         else:
@@ -157,15 +161,19 @@ def walk_forward_low_high(
                 x_train = features.iloc[:origin_idx]
                 y_low = targets["low_return"].iloc[:origin_idx]
                 y_high = targets["high_return"].iloc[:origin_idx]
-                valid = x_train.notna().all(axis=1) & y_low.notna() & y_high.notna()
+                y_close = targets["close_return"].iloc[:origin_idx]
+                valid = x_train.notna().all(axis=1) & y_low.notna() & y_high.notna() & y_close.notna()
                 if int(valid.sum()) >= min_train:
                     x_now = features.iloc[[origin_idx]]
                     low_model = _model(seed, estimator)
                     high_model = _model(seed + 1, estimator)
+                    close_model = _model(seed + 2, estimator)
                     low_model.fit(x_train.loc[valid], y_low.loc[valid])
                     high_model.fit(x_train.loc[valid], y_high.loc[valid])
+                    close_model.fit(x_train.loc[valid], y_close.loc[valid])
                     raw_low = anchor * (1.0 + float(low_model.predict(x_now)[0]))
                     raw_high = anchor * (1.0 + float(high_model.predict(x_now)[0]))
+                    predicted_close = anchor * (1.0 + float(close_model.predict(x_now)[0]))
                     # Preserve raw point estimates separately from the wider
                     # calibrated interval. Bounds are sorted to prevent an
                     # inverted low/high pair if regressors cross.
@@ -199,10 +207,12 @@ def walk_forward_low_high(
                 else:
                     predicted_low, predicted_high = anchor - band, anchor + band
                     point_low, point_high = anchor - band / 2.0, anchor + band / 2.0
+                    predicted_close = anchor
                     method = "HISTORICAL_RANGE_FALLBACK"
             else:
                 predicted_low, predicted_high = anchor - band, anchor + band
                 point_low, point_high = anchor - band / 2.0, anchor + band / 2.0
+                predicted_close = anchor
         predicted_low = max(0.01, min(predicted_low, predicted_high))
         predicted_high = max(predicted_low, predicted_high)
         actual_low = float(target["low"])
@@ -214,6 +224,10 @@ def walk_forward_low_high(
             "predicted_high": predicted_high,
             "point_predicted_low": point_low if target_idx > 0 else np.nan,
             "point_predicted_high": point_high if target_idx > 0 else np.nan,
+            "predicted_close": predicted_close,
+            "predicted_direction": "UP" if predicted_close >= anchor else "DOWN",
+            "actual_close": float(target["close"]),
+            "actual_direction": "UP" if float(target["close"]) >= anchor else "DOWN",
             "actual_low": actual_low,
             "actual_high": actual_high,
             "low_abs_error": abs(predicted_low - actual_low),
@@ -240,6 +254,8 @@ def walk_forward_low_high(
         "high_mae": float(mean_absolute_error(predictions["actual_high"], predictions["predicted_high"])),
         "point_low_mae": float(mean_absolute_error(predictions.loc[predictions["point_predicted_low"].notna(), "actual_low"], predictions.loc[predictions["point_predicted_low"].notna(), "point_predicted_low"])),
         "point_high_mae": float(mean_absolute_error(predictions.loc[predictions["point_predicted_high"].notna(), "actual_high"], predictions.loc[predictions["point_predicted_high"].notna(), "point_predicted_high"])),
+        "close_mae": float(mean_absolute_error(predictions.loc[predictions["origin_timestamp"].notna(), "actual_close"], predictions.loc[predictions["origin_timestamp"].notna(), "predicted_close"])),
+        "directional_accuracy_pct": float((predictions.loc[predictions["origin_timestamp"].notna(), "predicted_direction"] == predictions.loc[predictions["origin_timestamp"].notna(), "actual_direction"]).mean() * 100),
         "low_coverage_pct": float(predictions["low_covered"].mean() * 100),
         "high_coverage_pct": float(predictions["high_covered"].mean() * 100),
         "full_range_coverage_pct": float(predictions["full_range_covered"].mean() * 100),
