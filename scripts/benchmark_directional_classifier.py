@@ -81,7 +81,9 @@ def evaluate(path: Path, *, min_train: int, estimator: str, tolerance: float) ->
     forecast_methods = []
     # Target candle i is predicted from features at i-1. At that time, the
     # latest trainable origin is i-2 because its target candle i-1 has closed.
-    for target_idx in range(1, len(frame)):
+    # Start at target index 2: the first target has no prior close-to-close
+    # move from which to form a valid momentum fallback.
+    for target_idx in range(2, len(frame)):
         origin_idx = target_idx - 1
         train_end = origin_idx  # exclusive; origins [0, origin_idx) only
         train_x = features.iloc[:train_end]
