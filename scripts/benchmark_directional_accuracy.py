@@ -73,14 +73,14 @@ def evaluate(path: Path, min_train: int, estimator: str) -> dict:
         if idx < 2:
             continue
         baseline = _direction_label(float(frame.loc[idx - 1, "close"]), float(frame.loc[idx - 2, "close"]))
-        if baseline in {"UP", "DOWN"}:
-            baseline_rows += 1
-            baseline_correct += int(baseline == predictions.loc[idx, "actual_direction"])
+        baseline_rows += 1
+        baseline_correct += int(baseline == predictions.loc[idx, "actual_direction"])
 
     return {
         "file": str(path),
         "session_rows": int(len(frame)),
         "evaluated_directional_targets": int(target_rows),
+        "covered_directional_predictions": int(coverage_rows),
         "correct_directional_predictions": correct,
         "directional_accuracy_pct": round(100.0 * correct / target_rows, 4) if target_rows else 0.0,
         "prediction_coverage_pct": round(100.0 * coverage_rows / target_rows, 4) if target_rows else 0.0,
@@ -112,7 +112,7 @@ def main() -> int:
     sessions = [evaluate(path, args.min_train, args.estimator) for path in paths]
     target_rows = sum(item["evaluated_directional_targets"] for item in sessions)
     correct_rows = sum(item["correct_directional_predictions"] for item in sessions)
-    covered_rows = round(sum(item["evaluated_directional_targets"] * item["prediction_coverage_pct"] / 100 for item in sessions))
+    covered_rows = sum(item["covered_directional_predictions"] for item in sessions)
     accuracy = 100.0 * correct_rows / target_rows if target_rows else 0.0
     coverage = 100.0 * covered_rows / target_rows if target_rows else 0.0
     criteria = {
