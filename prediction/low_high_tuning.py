@@ -26,7 +26,7 @@ def _finite_sample_quantile(values: np.ndarray, coverage: float) -> float:
     return float(ordered[rank - 1])
 
 
-def _metrics(rows: pd.DataFrame, low_col: str, high_col: str) -> dict[str, Any]:
+def _metrics(rows: pd.DataFrame, low_col: str, high_col: str, target_coverage: float) -> dict[str, Any]:
     usable = rows.dropna(subset=[low_col, high_col, "actual_low", "actual_high"])
     if usable.empty:
         return {"rows": 0, "full_range_coverage_pct": None, "mean_predicted_width": None}
@@ -49,7 +49,7 @@ def _metrics(rows: pd.DataFrame, low_col: str, high_col: str) -> dict[str, Any]:
         "mean_predicted_width": mean_width,
         "mean_actual_width": float(actual_width.mean()),
         "width_ratio": mean_width / max(float(actual_width.mean()), 1e-12),
-        "coverage_shortfall_pct_points": max(0.0, (0.80 - coverage) * 100),
+        "coverage_shortfall_pct_points": max(0.0, (target_coverage - coverage) * 100),
     }
 
 
@@ -167,7 +167,7 @@ def tune_and_compare(
         "evaluated_forecasts": int(len(evaluated)),
         "estimator": estimator,
         "min_train": min_train,
-        "methods": {name: _metrics(evaluated, low, high) for name, (low, high) in methods.items()},
+        "methods": {name: _metrics(evaluated, low, high, target_coverage) for name, (low, high) in methods.items()},
         "calibration_note": (
             "Online conformal expansion uses only earlier model forecast misses. "
             "Historical quantile baselines use only completed prior candles. "
