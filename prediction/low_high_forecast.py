@@ -116,8 +116,8 @@ def walk_forward_low_high(
     """
     if min_train < 20:
         raise ValueError("min_train must be at least 20")
-    if step < 1:
-        raise ValueError("step must be >= 1")
+    if step != 1:
+        raise ValueError("step must be 1; this forecaster emits a prediction for every candle")
     if estimator not in {"hist_gradient_boosting", "ridge"}:
         raise ValueError("estimator must be 'hist_gradient_boosting' or 'ridge'")
     frame = _prepare(data)
