@@ -111,7 +111,7 @@ def test_broker_place_order_fails_closed_without_health_report(monkeypatch):
 
     monkeypatch.setattr("config.settings.Settings.live_trading_allowed", lambda self: True)
     broker = KotakNeoBroker()
-    with pytest.raises(RuntimeError, match="health report"):
+    with pytest.raises(RuntimeError, match="hard-disabled"):
         broker.place_order(symbol="NIFTY", quantity=1)
 
 
