@@ -88,6 +88,16 @@ def _features(frame: pd.DataFrame) -> pd.DataFrame:
     return feats.replace([np.inf, -np.inf], np.nan)
 
 
+def _direction_label(value: float, reference: float, tolerance: float = 0.01) -> str:
+    """Label price direction; treat moves within one tick as neutral."""
+    delta = float(value) - float(reference)
+    if delta > tolerance + 1e-12:
+        return "UP"
+    if delta < -tolerance - 1e-12:
+        return "DOWN"
+    return "FLAT"
+
+
 def _model(seed: int, estimator: str) -> Any:
     if estimator == "ridge":
         return make_pipeline(SimpleImputer(strategy="median"), RobustScaler(), Ridge(alpha=2.0))
@@ -225,9 +235,9 @@ def walk_forward_low_high(
             "point_predicted_low": point_low if target_idx > 0 else np.nan,
             "point_predicted_high": point_high if target_idx > 0 else np.nan,
             "predicted_close": predicted_close,
-            "predicted_direction": "UP" if predicted_close >= anchor else "DOWN",
+            "predicted_direction": _direction_label(predicted_close, anchor),
             "actual_close": float(target["close"]),
-            "actual_direction": "UP" if float(target["close"]) >= anchor else "DOWN",
+            "actual_direction": _direction_label(float(target["close"]), anchor),
             "actual_low": actual_low,
             "actual_high": actual_high,
             "low_abs_error": abs(predicted_low - actual_low),
@@ -262,6 +272,13 @@ def walk_forward_low_high(
     predicted_width = float(scored["predicted_width"].mean())
     point_low_rows = scored.loc[scored["point_predicted_low"].notna()]
     point_high_rows = scored.loc[scored["point_predicted_high"].notna()]
+    active_direction_rows = scored.loc[
+        (scored["predicted_direction"] != "FLAT")
+        & (scored["actual_direction"] != "FLAT")
+    ]
+    directional_matches = (
+        active_direction_rows["predicted_direction"] == active_direction_rows["actual_direction"]
+    )
     metrics: dict[str, float | int | str] = {
         "rows": int(len(predictions)),
         "expected_rows": int(len(frame)),
@@ -274,7 +291,9 @@ def walk_forward_low_high(
         "point_low_mae": float(mean_absolute_error(point_low_rows["actual_low"], point_low_rows["point_predicted_low"])),
         "point_high_mae": float(mean_absolute_error(point_high_rows["actual_high"], point_high_rows["point_predicted_high"])),
         "close_mae": float(mean_absolute_error(scored["actual_close"], scored["predicted_close"])),
-        "directional_accuracy_pct": float((scored["predicted_direction"] == scored["actual_direction"]).mean() * 100),
+        "directional_accuracy_pct": float(directional_matches.mean() * 100) if len(active_direction_rows) else 0.0,
+        "directional_prediction_coverage_pct": float((scored["predicted_direction"] != "FLAT").mean() * 100),
+        "directional_scored_rows": int(len(active_direction_rows)),
         "low_coverage_pct": float(scored["low_covered"].mean() * 100),
         "high_coverage_pct": float(scored["high_covered"].mean() * 100),
         "full_range_coverage_pct": float(scored["full_range_covered"].mean() * 100),
