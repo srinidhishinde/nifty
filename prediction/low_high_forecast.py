@@ -272,12 +272,22 @@ def walk_forward_low_high(
     predicted_width = float(scored["predicted_width"].mean())
     point_low_rows = scored.loc[scored["point_predicted_low"].notna()]
     point_high_rows = scored.loc[scored["point_predicted_high"].notna()]
-    active_direction_rows = scored.loc[
-        (scored["predicted_direction"] != "FLAT")
-        & (scored["actual_direction"] != "FLAT")
-    ]
+    # Score direction on every genuinely directional target candle. A FLAT
+    # prediction on an UP/DOWN target is a miss, not a row to discard. Actual
+    # FLAT targets are reported separately and do not enter directional accuracy.
+    directional_targets = scored.loc[scored["actual_direction"] != "FLAT"]
     directional_matches = (
+        directional_targets["predicted_direction"] == directional_targets["actual_direction"]
+    )
+    covered_directional_targets = directional_targets.loc[
+        directional_targets["predicted_direction"] != "FLAT"
+    ]
+    active_direction_rows = covered_directional_targets
+    conditional_directional_matches = (
         active_direction_rows["predicted_direction"] == active_direction_rows["actual_direction"]
+    )
+    exact_three_class_matches = (
+        scored["predicted_direction"] == scored["actual_direction"]
     )
     metrics: dict[str, float | int | str] = {
         "rows": int(len(predictions)),
@@ -291,9 +301,15 @@ def walk_forward_low_high(
         "point_low_mae": float(mean_absolute_error(point_low_rows["actual_low"], point_low_rows["point_predicted_low"])),
         "point_high_mae": float(mean_absolute_error(point_high_rows["actual_high"], point_high_rows["point_predicted_high"])),
         "close_mae": float(mean_absolute_error(scored["actual_close"], scored["predicted_close"])),
-        "directional_accuracy_pct": float(directional_matches.mean() * 100) if len(active_direction_rows) else 0.0,
+        "directional_accuracy_pct": float(directional_matches.mean() * 100) if len(directional_targets) else 0.0,
+        "directional_target_rows": int(len(directional_targets)),
+        "directional_correct_rows": int(directional_matches.sum()),
+        "directional_target_coverage_pct": float((directional_targets["predicted_direction"] != "FLAT").mean() * 100) if len(directional_targets) else 0.0,
+        "conditional_directional_accuracy_pct": float(conditional_directional_matches.mean() * 100) if len(active_direction_rows) else 0.0,
+        "conditional_directional_scored_rows": int(len(active_direction_rows)),
+        "three_class_accuracy_pct": float(exact_three_class_matches.mean() * 100),
         "directional_prediction_coverage_pct": float((scored["predicted_direction"] != "FLAT").mean() * 100),
-        "directional_scored_rows": int(len(active_direction_rows)),
+        "directional_scored_rows": int(len(directional_targets)),
         "low_coverage_pct": float(scored["low_covered"].mean() * 100),
         "high_coverage_pct": float(scored["high_covered"].mean() * 100),
         "full_range_coverage_pct": float(scored["full_range_covered"].mean() * 100),
