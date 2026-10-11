@@ -24,7 +24,6 @@ def main() -> int:
     parser.add_argument("--output", default="data/backtest/low_high_predictions.csv", help="Predictions CSV output")
     parser.add_argument("--min-train", type=int, default=80, help="Minimum historical training rows")
     parser.add_argument("--estimator", choices=("hist_gradient_boosting", "ridge"), default="hist_gradient_boosting")
-    parser.add_argument("--step", type=int, default=1, help="Forecast every Nth candle; 1 means every candle")
     args = parser.parse_args()
 
     source = Path(args.input)
@@ -43,7 +42,6 @@ def main() -> int:
         frame,
         min_train=args.min_train,
         estimator=args.estimator,
-        step=args.step,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -54,7 +52,6 @@ def main() -> int:
         "input": str(source),
         "estimator": args.estimator,
         "min_train": args.min_train,
-        "step": args.step,
         **result.metrics,
     }, indent=2), encoding="utf-8")
     print(json.dumps({
