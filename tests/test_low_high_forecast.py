@@ -37,7 +37,8 @@ def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
     assert result.predictions["forecast_method"].notna().all()
     assert {"point_predicted_low", "point_predicted_high", "predicted_close", "predicted_direction"}.issubset(result.predictions.columns)
     assert result.predictions["predicted_close"].notna().all()
-    assert set(result.predictions["predicted_direction"].unique()).issubset({"UP", "DOWN"})
+    assert set(result.predictions["predicted_direction"].unique()).issubset({"UP", "DOWN", "FLAT"})
+    assert set(result.predictions["actual_direction"].unique()).issubset({"UP", "DOWN", "FLAT"})
     assert result.metrics["close_mae"] >= 0
     assert 0 <= result.metrics["directional_accuracy_pct"] <= 100
     assert result.predictions.loc[1:, "point_predicted_low"].notna().all()
@@ -52,6 +53,23 @@ def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
     assert 0 <= result.metrics["full_range_coverage_pct"] <= 100
     assert result.metrics["low_mae"] >= 0
     assert result.metrics["high_mae"] >= 0
+
+
+def test_direction_label_uses_neutral_band():
+    from prediction.low_high_forecast import _direction_label
+
+    assert _direction_label(100.00, 100.00) == "FLAT"
+    assert _direction_label(100.01, 100.00) == "FLAT"
+    assert _direction_label(100.02, 100.00) == "UP"
+    assert _direction_label(99.98, 100.00) == "DOWN"
+
+
+def test_fallback_forecasts_are_not_marked_as_up():
+    result = walk_forward_low_high(_candles(100), min_train=80, estimator="ridge")
+    fallback = result.predictions["forecast_method"].eq("HISTORICAL_RANGE_FALLBACK")
+    assert fallback.any()
+    assert (result.predictions.loc[fallback, "predicted_direction"] == "FLAT").all()
+    assert 0 <= result.metrics["directional_prediction_coverage_pct"] <= 100
 
 
 def test_walk_forward_forecast_rejects_missing_ohlc_columns():
