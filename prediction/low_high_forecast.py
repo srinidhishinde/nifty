@@ -88,8 +88,8 @@ def _features(frame: pd.DataFrame) -> pd.DataFrame:
     return feats.replace([np.inf, -np.inf], np.nan)
 
 
-def _direction_label(value: float, reference: float, tolerance: float = 0.01) -> str:
-    """Label price direction; treat moves within one tick as neutral."""
+def _direction_label(value: float, reference: float, tolerance: float = 0.015) -> str:
+    """Label price direction; keep tiny moves neutral to avoid noisy labels."""
     delta = float(value) - float(reference)
     if delta > tolerance + 1e-12:
         return "UP"
