@@ -53,6 +53,38 @@ def _metrics(rows: pd.DataFrame, low_col: str, high_col: str, target_coverage: f
     }
 
 
+
+
+def _point_metrics(rows: pd.DataFrame) -> dict[str, Any]:
+    """Score point estimates separately from interval bounds."""
+    usable = rows.dropna(
+        subset=[
+            "point_predicted_low", "point_predicted_high",
+            "actual_low", "actual_high",
+        ]
+    )
+    if usable.empty:
+        return {"rows": 0}
+    low_error = (
+        usable["point_predicted_low"].astype(float)
+        - usable["actual_low"].astype(float)
+    )
+    high_error = (
+        usable["point_predicted_high"].astype(float)
+        - usable["actual_high"].astype(float)
+    )
+    return {
+        "rows": int(len(usable)),
+        "low_mae": float(low_error.abs().mean()),
+        "high_mae": float(high_error.abs().mean()),
+        "low_bias": float(low_error.mean()),
+        "high_bias": float(high_error.mean()),
+        "low_median_absolute_error": float(low_error.abs().median()),
+        "high_median_absolute_error": float(high_error.abs().median()),
+        "low_p90_absolute_error": float(low_error.abs().quantile(0.90)),
+        "high_p90_absolute_error": float(high_error.abs().quantile(0.90)),
+    }
+
 def tune_and_compare(
     data: pd.DataFrame,
     *,
@@ -224,6 +256,7 @@ def tune_and_compare(
         "estimator": estimator,
         "min_train": min_train,
         "methods": {name: _metrics(evaluated, low, high, target_coverage) for name, (low, high) in methods.items()},
+        "point_forecast": _point_metrics(evaluated),
         "calibration_note": (
             "Online conformal expansion uses only earlier model forecast misses. The asymmetric conformal variant estimates lower and upper misses separately with finite-sample tail quantiles. "
             "Optimized asymmetric quantiles select the narrowest historical down/up excursion pair "
