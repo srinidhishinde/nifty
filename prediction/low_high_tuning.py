@@ -183,8 +183,15 @@ def tune_and_compare(
         anchor = float(frame.loc[i - 1, "close"])
         model_low = float(out.loc[i, "model_low"])
         model_high = float(out.loc[i, "model_high"])
-        # Only previous forecast rows have matured outcomes at this origin.
-        past = out.iloc[1:i]
+        # Calibrate only on matured forecasts produced by the trained model.
+        # Mixing startup/range fallbacks into model residuals makes the
+        # calibration distribution change artificially when the model first
+        # becomes active, especially in short sessions. The filter is based
+        # solely on each past row's forecast method, never its target outcome.
+        prior_rows = out.iloc[1:i]
+        past = prior_rows.loc[
+            prior_rows["forecast_method"].astype(str).str.contains("MODEL_", regex=False)
+        ]
         scores = np.maximum(
             np.maximum(past["model_low"].to_numpy(dtype=float) - past["actual_low"].to_numpy(dtype=float), 0.0),
             np.maximum(past["actual_high"].to_numpy(dtype=float) - past["model_high"].to_numpy(dtype=float), 0.0),
