@@ -2373,14 +2373,16 @@ _guard_cols = st.columns(4)
 _guard_cols[0].metric("System health", _guard_report.status)
 _guard_cols[1].metric("Health score", f"{_guard_report.score}/100")
 _guard_cols[2].metric("Checks passed", f"{_guard_report.checks_passed}/{_guard_report.checks_total}")
-_guard_cols[3].metric("Live order permission", "ALLOWED" if _guard_report.live_orders_allowed else "LOCKED")
-if not _guard_report.live_orders_allowed:
-    st.error("FAIL-CLOSED: live orders must remain locked. Resolve the findings below; this panel does not enable order execution.")
-elif _guard_report.status == "DEGRADED":
-    st.warning("Health checks have warnings. Review them before proceeding.")
-else:
-    st.success("All supplied health checks passed. This report alone is not broker order-path UAT.")
-with st.expander("Failure findings and prevention actions", expanded=not _guard_report.live_orders_allowed):
+_guard_cols[3].metric("Live order permission", "LOCKED · BUILD POLICY")
+st.error(
+    "LIVE ORDER EXECUTION IS DISABLED by build policy, regardless of health score or environment flags. "
+    "Forecasting can run independently when live market data is fresh and valid."
+)
+if _guard_report.status == "DEGRADED":
+    st.warning("System health checks have warnings. Review the findings below.")
+elif _guard_report.status == "HEALTHY":
+    st.success("Supplied data/health checks passed; this does not enable order execution.")
+with st.expander("Failure findings and prevention actions", expanded=True):
     if _guard_report.findings:
         for _finding in _guard_report.findings:
             (_guard_severity,) = st.columns(1)
