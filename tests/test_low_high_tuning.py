@@ -35,6 +35,13 @@ def test_tuning_compares_model_and_simple_baselines():
         "historical_excursion_quantile", "optimized_asymmetric_quantile",
     }
     assert predictions.loc[0, "model_low"] != predictions.loc[0, "model_low"]
+    point = summary["point_forecast"]
+    assert point["rows"] == 144
+    assert point["low_mae"] >= 0
+    assert point["high_mae"] >= 0
+    assert point["low_p90_absolute_error"] >= point["low_median_absolute_error"]
+    assert point["high_p90_absolute_error"] >= point["high_median_absolute_error"]
+    assert "full_range_coverage_pct" not in point
     for method in summary["methods"].values():
         if method["rows"]:
             assert 0 <= method["full_range_coverage_pct"] <= 100
@@ -52,7 +59,8 @@ def test_online_calibration_does_not_use_future_candles():
     for col in ("model_low", "model_high", "conformal_low", "conformal_high",
                 "asymmetric_conformal_low", "asymmetric_conformal_high",
                 "historical_quantile_low", "historical_quantile_high",
-                "optimized_quantile_low", "optimized_quantile_high"):
+                "optimized_quantile_low", "optimized_quantile_high",
+                "point_predicted_low", "point_predicted_high"):
         assert first.loc[110, col] == pytest.approx(second.loc[110, col], nan_ok=True)
 
 
