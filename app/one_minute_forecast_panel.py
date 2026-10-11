@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from prediction.next_minute_forecast import forecast_next_minute
+from prediction.index_aware_option_forecast import forecast_index_aware_option
 
 _REQUIRED = ["timestamp", "open", "high", "low", "close", "volume"]
 
@@ -171,6 +172,51 @@ def render_one_minute_forecast_panel() -> None:
         key="one_minute_forecast_lookback",
         help="Use up to 385 completed candles when the uploaded file contains enough history. Forecasts still use only candles available before the target candle.",
     )
+    st.markdown("#### Index-aware + option-decay forecast (experimental)")
+    st.caption(
+        "Upload NIFTY 50 index candles with timestamps aligned to the option candles, then enter the option expiry. "
+        "The forecast combines index momentum with Black-Scholes delta/gamma and calendar-time theta. "
+        "IV is inferred from the option premium unless an implied_volatility column is supplied; IV is assumed constant for the next minute."
+    )
+    index_uploaded = st.file_uploader(
+        "NIFTY 50 index OHLCV CSV (same one-minute timestamps)",
+        type=["csv"],
+        key="index_aware_nifty_csv",
+        help="Required columns: timestamp, open, high, low, close. Use the index candles corresponding to the uploaded option session.",
+    )
+    expiry_text = st.text_input(
+        "Option expiry date or timestamp (IST)",
+        placeholder="YYYY-MM-DD (uses 15:30 IST) or YYYY-MM-DD HH:MM",
+        key="index_aware_option_expiry",
+    )
+    if index_uploaded is not None and expiry_text.strip():
+        try:
+            index_frame = _normalize_csv(index_uploaded)
+            combined = forecast_index_aware_option(
+                frame, index_frame, strike=22700.0, expiry=expiry_text.strip(),
+                lookback=lookback, range_quantile=quantile,
+            )
+            a, b, c, d = st.columns(4)
+            a.metric("Index trend", combined.index_direction)
+            b.metric("Combined premium decision", combined.direction)
+            c.metric("Expected premium move", f"₹{combined.expected_option_change:+.2f}")
+            d.metric("Theta / minute", f"₹{combined.theta_per_minute:+.4f}")
+            st.write(
+                f"**Index reference:** {combined.reference_index:.2f} | "
+                f"**CE premium:** ₹{combined.reference_premium:.2f} → "
+                f"**forecast close:** ₹{combined.predicted_premium:.2f} | "
+                f"**estimated range:** ₹{combined.predicted_low:.2f}–₹{combined.predicted_high:.2f}"
+            )
+            st.caption(
+                f"Delta {combined.delta:.4f} · Gamma {combined.gamma:.7f} · "
+                f"IV {combined.implied_volatility:.2%} ({combined.iv_source}) · "
+                f"aligned candles {combined.aligned_bars}. {combined.disclaimer}"
+            )
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            st.warning(f"Index-aware forecast unavailable: {exc}")
+    else:
+        st.info("Upload aligned NIFTY 50 candles and enter the option expiry to enable the index-aware + theta forecast.")
+
     forecast = forecast_next_minute(
         frame, underlying="NIFTY", lookback=lookback, quantile=quantile, range_method=range_method
     )
