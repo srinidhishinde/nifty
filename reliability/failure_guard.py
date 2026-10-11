@@ -30,6 +30,7 @@ class HealthReport:
     live_orders_allowed: bool
     checks_passed: int
     checks_total: int
+    checked_at_utc: str
     findings: tuple[Finding, ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -138,7 +139,10 @@ def assess_health(
     blocking = any(f.severity == "BLOCK" for f in findings)
     status = "BLOCKED" if blocking else ("DEGRADED" if findings else "HEALTHY")
     score = round(100 * passed / max(checks_total, 1))
-    return HealthReport(status, score, not blocking, passed, checks_total, tuple(findings))
+    return HealthReport(
+        status, score, not blocking, passed, checks_total,
+        now.astimezone(timezone.utc).isoformat(), tuple(findings)
+    )
 
 
 def append_incident(path: str | Path, report: HealthReport, *, context: dict[str, Any] | None = None) -> None:
