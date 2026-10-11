@@ -1343,24 +1343,45 @@ if spot is None:
 # ============================================================
 # Cross-market trend radar
 # ============================================================
-def _research_trend_snapshot(name: str, seed_value: int) -> TrendSnapshot:
-    base = {"NIFTY": 25040.0, "CRUDE": 6500.0, "NATGAS": 300.0, "COPPER": 950.0}[name]
-    rng = np.random.default_rng(abs(hash((name, int(seed_value)))) % (2**32))
-    returns = rng.normal(0.0, base * 0.0008, 120)
-    close = base + np.cumsum(returns)
-    frame = pd.DataFrame({
-        "timestamp": pd.date_range(end=pd.Timestamp.now(), periods=120, freq="5min"),
-        "open": close,
-        "high": close + abs(rng.normal(0, base * 0.0003, 120)),
-        "low": close - abs(rng.normal(0, base * 0.0003, 120)),
-        "close": close,
-        "volume": rng.integers(1000, 10000, 120),
-    })
-    return calculate_trend(name, frame, is_live=False)
+def _saved_trend_snapshot(name: str) -> TrendSnapshot:
+    """Use real persisted OHLCV only; never generate random candles for the radar."""
+    from datetime import timedelta
+    from marketdata.daily_store import load_captured_candles
+
+    instrument = {
+        "NIFTY": "NIFTY",
+        "CRUDE": "CRUDEOIL",
+        "NATGAS": "NATURALGAS",
+        "COPPER": "COPPER",
+    }.get(name)
+    now = pd.Timestamp.now(tz="Asia/Kolkata")
+    if instrument is None:
+        return TrendSnapshot(name, "UNAVAILABLE", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, 0, False, "No saved real candle source is configured.")
+    try:
+        frame, source = load_captured_candles(
+            instrument,
+            start=now.date() - timedelta(days=90),
+            end=now.date(),
+        )
+        if frame.empty:
+            return TrendSnapshot(name, "UNAVAILABLE", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, 0, False, f"No saved real {instrument} OHLCV candles; synthetic data is disabled.")
+        frame = frame.copy()
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
+        if frame["timestamp"].dt.tz is None:
+            frame["timestamp"] = frame["timestamp"].dt.tz_localize("Asia/Kolkata")
+        else:
+            frame["timestamp"] = frame["timestamp"].dt.tz_convert("Asia/Kolkata")
+        frame = frame.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp")
+        if len(frame) < 30:
+            return TrendSnapshot(name, "HISTORICAL_INSUFFICIENT", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, len(frame), False, f"Only {len(frame)} saved real candles; need at least 30.")
+        snapshot = calculate_trend(name, frame, is_live=False)
+        return snapshot
+    except Exception as exc:
+        return TrendSnapshot(name, "UNAVAILABLE", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, 0, False, f"Saved candle load failed: {exc}")
 
 
 st.subheader("Market Radar")
-st.caption("Directional context for NIFTY, Crude Oil, Natural Gas and Copper. Research cards are explicitly marked when a live feed is unavailable.")
+st.caption("Directional context from persisted real OHLCV candles only. Saved-data cards are historical; if real candles are missing, the radar reports unavailable instead of generating synthetic prices.")
 radar_names = ["NIFTY", "CRUDE", "NATGAS", "COPPER"]
 radar_cols = st.columns(4)
 radar_snapshots: dict[str, TrendSnapshot] = {}
@@ -1370,7 +1391,7 @@ for name, col in zip(radar_names, radar_cols):
         # fabricate a live trend from the single index quote.
         snap = TrendSnapshot(name, "LIVE_QUOTE_ONLY", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", pd.Timestamp.now(), 0, True, "Live quote available; completed-candle history is required for a genuine trend score.")
     else:
-        snap = _research_trend_snapshot(name, int(seed))
+        snap = _saved_trend_snapshot(name)
     radar_snapshots[name] = snap
     if snap.direction in {"STRONG_UP", "UP"}:
         cls = "radar-up"
@@ -1380,7 +1401,7 @@ for name, col in zip(radar_names, radar_cols):
         cls = "radar-range"
     else:
         cls = "radar-na"
-    source = "LIVE" if snap.is_live else "RESEARCH"
+    source = "LIVE QUOTE ONLY" if snap.is_live else ("HISTORICAL" if snap.candles > 0 else "UNAVAILABLE")
     col.markdown(f'<div class="market-radar"><div class="radar-title">{name}</div><span class="radar-pill {cls}">{snap.direction}</span><br><small>{source} · score {snap.score:.0f} · {snap.volatility}</small><br><small>{snap.reason}</small></div>', unsafe_allow_html=True)
 
 radar_context = aggregate_context(radar_snapshots)
