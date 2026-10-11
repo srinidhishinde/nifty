@@ -108,6 +108,10 @@ def tune_and_compare(
     out["model_high"] = out["predicted_high"]
     out["conformal_low"] = np.nan
     out["conformal_high"] = np.nan
+    out["asymmetric_conformal_low"] = np.nan
+    out["asymmetric_conformal_high"] = np.nan
+    out["asymmetric_low_expansion"] = np.nan
+    out["asymmetric_high_expansion"] = np.nan
     out["median_range_low"] = np.nan
     out["median_range_high"] = np.nan
     out["historical_quantile_low"] = np.nan
@@ -135,6 +139,26 @@ def tune_and_compare(
         out.loc[i, "conformal_expansion"] = expansion
         out.loc[i, "conformal_low"] = max(0.01, model_low - expansion)
         out.loc[i, "conformal_high"] = max(out.loc[i, "conformal_low"], model_high + expansion)
+
+        # Split asymmetric online calibration: estimate lower- and upper-bound
+        # misses separately from prior forecast rows whose target candles have
+        # already closed. Bonferroni tail allocation (1 + coverage) / 2 on each
+        # side gives a conservative joint target without forcing the larger
+        # miss on both sides, which can make intervals unnecessarily wide.
+        past_low_miss = np.maximum(
+            past["model_low"].to_numpy(dtype=float) - past["actual_low"].to_numpy(dtype=float), 0.0
+        )
+        past_high_miss = np.maximum(
+            past["actual_high"].to_numpy(dtype=float) - past["model_high"].to_numpy(dtype=float), 0.0
+        )
+        low_expansion = _finite_sample_quantile(past_low_miss, q_each_side) if len(past_low_miss) else 0.0
+        high_expansion = _finite_sample_quantile(past_high_miss, q_each_side) if len(past_high_miss) else 0.0
+        out.loc[i, "asymmetric_low_expansion"] = low_expansion
+        out.loc[i, "asymmetric_high_expansion"] = high_expansion
+        out.loc[i, "asymmetric_conformal_low"] = max(0.01, model_low - low_expansion)
+        out.loc[i, "asymmetric_conformal_high"] = max(
+            out.loc[i, "asymmetric_conformal_low"], model_high + high_expansion
+        )
 
         # Historical excursion samples are from completed candles only.
         hist = frame.iloc[1:i]
@@ -184,6 +208,7 @@ def tune_and_compare(
     methods = {
         "model": ("model_low", "model_high"),
         "online_conformal_model": ("conformal_low", "conformal_high"),
+        "online_asymmetric_conformal_model": ("asymmetric_conformal_low", "asymmetric_conformal_high"),
         "rolling_median_range": ("median_range_low", "median_range_high"),
         "historical_excursion_quantile": ("historical_quantile_low", "historical_quantile_high"),
         "optimized_asymmetric_quantile": ("optimized_quantile_low", "optimized_quantile_high"),
@@ -200,7 +225,7 @@ def tune_and_compare(
         "min_train": min_train,
         "methods": {name: _metrics(evaluated, low, high, target_coverage) for name, (low, high) in methods.items()},
         "calibration_note": (
-            "Online conformal expansion uses only earlier model forecast misses. "
+            "Online conformal expansion uses only earlier model forecast misses. The asymmetric conformal variant estimates lower and upper misses separately with finite-sample tail quantiles. "
             "Optimized asymmetric quantiles select the narrowest historical down/up excursion pair "
             "meeting target joint coverage on prior completed candles (minimum 20 observations; "
             "equal-tail fallback before that). All methods are evaluated on later candles only. "
