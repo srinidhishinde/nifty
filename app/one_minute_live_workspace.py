@@ -1,6 +1,9 @@
 """Dedicated live one-minute workspace using only persisted Kotak SFeed candles."""
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -40,32 +43,57 @@ def render_one_minute_live_workspace() -> None:
             st.error(f"Could not load the latest real Kotak option chain: {exc}")
             return
 
-        if chain.empty:
-            st.warning(
-                "No real Kotak NIFTY option-chain snapshot is available. Refresh the broker option chain "
-                "in the main dashboard while connected; live prediction is withheld until a real chain is available."
-            )
-            return
+        historical_files: dict[tuple[str, float, str], list[tuple[pd.Timestamp, Path]]] = {}
+        historical_root = Path(__file__).resolve().parents[1] / "data" / "backtest" / "kotak"
+        if historical_root.exists():
+            for path in historical_root.glob("*_1min.csv"):
+                match = re.match(r"^(?P<symbol>.+?)(?P<strike>\\d+(?:\\.\\d+)?)(?P<type>CE|PE)_(?P<day>\\d{4}-\\d{2}-\\d{2})_1min\\.csv$", path.name, re.I)
+                if not match:
+                    continue
+                try:
+                    day = pd.Timestamp(match.group("day"))
+                    key = (match.group("symbol").rstrip("_"), float(match.group("strike")), match.group("type").upper())
+                    historical_files.setdefault(key, []).append((day, path))
+                except (TypeError, ValueError):
+                    continue
 
-        chain = chain.copy()
-        chain["option_type"] = chain["option_type"].astype(str).str.upper().str.strip()
-        chain["strike"] = pd.to_numeric(chain.get("strike"), errors="coerce")
-        chain = chain.dropna(subset=["strike"])
-        if "expiry" not in chain.columns:
-            chain["expiry"] = ""
-        if "symbol" not in chain.columns:
-            st.warning("The captured option chain does not contain contract symbols; cannot select a live contract.")
-            return
+        using_historical_files = chain.empty
+        if using_historical_files:
+            if not historical_files:
+                st.warning(
+                    "No saved Kotak option-chain snapshot is available, and no backdated option-candle CSVs "
+                    "were found in data/backtest/kotak. Save the last trading day's option data to use historical mode."
+                )
+                return
+            st.info("HISTORICAL MODE · No live option-chain snapshot. Selecting from saved backdated option-candle files.")
+            records = []
+            for (prefix, saved_strike, saved_type), files in historical_files.items():
+                latest_day = max(day for day, _ in files)
+                records.append({"symbol": f"{prefix}_{saved_strike:g}{saved_type}", "strike": saved_strike,
+                                "option_type": saved_type, "expiry": f"Saved data through {latest_day.date()}",
+                                "history_path": max(files, key=lambda item: item[0])[1]})
+            chain = pd.DataFrame(records)
+            chain_timestamp = None
+        else:
+            chain = chain.copy()
+            chain["option_type"] = chain["option_type"].astype(str).str.upper().str.strip()
+            chain["strike"] = pd.to_numeric(chain.get("strike"), errors="coerce")
+            chain = chain.dropna(subset=["strike"])
+            if "expiry" not in chain.columns:
+                chain["expiry"] = ""
+            if "symbol" not in chain.columns:
+                st.warning("The captured option chain does not contain contract symbols; cannot select a live contract.")
+                return
 
         expiries = sorted(str(v) for v in chain["expiry"].dropna().unique() if str(v).strip())
         if not expiries:
-            st.warning("The real option-chain snapshot has no usable expiry field.")
+            st.warning("No usable expiry or saved-history label is available.")
             return
-        expiry = st.selectbox("Expiry", expiries, key="one_minute_live_expiry")
+        expiry = st.selectbox("Expiry / saved session", expiries, key="one_minute_live_expiry")
         expiry_chain = chain[chain["expiry"].astype(str) == expiry].copy()
         types = [t for t in ["CE", "PE"] if t in set(expiry_chain["option_type"])]
         if not types:
-            st.warning("No CE/PE contracts are available for the selected expiry.")
+            st.warning("No CE/PE contracts are available for the selected expiry/session.")
             return
         option_type = st.selectbox("Option type", types, key="one_minute_live_option_type")
         type_chain = expiry_chain[expiry_chain["option_type"] == option_type].copy()
@@ -76,28 +104,48 @@ def render_one_minute_live_workspace() -> None:
         strike = st.selectbox("Strike", strikes, key="one_minute_live_strike")
         matches = type_chain[type_chain["strike"] == strike]
         if matches.empty:
-            st.warning("Selected contract is no longer present in the latest option-chain snapshot.")
+            st.warning("Selected contract is no longer available.")
             return
         contract = matches.iloc[0]
         contract_symbol = str(contract["symbol"]).strip()
         if not contract_symbol:
-            st.warning("Selected option contract has no broker symbol; prediction is withheld.")
+            st.warning("Selected contract has no symbol; prediction is withheld.")
             return
 
         st.caption(
-            f"Selected contract: {contract_symbol} · {option_type} {strike:g} · expiry {expiry} · "
-            f"option-chain snapshot: {chain_timestamp if chain_timestamp is not None else 'timestamp unavailable'}"
+            f"Selected contract: {contract_symbol} · {option_type} {strike:g} · session/expiry: {expiry} · "
+            f"option-chain snapshot: {chain_timestamp if chain_timestamp is not None else 'not available (historical-file mode)'}"
         )
         try:
-            # Keep a broad history window so the panel remains useful outside
-            # market hours and during feed outages. This is still broker-captured
-            # data only; no synthetic or third-party fallback is allowed.
-            start = now.date() - pd.Timedelta(days=90)
-            frame, source = load_captured_candles(
-                contract_symbol,
-                start=start,
-                end=now.date(),
-            )
+            if using_historical_files:
+                # Use the newest saved session for the selected contract. Do not
+                # blend different trading days into a fabricated continuous session.
+                history_path = contract["history_path"]
+                frame = pd.read_csv(history_path)
+                source = f"BACKDATED CSV · {history_path.name}"
+                aliases = {str(col).strip().lower(): col for col in frame.columns}
+                rename = {}
+                for wanted, candidates in {
+                    "timestamp": ("timestamp", "datetime", "date", "time"),
+                    "open": ("open",), "high": ("high",), "low": ("low",),
+                    "close": ("close", "ltp", "price"), "volume": ("volume", "vol"),
+                }.items():
+                    for candidate in candidates:
+                        if candidate in aliases:
+                            rename[aliases[candidate]] = wanted
+                            break
+                frame = frame.rename(columns=rename)
+                if "volume" not in frame.columns:
+                    frame["volume"] = 0
+            else:
+                # When broker history exists, allow the last 90 calendar days so
+                # closed-market sessions can use the most recent saved session.
+                start = now.date() - pd.Timedelta(days=90)
+                frame, source = load_captured_candles(
+                    contract_symbol,
+                    start=start,
+                    end=now.date(),
+                )
         except Exception as exc:
             st.error(f"Could not load captured one-minute candles for {contract_symbol}: {exc}")
             return
@@ -105,9 +153,9 @@ def render_one_minute_live_workspace() -> None:
         required = ["timestamp", "open", "high", "low", "close", "volume"]
         if frame.empty or not set(required).issubset(frame.columns):
             st.warning(
-                f"No captured one-minute OHLCV candles are available for {contract_symbol} in the last 90 days. "
-                "Start the Kotak SFeed recorder or select a contract with saved history; "
-                "synthetic or Yahoo data will not be substituted."
+                f"No usable saved one-minute OHLCV candles are available for {contract_symbol}. "
+                "Select a contract with saved last-trading-day history or capture real broker candles; "
+                "synthetic data will not be substituted."
             )
             return
 
