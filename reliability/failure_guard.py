@@ -96,6 +96,7 @@ def assess_health(
         now = now.replace(tzinfo=timezone.utc)
     findings: list[Finding] = []
     passed = 0
+    risk_flags = tuple(risk_flags)
 
     def check(ok: bool, code: str, message: str, action: str, severity: str = "BLOCK") -> None:
         nonlocal passed
@@ -132,7 +133,7 @@ def assess_health(
     for flag in risk_flags:
         findings.append(Finding("RISK_FLAG", "BLOCK", str(flag), "Resolve the risk-control alert and rerun health checks before any order."))
 
-    checks_total = 2 + 1 + 1 + (2 if metrics_valid else 0) + len(tuple(risk_flags))
+    checks_total = 5 + (2 if metrics_valid else 0) + len(risk_flags)
     # Every block finding denies live orders; warnings are visible but not fatal.
     blocking = any(f.severity == "BLOCK" for f in findings)
     status = "BLOCKED" if blocking else ("DEGRADED" if findings else "HEALTHY")
