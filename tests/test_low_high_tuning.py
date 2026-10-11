@@ -29,10 +29,13 @@ def test_tuning_compares_model_and_simple_baselines():
     assert len(predictions) == 145
     assert summary["evaluated_forecasts"] == 144
     assert summary["forecast_timing"] == "before_target_candle_open"
-    assert summary["first_candle"] == "excluded_no_prior_candle_in_input"
+    assert summary["first_candle"] == "opening_forecast_reported_separately_and_excluded_from_preopen_metrics"
+    assert predictions.loc[0, "opening_forecast_method"] == "OPENING_CANDLE_OPEN_ANCHORED_FALLBACK"
+    assert pd.notna(predictions.loc[0, "opening_predicted_low"])
+    assert pd.isna(predictions.loc[0, "model_low"])
     assert set(summary["methods"]) == {
         "model", "online_conformal_model", "online_asymmetric_conformal_model", "rolling_median_range",
-        "historical_excursion_quantile", "optimized_asymmetric_quantile",
+        "historical_excursion_quantile", "historical_asymmetric_quantile",
     }
     assert predictions.loc[0, "model_low"] != predictions.loc[0, "model_low"]
     point = summary["point_forecast"]
@@ -59,7 +62,7 @@ def test_online_calibration_does_not_use_future_candles():
     for col in ("model_low", "model_high", "conformal_low", "conformal_high",
                 "asymmetric_conformal_low", "asymmetric_conformal_high",
                 "historical_quantile_low", "historical_quantile_high",
-                "optimized_quantile_low", "optimized_quantile_high",
+                "historical_asymmetric_quantile_low", "historical_asymmetric_quantile_high",
                 "point_predicted_low", "point_predicted_high"):
         assert first.loc[110, col] == pytest.approx(second.loc[110, col], nan_ok=True)
 
