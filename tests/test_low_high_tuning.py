@@ -31,7 +31,7 @@ def test_tuning_compares_model_and_simple_baselines():
     assert summary["forecast_timing"] == "before_target_candle_open"
     assert summary["first_candle"] == "excluded_no_prior_candle_in_input"
     assert set(summary["methods"]) == {
-        "model", "online_conformal_model", "rolling_median_range",
+        "model", "online_conformal_model", "online_asymmetric_conformal_model", "rolling_median_range",
         "historical_excursion_quantile", "optimized_asymmetric_quantile",
     }
     assert predictions.loc[0, "model_low"] != predictions.loc[0, "model_low"]
@@ -50,6 +50,7 @@ def test_online_calibration_does_not_use_future_candles():
     # The prediction for candle 110 is generated using only data available
     # before candle 110; later candles cannot alter its forecast or calibration.
     for col in ("model_low", "model_high", "conformal_low", "conformal_high",
+                "asymmetric_conformal_low", "asymmetric_conformal_high",
                 "historical_quantile_low", "historical_quantile_high",
                 "optimized_quantile_low", "optimized_quantile_high"):
         assert first.loc[110, col] == pytest.approx(second.loc[110, col], nan_ok=True)
