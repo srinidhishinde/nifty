@@ -1,0 +1,143 @@
+name: NIFTY Forecast CI and Readiness Gate
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "feature/**"
+      - "ci/**"
+  pull_request:
+    branches:
+      - main
+      - master
+      - "feature/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nifty-forecast-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Unit tests and UAT
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Compile benchmark harnesses
+        run: |
+          python -m py_compile scripts/benchmark_directional_accuracy.py
+          python -m py_compile scripts/benchmark_directional_classifier.py
+      - name: Run complete pytest suite
+        run: python -m pytest -q
+      - name: Run UAT suites
+        run: python scripts/run_uat.py
+
+  directional-benchmark:
+    name: 80% out-of-sample benchmark gate
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install benchmark dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Require versioned real OHLCV sessions
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          files=(data/benchmark/*.csv)
+          if (( ${#files[@]} < 2 )); then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          report = {
+              "status": "BLOCKED",
+              "reason": "At least two real, versioned session CSVs are required under data/benchmark/*.csv.",
+              "required_columns": ["timestamp", "open", "high", "low", "close", "volume"],
+              "live_enablement": "LOCKED",
+              "note": "No accuracy claim is possible without a reproducible unseen-candle dataset."
+          }
+          Path("artifacts/directional_benchmark.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+          print(json.dumps(report, indent=2))
+          PY
+            exit 1
+          fi
+          # Preserve the existing low/high-derived direction benchmark as a
+          # diagnostic; it is not allowed to decide classifier acceptance.
+          python scripts/benchmark_directional_accuracy.py \
+            --input "${files[@]}" \
+            --estimator ridge \
+            --min-train 80 \
+            --min-accuracy 0 \
+            --min-coverage 0 \
+            --min-targets 0 \
+            --min-sessions 1 \
+            --output artifacts/low_high_direction_diagnostic.json
+          # Predeclared logistic classifier is the primary directional test.
+          # No estimator is selected after seeing the holdout results.
+          python scripts/benchmark_directional_classifier.py \
+            --input "${files[@]}" \
+            --estimator logistic \
+            --min-train 80 \
+            --min-accuracy 80 \
+            --min-coverage 80 \
+            --min-targets 500 \
+            --min-sessions 2 \
+            --require-pass \
+            --output artifacts/directional_benchmark.json
+      - name: Publish benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: directional-benchmark-reports
+          path: |
+            artifacts/directional_benchmark.json
+            artifacts/low_high_direction_diagnostic.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  live-readiness:
+    name: Live readiness (orders remain locked)
+    needs:
+      - tests
+      - directional-benchmark
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce readiness gates
+        env:
+          TESTS_RESULT: ${{ needs.tests.result }}
+          BENCHMARK_RESULT: ${{ needs.directional-benchmark.result }}
+        run: |
+          echo "Tests: ${TESTS_RESULT}"
+          echo "Directional benchmark: ${BENCHMARK_RESULT}"
+          if [ "${TESTS_RESULT}" != "success" ] || [ "${BENCHMARK_RESULT}" != "success" ]; then
+            echo "LIVE READINESS: BLOCKED. Keep live execution locked."
+            exit 1
+          fi
+          echo "Research benchmark passed. This does not validate live Kotak Neo or enable live orders."
+          echo "A separate broker-connected UAT and explicit operator approval are still required."

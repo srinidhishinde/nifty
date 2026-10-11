@@ -60,6 +60,7 @@ from alerts.runtime_settings import WhatsAppSettingsStore
 from alerts.whatsapp import WhatsAppAlertService
 from analytics.signal_journal import SignalJournal
 from app.one_minute_forecast_panel import render_one_minute_forecast_panel
+from reliability.failure_guard import assess_health, append_incident
 
 
 # ============================================================
@@ -2208,3 +2209,70 @@ with candidate_col2:
 
 # Historical one-minute option forecasting and sequential validation panel.
 render_one_minute_forecast_panel()
+
+
+# ============================================================
+# Integrated failure prediction and prevention
+# ============================================================
+st.divider()
+st.header("Failure Prediction & Prevention")
+st.caption(
+    "Deterministic guard for Kotak connectivity, candle freshness/integrity, "
+    "unseen-candle benchmark evidence, and risk flags. Missing proof blocks live readiness."
+)
+_guard_frame = prediction_frame if isinstance(prediction_frame, pd.DataFrame) else None
+_guard_timestamp = None
+if _guard_frame is not None and not _guard_frame.empty and "timestamp" in _guard_frame.columns:
+    _guard_timestamp = _guard_frame["timestamp"].iloc[-1]
+_guard_accuracy = st.session_state.get("failure_guard_forecast_accuracy_pct")
+_guard_samples = int(st.session_state.get("failure_guard_forecast_samples", 0) or 0)
+_guard_baseline = st.session_state.get("failure_guard_baseline_accuracy_pct")
+_guard_risks = list(st.session_state.get("failure_guard_risk_flags", []))
+if not canonical_signal.valid:
+    _guard_risks.append("Current canonical signal is invalid or not decision-ready.")
+if str(prediction_quality.status).upper() in {"RED", "FAIL", "BLOCKED"}:
+    _guard_risks.append("Kotak Neo data-quality gate is RED/BLOCKED.")
+_guard_report = assess_health(
+    broker_connected=bool(neo_status.connected),
+    execution_configured=bool(environment == "LIVE" and settings.live_trading_allowed()),
+    market_data_timestamp=_guard_timestamp,
+    ohlcv=_guard_frame,
+    forecast_accuracy_pct=_guard_accuracy,
+    forecast_samples=_guard_samples,
+    baseline_accuracy_pct=_guard_baseline,
+    risk_flags=_guard_risks,
+)
+_guard_cols = st.columns(4)
+_guard_cols[0].metric("System health", _guard_report.status)
+_guard_cols[1].metric("Health score", f"{_guard_report.score}/100")
+_guard_cols[2].metric("Checks passed", f"{_guard_report.checks_passed}/{_guard_report.checks_total}")
+_guard_cols[3].metric("Live order permission", "ALLOWED" if _guard_report.live_orders_allowed else "LOCKED")
+if not _guard_report.live_orders_allowed:
+    st.error("FAIL-CLOSED: live orders must remain locked. Resolve the findings below; this panel does not enable order execution.")
+elif _guard_report.status == "DEGRADED":
+    st.warning("Health checks have warnings. Review them before proceeding.")
+else:
+    st.success("All supplied health checks passed. This report alone is not broker order-path UAT.")
+with st.expander("Failure findings and prevention actions", expanded=not _guard_report.live_orders_allowed):
+    if _guard_report.findings:
+        for _finding in _guard_report.findings:
+            (_guard_severity,) = st.columns(1)
+            _guard_severity.write(f"**{_finding.severity} · {_finding.code}** — {_finding.message}")
+            _guard_severity.caption("Action: " + _finding.action)
+    else:
+        st.write("No current findings from the evidence supplied to the guard.")
+    st.caption(
+        "Forecast evidence is read from session-state keys only when a benchmark pipeline explicitly supplies it: "
+        "failure_guard_forecast_accuracy_pct, failure_guard_forecast_samples, and failure_guard_baseline_accuracy_pct. "
+        "A chart's high/low range coverage is not directional accuracy."
+    )
+if st.button("Record failure-health report", key="record_failure_health_report"):
+    try:
+        append_incident(
+            REPO_ROOT / "data" / "logs" / "failure_incidents.jsonl",
+            _guard_report,
+            context={"instrument": instrument, "environment": environment, "signal": canonical_signal.direction},
+        )
+        st.success("Health report appended to data/logs/failure_incidents.jsonl.")
+    except OSError as _incident_error:
+        st.error(f"Could not write incident report: {_incident_error}")

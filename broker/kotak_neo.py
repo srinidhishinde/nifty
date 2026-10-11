@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from config.settings import settings
@@ -318,13 +319,28 @@ class KotakNeoBroker:
     # Order safety
     # --------------------------------------------------
 
-    def orders_allowed(self) -> bool:
+    def orders_allowed(self, health_report: Any | None = None) -> bool:
         """
-        Deliberately refuses live order submission unless
-        the project's explicit safety gate is enabled.
+        Fail closed unless configuration AND current health evidence pass.
+
+        A missing/stale health report never inherits permission from settings.
+        The health report must come from reliability.failure_guard.assess_health.
         """
 
-        return settings.live_trading_allowed()
+        if not settings.live_trading_allowed() or health_report is None:
+            return False
+        if getattr(health_report, "live_orders_allowed", False) is not True:
+            return False
+        checked_at = getattr(health_report, "checked_at_utc", None)
+        try:
+            parsed = datetime.fromisoformat(str(checked_at).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return False
+            age_seconds = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            return False
+        # A future-dated or older-than-90-second report is not current evidence.
+        return 0 <= age_seconds <= 90
 
     def place_order(self, *args: Any, **kwargs: Any) -> Any:
         """
@@ -334,12 +350,13 @@ class KotakNeoBroker:
         option-selection, paper-execution and safety testing.
         """
 
-        if not self.orders_allowed():
+        health_report = kwargs.pop("health_report", None)
+        if not self.orders_allowed(health_report):
 
             raise RuntimeError(
-                "Live order submission is disabled. "
-                "Enable production live-trading configuration "
-                "only after completing validation."
+                "Live order submission is disabled: explicit configuration and "
+                "a current passing failure-health report are both required. "
+                "Missing or failed health evidence keeps execution locked."
             )
 
         raise NotImplementedError(
