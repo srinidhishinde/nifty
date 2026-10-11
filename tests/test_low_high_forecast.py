@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from prediction.low_high_forecast import walk_forward_low_high
+
+
+def _candles(n: int = 150) -> pd.DataFrame:
+    rng = np.random.default_rng(7)
+    close = 100.0 + np.cumsum(rng.normal(0, 0.22, n))
+    open_ = np.r_[close[0], close[:-1]]
+    spread = rng.uniform(0.05, 0.45, n)
+    high = np.maximum(open_, close) + spread
+    low = np.minimum(open_, close) - spread * rng.uniform(0.6, 1.2, n)
+    return pd.DataFrame({
+        "timestamp": pd.date_range("2026-10-01 09:15", periods=n, freq="min"),
+        "open": open_,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": rng.integers(100, 5000, n),
+    })
+
+
+def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
+    data = _candles()
+    result = walk_forward_low_high(data, min_train=80, estimator="ridge")
+    assert result.status == "EVALUATED"
+    assert len(result.predictions) == len(data)
+    assert result.metrics["forecast_rows_complete"] is True
+    assert result.metrics["evaluated_forecast_rows"] == len(data) - 1
+    assert "opening_low_abs_error" in result.metrics
+    assert "opening_forecast_note" in result.metrics
+    assert result.predictions["target_timestamp"].reset_index(drop=True).equals(pd.to_datetime(data["timestamp"], utc=True).reset_index(drop=True))
+    assert result.predictions["forecast_method"].notna().all()
+    assert {"point_predicted_low", "point_predicted_high", "predicted_close", "predicted_direction"}.issubset(result.predictions.columns)
+    assert result.predictions["predicted_close"].notna().all()
+    assert set(result.predictions["predicted_direction"].unique()).issubset({"UP", "DOWN", "FLAT"})
+    assert set(result.predictions["actual_direction"].unique()).issubset({"UP", "DOWN", "FLAT"})
+    assert result.metrics["close_mae"] >= 0
+    assert 0 <= result.metrics["directional_accuracy_pct"] <= 100
+    assert result.metrics["directional_target_rows"] >= result.metrics["conditional_directional_scored_rows"]
+    assert result.metrics["directional_correct_rows"] <= result.metrics["directional_target_rows"]
+    assert 0 <= result.metrics["directional_target_coverage_pct"] <= 100
+    assert 0 <= result.metrics["conditional_directional_accuracy_pct"] <= 100
+    assert 0 <= result.metrics["three_class_accuracy_pct"] <= 100
+    assert result.predictions.loc[1:, "point_predicted_low"].notna().all()
+    assert result.predictions.loc[1:, "point_predicted_high"].notna().all()
+    assert result.metrics["point_low_mae"] >= 0
+    assert result.metrics["point_high_mae"] >= 0
+    assert result.predictions.iloc[0]["forecast_method"] == "OPEN_FALLBACK_NO_PRIOR_HISTORY"
+    assert result.metrics["fallback_forecast_rows"] > 0
+    assert result.predictions["origin_timestamp"].isna().iloc[0]
+    assert (result.predictions["target_timestamp"].iloc[1:].reset_index(drop=True) > result.predictions["origin_timestamp"].iloc[1:].reset_index(drop=True)).all()
+    assert (result.predictions["predicted_low"] <= result.predictions["predicted_high"]).all()
+    assert 0 <= result.metrics["full_range_coverage_pct"] <= 100
+    assert result.metrics["low_mae"] >= 0
+    assert result.metrics["high_mae"] >= 0
+
+
+def test_direction_label_uses_neutral_band():
+    from prediction.low_high_forecast import _direction_label
+
+    assert _direction_label(100.00, 100.00) == "FLAT"
+    assert _direction_label(100.01, 100.00) == "FLAT"
+    assert _direction_label(100.02, 100.00) == "UP"
+    assert _direction_label(99.98, 100.00) == "DOWN"
+
+
+def test_fallback_forecasts_are_not_marked_as_up():
+    result = walk_forward_low_high(_candles(100), min_train=80, estimator="ridge")
+    fallback = result.predictions["forecast_method"].eq("HISTORICAL_RANGE_FALLBACK")
+    assert fallback.any()
+    assert (result.predictions.loc[fallback, "predicted_direction"] == "FLAT").all()
+    assert 0 <= result.metrics["directional_prediction_coverage_pct"] <= 100
+
+
+def test_walk_forward_forecast_rejects_missing_ohlc_columns():
+    with pytest.raises(ValueError, match="Missing columns"):
+        walk_forward_low_high(pd.DataFrame({"timestamp": ["2026-10-01"], "close": [100]}))
+
+
+def test_walk_forward_forecast_rejects_invalid_training_size():
+    with pytest.raises(ValueError, match="min_train"):
+        walk_forward_low_high(_candles(), min_train=10)
+
+
+def test_walk_forward_forecast_does_not_require_volume():
+    data = _candles().drop(columns=["volume"])
+    result = walk_forward_low_high(data, min_train=80, estimator="ridge")
+    assert result.status == "EVALUATED"
+    assert len(result.predictions) == len(data)
+    assert not result.predictions.empty
+
+
+
+def test_forecast_is_not_affected_by_future_candles():
+    data = _candles(180)
+    original = walk_forward_low_high(data, min_train=80, estimator="ridge").predictions
+    changed = data.copy()
+    changed.loc[130:, ["open", "high", "low", "close"]] *= 1.08
+    changed_result = walk_forward_low_high(changed, min_train=80, estimator="ridge").predictions
+    # Target 120 is forecast from data available before that target candle;
+    # modifications beginning at candle 130 cannot change that prediction.
+    assert original.loc[120, "predicted_low"] == pytest.approx(changed_result.loc[120, "predicted_low"])
+    assert original.loc[120, "predicted_high"] == pytest.approx(changed_result.loc[120, "predicted_high"])
+    assert original.loc[120, "predicted_close"] == pytest.approx(changed_result.loc[120, "predicted_close"])
+    assert original.loc[120, "predicted_direction"] == changed_result.loc[120, "predicted_direction"]
+
+
+def test_model_forecasts_are_calibrated_and_counted():
+    result = walk_forward_low_high(_candles(180), min_train=80, estimator="ridge")
+    model_rows = result.predictions["forecast_method"].str.contains("MODEL_")
+    assert model_rows.any()
+    assert int(model_rows.sum()) == result.metrics["model_forecast_rows"]
+    assert (result.predictions["predicted_low"] <= result.predictions["predicted_high"]).all()
+
+
+def test_step_must_remain_one_to_forecast_every_candle():
+    with pytest.raises(ValueError, match="step must be 1"):
+        walk_forward_low_high(_candles(), min_train=80, estimator="ridge", step=2)
