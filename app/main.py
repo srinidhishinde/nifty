@@ -863,6 +863,44 @@ if snapshot:
     if prediction_quality.reasons:
         st.caption("Data-quality notes: " + " | ".join(prediction_quality.reasons))
 
+# Historical context is display-only. It must never be assigned to prediction_frame
+# or passed into the live decision/CE-PE gate.
+if prediction_frame is None:
+    try:
+        from datetime import timedelta
+        from marketdata.daily_store import load_captured_candles
+
+        history_now = pd.Timestamp.now(tz="Asia/Kolkata")
+        historical_frame, historical_source = load_captured_candles(
+            instrument,
+            start=history_now.date() - timedelta(days=90),
+            end=history_now.date(),
+        )
+        if not historical_frame.empty:
+            historical_frame = historical_frame.copy()
+            historical_frame["timestamp"] = pd.to_datetime(
+                historical_frame["timestamp"], errors="coerce"
+            )
+            if historical_frame["timestamp"].dt.tz is None:
+                historical_frame["timestamp"] = historical_frame["timestamp"].dt.tz_localize("Asia/Kolkata")
+            else:
+                historical_frame["timestamp"] = historical_frame["timestamp"].dt.tz_convert("Asia/Kolkata")
+            historical_frame = historical_frame.dropna(subset=["timestamp"]).sort_values("timestamp")
+            st.info(
+                f"HISTORICAL CONTEXT ONLY · {instrument} · {len(historical_frame):,} saved real candles · "
+                f"{historical_frame['timestamp'].iloc[0]} → {historical_frame['timestamp'].iloc[-1]}. "
+                "These rows are not a live forecast and cannot unlock a trade decision."
+            )
+            with st.expander("Inspect saved historical candles", expanded=False):
+                st.dataframe(historical_frame.tail(100), width="stretch", hide_index=True)
+        else:
+            st.caption(
+                f"No saved real {instrument} OHLCV candle history is available for historical context. "
+                "Start/verify the broker recorder to persist it; no synthetic history is substituted."
+            )
+    except Exception as exc:
+        st.caption(f"Historical context unavailable: {exc}")
+
 if canonical_signal.valid:
     st.success("Kotak Neo data passed the canonical precision rule gate.")
 else:
