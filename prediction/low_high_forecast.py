@@ -166,6 +166,10 @@ def walk_forward_low_high(
                     high_model.fit(x_train.loc[valid], y_high.loc[valid])
                     raw_low = anchor * (1.0 + float(low_model.predict(x_now)[0]))
                     raw_high = anchor * (1.0 + float(high_model.predict(x_now)[0]))
+                    # Preserve raw point estimates separately from the wider
+                    # calibrated interval. Bounds are sorted to prevent an
+                    # inverted low/high pair if regressors cross.
+                    point_low, point_high = sorted((raw_low, raw_high))
 
                     # Calibrate the model's excursions using only completed
                     # candles. This shrinks extreme regression outputs toward
@@ -194,9 +198,11 @@ def walk_forward_low_high(
                     method = f"CALIBRATED_MODEL_{estimator.upper()}"
                 else:
                     predicted_low, predicted_high = anchor - band, anchor + band
+                    point_low, point_high = anchor - band / 2.0, anchor + band / 2.0
                     method = "HISTORICAL_RANGE_FALLBACK"
             else:
                 predicted_low, predicted_high = anchor - band, anchor + band
+                point_low, point_high = anchor - band / 2.0, anchor + band / 2.0
         predicted_low = max(0.01, min(predicted_low, predicted_high))
         predicted_high = max(predicted_low, predicted_high)
         actual_low = float(target["low"])
@@ -206,6 +212,8 @@ def walk_forward_low_high(
             "target_timestamp": target["timestamp"],
             "predicted_low": predicted_low,
             "predicted_high": predicted_high,
+            "point_predicted_low": point_low if target_idx > 0 else np.nan,
+            "point_predicted_high": point_high if target_idx > 0 else np.nan,
             "actual_low": actual_low,
             "actual_high": actual_high,
             "low_abs_error": abs(predicted_low - actual_low),
@@ -230,6 +238,8 @@ def walk_forward_low_high(
         "fallback_forecast_rows": int((~predictions["forecast_method"].str.contains("MODEL_")).sum()),
         "low_mae": float(mean_absolute_error(predictions["actual_low"], predictions["predicted_low"])),
         "high_mae": float(mean_absolute_error(predictions["actual_high"], predictions["predicted_high"])),
+        "point_low_mae": float(mean_absolute_error(predictions.loc[predictions["point_predicted_low"].notna(), "actual_low"], predictions.loc[predictions["point_predicted_low"].notna(), "point_predicted_low"])),
+        "point_high_mae": float(mean_absolute_error(predictions.loc[predictions["point_predicted_high"].notna(), "actual_high"], predictions.loc[predictions["point_predicted_high"].notna(), "point_predicted_high"])),
         "low_coverage_pct": float(predictions["low_covered"].mean() * 100),
         "high_coverage_pct": float(predictions["high_covered"].mean() * 100),
         "full_range_coverage_pct": float(predictions["full_range_covered"].mean() * 100),
