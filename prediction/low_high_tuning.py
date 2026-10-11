@@ -60,7 +60,8 @@ def _point_metrics(rows: pd.DataFrame) -> dict[str, Any]:
     """Score point estimates separately from interval bounds."""
     usable = rows.dropna(
         subset=[
-            "point_predicted_low", "point_predicted_high",
+            "point_predicted_low", "point_predicted_high", "predicted_close",
+            "predicted_direction", "actual_close", "actual_direction",
             "actual_low", "actual_high",
         ]
     )
@@ -84,6 +85,8 @@ def _point_metrics(rows: pd.DataFrame) -> dict[str, Any]:
         "high_median_absolute_error": float(high_error.abs().median()),
         "low_p90_absolute_error": float(low_error.abs().quantile(0.90)),
         "high_p90_absolute_error": float(high_error.abs().quantile(0.90)),
+        "close_mae": float((usable["predicted_close"].astype(float) - usable["actual_close"].astype(float)).abs().mean()),
+        "directional_accuracy_pct": float((usable["predicted_direction"] == usable["actual_direction"]).mean() * 100),
     }
 
 def tune_and_compare(
@@ -247,6 +250,9 @@ def tune_and_compare(
             "method": str(out.loc[0, "opening_forecast_method"]),
             "predicted_low": float(out.loc[0, "opening_predicted_low"]),
             "predicted_high": float(out.loc[0, "opening_predicted_high"]),
+            "predicted_close": float(out.loc[0, "predicted_close"]),
+            "predicted_direction": str(out.loc[0, "predicted_direction"]),
+            "actual_close": float(out.loc[0, "actual_close"]),
             "actual_low": float(out.loc[0, "actual_low"]),
             "actual_high": float(out.loc[0, "actual_high"]),
             "full_range_covered": bool(out.loc[0, "opening_predicted_low"] <= out.loc[0, "actual_low"] and out.loc[0, "opening_predicted_high"] >= out.loc[0, "actual_high"]),
