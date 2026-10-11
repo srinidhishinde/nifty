@@ -79,6 +79,19 @@ def test_online_calibration_does_not_use_future_candles():
         assert first.loc[110, col] == pytest.approx(second.loc[110, col], nan_ok=True)
 
 
+def test_online_calibration_excludes_fallback_forecasts_and_reports_maturity():
+    predictions, _ = tune_and_compare(_candles(145), min_train=80, estimator="ridge")
+    for i in range(1, len(predictions)):
+        prior = predictions.iloc[1:i]
+        expected = int(prior["forecast_method"].astype(str).str.contains("MODEL_", regex=False).sum())
+        assert int(predictions.loc[i, "calibration_model_rows"]) == expected
+
+    fallback_rows = predictions["forecast_method"].eq("HISTORICAL_RANGE_FALLBACK")
+    assert fallback_rows.any()
+    # Fallback forecasts are never counted as calibration examples.
+    assert predictions.loc[fallback_rows, "calibration_model_rows"].ge(0).all()
+
+
 def test_invalid_coverage_is_rejected():
     with pytest.raises(ValueError, match="target_coverage"):
         tune_and_compare(_candles(), target_coverage=1.0, estimator="ridge")
