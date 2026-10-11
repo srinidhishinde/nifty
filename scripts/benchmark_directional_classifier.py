@@ -114,31 +114,41 @@ def evaluate(path: Path, *, min_train: int, estimator: str, tolerance: float) ->
             prediction = "UP" if float(frame.loc[origin_idx, "close"]) >= float(frame.loc[origin_idx - 1, "close"]) else "DOWN"
         predictions.append(prediction)
         scored_actual.append(actual[target_idx - 1])
-        baseline.append(_direction_label(
+        baseline_direction = _direction_label(
             float(frame.loc[origin_idx, "close"]),
             float(frame.loc[origin_idx - 1, "close"]),
             tolerance,
-        ))
+        )
+        if baseline_direction == "FLAT":
+            baseline_direction = "UP" if float(frame.loc[origin_idx, "close"]) >= float(frame.loc[origin_idx - 1, "close"]) else "DOWN"
+        baseline.append(baseline_direction)
         forecast_methods.append(method)
 
     actual_arr = np.asarray(scored_actual, dtype=object)
     pred_arr = np.asarray(predictions, dtype=object)
+    baseline_arr = np.asarray(baseline, dtype=object)
     directional = np.isin(actual_arr, ["UP", "DOWN"])
     actual_dir, pred_dir = actual_arr[directional], pred_arr[directional]
-    base_dir = np.asarray(baseline, dtype=object)[directional]
     classifier_rows = np.asarray(forecast_methods, dtype=object)[directional] == "WALK_FORWARD_CLASSIFIER"
+    all_correct = int((pred_arr == actual_arr).sum())
+    all_targets = int(len(actual_arr))
+    directional_correct = int((pred_dir == actual_dir).sum())
     return {
         "file": str(path),
         "session_rows": int(len(frame)),
+        "evaluated_targets": all_targets,
         "directional_targets": int(directional.sum()),
-        "correct_predictions": int((pred_dir == actual_dir).sum()),
-        "accuracy_pct": round(float((pred_dir == actual_dir).mean() * 100), 4) if len(actual_dir) else 0.0,
-        "coverage_pct": 100.0 if len(actual_dir) else 0.0,
-        "momentum_baseline_accuracy_pct": round(float((base_dir == actual_dir).mean() * 100), 4) if len(actual_dir) else 0.0,
+        "correct_predictions": all_correct,
+        "accuracy_pct": round(float(all_correct / all_targets * 100), 4) if all_targets else 0.0,
+        "directional_accuracy_pct": round(float(directional_correct / len(actual_dir) * 100), 4) if len(actual_dir) else 0.0,
+        "coverage_pct": round(float(len(pred_arr) / all_targets * 100), 4) if all_targets else 0.0,
+        "momentum_baseline_accuracy_pct": round(float((baseline_arr == actual_arr).mean() * 100), 4) if all_targets else 0.0,
+        "momentum_baseline_directional_accuracy_pct": round(float((baseline_arr[directional] == actual_dir).mean() * 100), 4) if len(actual_dir) else 0.0,
         "walk_forward_classifier_predictions": int(classifier_rows.sum()),
-        "fallback_predictions": int((~classifier_rows).sum()),
+        "fallback_predictions": int((~(np.asarray(forecast_methods, dtype=object) == "WALK_FORWARD_CLASSIFIER")).sum()),
+        "flat_actual_targets": int((~directional).sum()),
         "label_tolerance": tolerance,
-        "prediction_policy": "always UP/DOWN; no abstention",
+        "prediction_policy": "always UP/DOWN; flat actual outcomes count as misses for binary forecasts",
     }
 
 
@@ -164,10 +174,14 @@ def main() -> int:
     if missing:
         parser.error(f"Input CSV file(s) not found: {missing}")
     sessions = [evaluate(p, min_train=args.min_train, estimator=args.estimator, tolerance=args.tolerance) for p in paths]
-    targets = sum(s["directional_targets"] for s in sessions)
+    targets = sum(s["evaluated_targets"] for s in sessions)
+    directional_targets = sum(s["directional_targets"] for s in sessions)
     correct = sum(s["correct_predictions"] for s in sessions)
     accuracy = 100.0 * correct / targets if targets else 0.0
-    coverage = 100.0 if targets else 0.0
+    predicted = sum(round(s["coverage_pct"] * s["evaluated_targets"] / 100.0) for s in sessions)
+    coverage = 100.0 * predicted / targets if targets else 0.0
+    baseline_correct = sum(round(s["momentum_baseline_accuracy_pct"] * s["evaluated_targets"] / 100.0) for s in sessions)
+    baseline_accuracy = 100.0 * baseline_correct / targets if targets else 0.0
     criteria = {
         "minimum_accuracy_pass": accuracy >= args.min_accuracy,
         "minimum_prediction_coverage_pass": coverage >= args.min_coverage,
@@ -180,8 +194,8 @@ def main() -> int:
         "estimator": args.estimator,
         "min_train": args.min_train,
         "label_tolerance": args.tolerance,
-        "thresholds": {"accuracy_pct": args.min_accuracy, "coverage_pct": args.min_coverage, "directional_targets": args.min_targets, "sessions": args.min_sessions},
-        "aggregate": {"directional_targets": targets, "correct_predictions": correct, "accuracy_pct": round(accuracy, 4), "coverage_pct": round(coverage, 4)},
+        "thresholds": {"accuracy_pct": args.min_accuracy, "coverage_pct": args.min_coverage, "evaluated_targets": args.min_targets, "sessions": args.min_sessions},
+        "aggregate": {"evaluated_targets": targets, "directional_targets": directional_targets, "correct_predictions": correct, "accuracy_pct": round(accuracy, 4), "coverage_pct": round(coverage, 4), "momentum_baseline_accuracy_pct": round(baseline_accuracy, 4)},
         "criteria": criteria,
         "sessions": sessions,
         "live_enablement": "LOCKED",
