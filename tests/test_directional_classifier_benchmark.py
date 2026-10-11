@@ -50,3 +50,23 @@ def test_walk_forward_classifier_emits_all_directional_predictions(tmp_path):
     assert result["fallback_predictions"] > 0
     assert 0.0 <= result["accuracy_pct"] <= 100.0
     assert 0.0 <= result["momentum_baseline_accuracy_pct"] <= 100.0
+
+
+
+def test_flat_actual_candles_are_not_removed_from_accuracy_denominator(tmp_path):
+    path = tmp_path / "flat_session.csv"
+    rows = 12
+    pd.DataFrame({
+        "timestamp": pd.date_range("2026-10-02 09:15:00", periods=rows, freq="min"),
+        "open": [100.0] * rows,
+        "high": [100.5] * rows,
+        "low": [99.5] * rows,
+        "close": [100.0] * rows,
+        "volume": [1000] * rows,
+    }).to_csv(path, index=False)
+    result = evaluate(path, min_train=30, estimator="logistic", tolerance=0.01)
+    assert result["evaluated_targets"] == rows - 2
+    assert result["directional_targets"] == 0
+    assert result["flat_actual_targets"] == rows - 2
+    assert result["accuracy_pct"] == 0.0
+    assert result["coverage_pct"] == 100.0
