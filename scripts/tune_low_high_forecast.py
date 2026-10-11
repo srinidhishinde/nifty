@@ -80,6 +80,7 @@ def main() -> int:
                 "input": run["input"],
                 "evaluated_forecasts": run["evaluated_forecasts"],
                 "methods": run["methods"],
+                "point_forecast": run["point_forecast"],
             }
             for run in runs
         ],
