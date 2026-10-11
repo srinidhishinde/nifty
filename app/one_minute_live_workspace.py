@@ -34,7 +34,7 @@ def render_one_minute_live_workspace() -> None:
             st.session_state["one_minute_live_force_refresh"] = True
 
         now = pd.Timestamp.now(tz="Asia/Kolkata")
-        st.markdown("#### Live mode · select an option contract")
+        st.markdown("#### Select an option contract")
         try:
             chain, chain_timestamp = DailyMarketStore().load_latest_option_chain_snapshot(
                 "NIFTY", before=now
