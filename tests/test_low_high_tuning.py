@@ -126,9 +126,10 @@ def test_calibration_warmup_does_not_use_future_candles():
         "asymmetric_calibration_source", "calibration_model_rows",
     ]
     for col in cols:
-        assert first.loc[110, col] == pytest.approx(second.loc[110, col], nan_ok=True) if col not in {
-            "calibration_source", "asymmetric_calibration_source"
-        } else first.loc[110, col] == second.loc[110, col]
+        if col in {"calibration_source", "asymmetric_calibration_source"}:
+            assert first.loc[110, col] == second.loc[110, col]
+        else:
+            assert first.loc[110, col] == pytest.approx(second.loc[110, col], nan_ok=True)
 
 
 def test_invalid_coverage_is_rejected():
