@@ -341,9 +341,8 @@ class KotakNeoBroker:
         if not self.orders_allowed(health_report):
 
             raise RuntimeError(
-                "Live order submission is disabled: explicit configuration and "
-                "a current passing failure-health report are both required. "
-                "Missing or failed health evidence keeps execution locked."
+                "Live order submission is hard-disabled in this build. "
+                "Forecasting and market-data capture remain available independently."
             )
 
         raise NotImplementedError(
