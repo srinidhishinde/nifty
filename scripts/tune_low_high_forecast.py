@@ -65,8 +65,9 @@ def main() -> int:
         "interpretation": (
             "Each file is evaluated independently so a later session's forecasts do not silently "
             "use a prior file unless explicitly joined into a chronological dataset. Compare each "
-            "method on the same evaluated rows; prefer the narrowest method near the 80% full-range "
-            "coverage target, and inspect MAE and width ratio alongside coverage."
+            "method on the same evaluated rows; treat the target coverage as a calibration diagnostic, not "
+            "an optimization objective. The opening candle is reported separately. Inspect point "
+            "MAE, interval coverage, interval width and performance across multiple sessions."
         ),
     }
     summary_path.write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
