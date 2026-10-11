@@ -60,6 +60,7 @@ from alerts.runtime_settings import WhatsAppSettingsStore
 from alerts.whatsapp import WhatsAppAlertService
 from analytics.signal_journal import SignalJournal
 from app.one_minute_forecast_panel import render_one_minute_forecast_panel
+from prediction.live_direction_forecast import predict_live_direction
 from reliability.failure_guard import assess_health, append_incident
 
 
@@ -914,6 +915,66 @@ with st.expander("Yahoo historical research / independent validation", expanded=
 # ============================================================
 # Decision Center
 # ============================================================
+
+# ------------------------------------------------------------
+# Live-data direction forecast — advisory only
+# ------------------------------------------------------------
+
+st.subheader("Live next-candle direction forecast")
+st.caption(
+    "Uses the latest real Kotak Neo captured candles for the selected 5m/15m timeframe. "
+    "This is a directional research forecast only; it does not submit orders or bypass risk gates."
+)
+
+if prediction_frame is None or snapshot is None or prediction_quality.status == "RED":
+    st.info("Live direction forecast is unavailable until real Kotak Neo candles pass the data-quality gate.")
+else:
+    try:
+        live_minutes = 5 if decision_timeframe == "5m" else 15
+        live_direction = predict_live_direction(
+            prediction_frame,
+            estimator="logistic",
+            min_train=80,
+            tolerance=0.01,
+            timeframe_minutes=live_minutes,
+        )
+        latest_candle_utc = pd.to_datetime(live_direction["latest_candle_time"], utc=True)
+        age_minutes = max(
+            0.0,
+            (pd.Timestamp.now(tz="UTC") - latest_candle_utc).total_seconds() / 60.0,
+        )
+        stale_after_minutes = live_minutes * 3 + 2
+        if age_minutes > stale_after_minutes:
+            st.warning(
+                f"Forecast withheld: latest captured candle is {age_minutes:.1f} minutes old "
+                f"(freshness limit {stale_after_minutes} minutes). Refresh/start the Kotak SFeed recorder."
+            )
+        else:
+            forecast_cols = st.columns(4)
+            forecast_cols[0].metric("Next-candle direction", live_direction["direction"])
+            forecast_cols[1].metric("Forecast method", live_direction["estimator"])
+            forecast_cols[2].metric("Training examples", f'{live_direction["training_rows"]:,}')
+            score = live_direction["raw_model_score"]
+            forecast_cols[3].metric(
+                "Raw model score",
+                f"{score * 100:.1f}%" if score is not None else "N/A",
+            )
+            st.write(
+                f'**Reference close:** {live_direction["reference_close"]:.2f} · '
+                f'**Latest candle:** {live_direction["latest_candle_time"]} · '
+                f'**Forecast target:** {live_direction["target_candle_time"]}'
+            )
+            if live_direction["method"] == "MOMENTUM_FALLBACK":
+                st.warning(
+                    "Momentum fallback used because the history did not satisfy classifier training requirements. "
+                    "This is not a trained-model forecast."
+                )
+            st.caption(
+                "Raw model score is not calibrated probability. The interim 50% benchmark was measured on two historical sessions; "
+                "it does not guarantee live accuracy. Forecast is advisory only and live order submission remains separately gated."
+            )
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        st.warning(f"Live direction forecast unavailable: {exc}")
 
 st.markdown("## Decision Center")
 st.caption(
