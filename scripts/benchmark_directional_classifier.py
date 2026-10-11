@@ -143,6 +143,7 @@ def evaluate(path: Path, *, min_train: int, estimator: str, tolerance: float) ->
         "accuracy_pct": round(float(all_correct / all_targets * 100), 4) if all_targets else 0.0,
         "directional_accuracy_pct": round(float(directional_correct / len(actual_dir) * 100), 4) if len(actual_dir) else 0.0,
         "coverage_pct": round(float(len(pred_arr) / all_targets * 100), 4) if all_targets else 0.0,
+        "momentum_baseline_correct_predictions": int((baseline_arr == actual_arr).sum()),
         "momentum_baseline_accuracy_pct": round(float((baseline_arr == actual_arr).mean() * 100), 4) if all_targets else 0.0,
         "momentum_baseline_directional_accuracy_pct": round(float((baseline_arr[directional] == actual_dir).mean() * 100), 4) if len(actual_dir) else 0.0,
         "walk_forward_classifier_predictions": int(classifier_rows.sum()),
@@ -182,7 +183,7 @@ def main() -> int:
     accuracy = 100.0 * correct / targets if targets else 0.0
     predicted = sum(round(s["coverage_pct"] * s["evaluated_targets"] / 100.0) for s in sessions)
     coverage = 100.0 * predicted / targets if targets else 0.0
-    baseline_correct = sum(round(s["momentum_baseline_accuracy_pct"] * s["evaluated_targets"] / 100.0) for s in sessions)
+    baseline_correct = sum(s["momentum_baseline_correct_predictions"] for s in sessions)
     baseline_accuracy = 100.0 * baseline_correct / targets if targets else 0.0
     criteria = {
         "minimum_accuracy_pass": accuracy >= args.min_accuracy,
