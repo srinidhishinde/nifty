@@ -92,7 +92,16 @@ def test_broker_order_gate_requires_current_health_report(monkeypatch):
     broker = KotakNeoBroker()
     assert broker.orders_allowed() is False
     assert broker.orders_allowed(SimpleNamespace(live_orders_allowed=False)) is False
-    assert broker.orders_allowed(SimpleNamespace(live_orders_allowed=True)) is True
+    fresh = SimpleNamespace(
+        live_orders_allowed=True,
+        checked_at_utc=datetime.now(timezone.utc).isoformat(),
+    )
+    assert broker.orders_allowed(fresh) is True
+    stale = SimpleNamespace(
+        live_orders_allowed=True,
+        checked_at_utc=(datetime.now(timezone.utc) - timedelta(seconds=91)).isoformat(),
+    )
+    assert broker.orders_allowed(stale) is False
 
 
 def test_broker_place_order_fails_closed_without_health_report(monkeypatch):
@@ -115,5 +124,8 @@ def test_broker_order_remains_unimplemented_even_when_guard_passes(monkeypatch):
     with pytest.raises(NotImplementedError, match="order routing"):
         broker.place_order(
             symbol="NIFTY", quantity=1,
-            health_report=SimpleNamespace(live_orders_allowed=True),
+            health_report=SimpleNamespace(
+                live_orders_allowed=True,
+                checked_at_utc=datetime.now(timezone.utc).isoformat(),
+            ),
         )
