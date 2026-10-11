@@ -41,7 +41,11 @@ def test_walk_forward_classifier_emits_all_directional_predictions(tmp_path):
     result = evaluate(path, min_train=30, estimator="logistic", tolerance=0.01)
     assert result["directional_targets"] > 80
     assert result["coverage_pct"] == 100.0
-    assert result["correct_predictions"] <= result["directional_targets"]
+    assert result["evaluated_targets"] == result["session_rows"] - 2
+    assert result["correct_predictions"] <= result["evaluated_targets"]
+    assert result["accuracy_pct"] == round(
+        100.0 * result["correct_predictions"] / result["evaluated_targets"], 4
+    )
     assert result["walk_forward_classifier_predictions"] > 0
     assert result["fallback_predictions"] > 0
     assert 0.0 <= result["accuracy_pct"] <= 100.0
