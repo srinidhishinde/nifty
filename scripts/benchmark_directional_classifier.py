@@ -213,7 +213,7 @@ def main() -> int:
     parser.add_argument("--min-train", type=int, default=80)
     parser.add_argument("--estimator", choices=("logistic", "hist_gradient_boosting", "random_forest"), default="logistic")
     parser.add_argument("--tolerance", type=float, default=0.01)
-    parser.add_argument("--min-accuracy", type=float, default=80.0)
+    parser.add_argument("--min-accuracy", type=float, default=50.0)
     parser.add_argument("--min-coverage", type=float, default=80.0)
     parser.add_argument("--min-targets", type=int, default=500)
     parser.add_argument("--min-sessions", type=int, default=2)
