@@ -60,6 +60,26 @@ def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
     assert result.metrics["high_mae"] >= 0
 
 
+def test_adaptive_excursion_quantiles_react_to_recent_volatility_without_lookahead():
+    from prediction.low_high_forecast import _adaptive_excursion_quantiles
+
+    calm = np.full(80, 0.2)
+    mixed = np.r_[calm, np.full(40, 1.0)]
+    calm_q80, calm_q95 = _adaptive_excursion_quantiles(calm)
+    mixed_q80, mixed_q95 = _adaptive_excursion_quantiles(mixed)
+
+    assert mixed_q80 > calm_q80
+    assert mixed_q95 > calm_q95
+    assert calm_q95 >= calm_q80
+    assert mixed_q95 >= mixed_q80
+
+    # Appending future large excursions must not change quantiles computed
+    # from the historical prefix itself.
+    prefix_q80, prefix_q95 = _adaptive_excursion_quantiles(mixed[:80])
+    assert prefix_q80 == pytest.approx(calm_q80)
+    assert prefix_q95 == pytest.approx(calm_q95)
+
+
 def test_direction_label_uses_neutral_band():
     from prediction.low_high_forecast import _direction_label
 
