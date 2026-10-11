@@ -24,6 +24,16 @@ def _candles(n: int = 145) -> pd.DataFrame:
     })
 
 
+def test_adaptive_historical_quantile_tracks_recent_regime():
+    from prediction.low_high_tuning import _adaptive_historical_quantile
+
+    calm = np.full(80, 0.2)
+    shifted = np.r_[calm, np.full(40, 1.0)]
+    assert _adaptive_historical_quantile(shifted, 0.8) > _adaptive_historical_quantile(calm, 0.8)
+    assert _adaptive_historical_quantile(shifted, 0.9) >= _adaptive_historical_quantile(shifted, 0.8)
+    assert _adaptive_historical_quantile(calm, 0.8) == pytest.approx(0.2)
+
+
 def test_tuning_compares_model_and_simple_baselines():
     predictions, summary = tune_and_compare(_candles(), min_train=80, estimator="ridge")
     assert len(predictions) == 145
