@@ -30,6 +30,9 @@ def test_walk_forward_forecast_has_next_candle_targets_and_metrics():
     assert result.status == "EVALUATED"
     assert len(result.predictions) == len(data)
     assert result.metrics["forecast_rows_complete"] is True
+    assert result.metrics["evaluated_forecast_rows"] == len(data) - 1
+    assert "opening_low_abs_error" in result.metrics
+    assert "opening_forecast_note" in result.metrics
     assert result.predictions["target_timestamp"].reset_index(drop=True).equals(pd.to_datetime(data["timestamp"], utc=True).reset_index(drop=True))
     assert result.predictions["forecast_method"].notna().all()
     assert {"point_predicted_low", "point_predicted_high", "predicted_close", "predicted_direction"}.issubset(result.predictions.columns)
