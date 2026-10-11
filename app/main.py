@@ -637,11 +637,11 @@ environment = st.sidebar.selectbox(
     ],
 )
 
-if environment == "LIVE" and not settings.live_trading_allowed():
-    st.sidebar.warning(
-        "LIVE selected, but live order submission is LOCKED. "
-        "Set LIVE_TRADING_ENABLED=true, PAPER_TRADING=false and ALLOW_ORDER_SUBMISSION=true "
-        "after completing broker/risk/UAT validation. LIVE never bypasses data-quality or strategy gates."
+if environment == "LIVE":
+    st.sidebar.info(
+        "LIVE FORECASTING mode: live market-data ingestion and advisory forecasts may run when "
+        "fresh broker candles/quotes pass validation. LIVE ORDER EXECUTION IS DISABLED in this build; "
+        "forecasting does not grant order permission."
     )
 
 seed = st.sidebar.number_input(
@@ -850,7 +850,7 @@ prediction_quality = SimpleNamespace(
 
 dcols = st.columns(5)
 dcols[0].metric("Source", "KOTAK NEO")
-dcols[1].metric("Mode", snapshot.mode if snapshot else "LIVE")
+dcols[1].metric("Mode", snapshot.mode if snapshot else "UNAVAILABLE")
 dcols[2].metric("Quality", prediction_quality.status)
 dcols[3].metric("Rule", canonical_signal.direction)
 dcols[4].metric("Options", f"{snapshot.option_count} contracts" if snapshot else "0")
