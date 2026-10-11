@@ -1372,8 +1372,8 @@ def _saved_trend_snapshot(name: str) -> TrendSnapshot:
         else:
             frame["timestamp"] = frame["timestamp"].dt.tz_convert("Asia/Kolkata")
         frame = frame.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp")
-        if len(frame) < 30:
-            return TrendSnapshot(name, "HISTORICAL_INSUFFICIENT", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, len(frame), False, f"Only {len(frame)} saved real candles; need at least 30.")
+        if len(frame) < 50:
+            return TrendSnapshot(name, "HISTORICAL_INSUFFICIENT", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, len(frame), False, f"Only {len(frame)} saved real candles; need at least 50.")
         snapshot = calculate_trend(name, frame, is_live=False)
         return snapshot
     except Exception as exc:
@@ -1401,7 +1401,7 @@ for name, col in zip(radar_names, radar_cols):
         cls = "radar-range"
     else:
         cls = "radar-na"
-    source = "LIVE QUOTE ONLY" if snap.is_live else ("HISTORICAL" if snap.candles > 0 else "UNAVAILABLE")
+    source = "LIVE QUOTE ONLY" if snap.is_live else ("HISTORICAL" if snap.data_bars > 0 else "UNAVAILABLE")
     col.markdown(f'<div class="market-radar"><div class="radar-title">{name}</div><span class="radar-pill {cls}">{snap.direction}</span><br><small>{source} · score {snap.score:.0f} · {snap.volatility}</small><br><small>{snap.reason}</small></div>', unsafe_allow_html=True)
 
 radar_context = aggregate_context(radar_snapshots)
