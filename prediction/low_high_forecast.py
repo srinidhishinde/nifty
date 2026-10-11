@@ -88,8 +88,10 @@ def _features(frame: pd.DataFrame) -> pd.DataFrame:
     return feats.replace([np.inf, -np.inf], np.nan)
 
 
-def _direction_label(value: float, reference: float, tolerance: float = 0.01) -> str:
-    """Label price direction; treat moves within one tick as neutral."""
+def _direction_label(value: float, reference: float, tolerance: float = 0.05) -> str:
+    """Label price direction; treat moves no larger than one ₹0.05 tick as neutral."""
+    if tolerance < 0:
+        raise ValueError("direction tolerance must be non-negative")
     delta = float(value) - float(reference)
     if delta > tolerance + 1e-12:
         return "UP"
@@ -118,6 +120,7 @@ def walk_forward_low_high(
     step: int = 1,
     estimator: str = "hist_gradient_boosting",
     seed: int = 42,
+    direction_tolerance: float = 0.05,
 ) -> LowHighForecastResult:
     """Predict each next candle's low/high with no future rows in training.
 
@@ -130,6 +133,8 @@ def walk_forward_low_high(
         raise ValueError("step must be 1; this forecaster emits a prediction for every candle")
     if estimator not in {"hist_gradient_boosting", "ridge"}:
         raise ValueError("estimator must be 'hist_gradient_boosting' or 'ridge'")
+    if direction_tolerance < 0:
+        raise ValueError("direction_tolerance must be non-negative")
     frame = _prepare(data)
     features = _features(frame)
     # Predict relative moves from the origin close, not raw prices.
@@ -235,9 +240,9 @@ def walk_forward_low_high(
             "point_predicted_low": point_low if target_idx > 0 else np.nan,
             "point_predicted_high": point_high if target_idx > 0 else np.nan,
             "predicted_close": predicted_close,
-            "predicted_direction": _direction_label(predicted_close, anchor),
+            "predicted_direction": _direction_label(predicted_close, anchor, direction_tolerance),
             "actual_close": float(target["close"]),
-            "actual_direction": _direction_label(float(target["close"]), anchor),
+            "actual_direction": _direction_label(float(target["close"]), anchor, direction_tolerance),
             "actual_low": actual_low,
             "actual_high": actual_high,
             "low_abs_error": abs(predicted_low - actual_low),
