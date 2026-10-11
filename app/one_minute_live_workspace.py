@@ -89,7 +89,10 @@ def render_one_minute_live_workspace() -> None:
             f"option-chain snapshot: {chain_timestamp if chain_timestamp is not None else 'timestamp unavailable'}"
         )
         try:
-            start = now.date() - pd.Timedelta(days=5)
+            # Keep a broad history window so the panel remains useful outside
+            # market hours and during feed outages. This is still broker-captured
+            # data only; no synthetic or third-party fallback is allowed.
+            start = now.date() - pd.Timedelta(days=90)
             frame, source = load_captured_candles(
                 contract_symbol,
                 start=start,
@@ -102,7 +105,8 @@ def render_one_minute_live_workspace() -> None:
         required = ["timestamp", "open", "high", "low", "close", "volume"]
         if frame.empty or not set(required).issubset(frame.columns):
             st.warning(
-                "No captured NIFTY OHLCV candles are available. Start the Kotak SFeed recorder; "
+                f"No captured one-minute OHLCV candles are available for {contract_symbol} in the last 90 days. "
+                "Start the Kotak SFeed recorder or select a contract with saved history; "
                 "synthetic or Yahoo data will not be substituted."
             )
             return
@@ -134,11 +138,26 @@ def render_one_minute_live_workspace() -> None:
 
         latest_ts = frame["timestamp"].iloc[-1]
         age_seconds = max(0.0, (pd.Timestamp.now(tz="UTC") - latest_ts).total_seconds())
+        local_now = pd.Timestamp.now(tz="Asia/Kolkata")
+        is_weekday = local_now.weekday() < 5
+        market_clock_open = (
+            is_weekday
+            and (local_now.hour, local_now.minute) >= (9, 15)
+            and (local_now.hour, local_now.minute) < (15, 30)
+        )
+        is_live = market_clock_open and age_seconds <= 180
+        mode_label = "LIVE" if is_live else "HISTORICAL"
         metrics = st.columns(4)
-        metrics[0].metric("Mode", "LIVE")
+        metrics[0].metric("Data mode", mode_label)
         metrics[1].metric("Captured candles", f"{len(frame):,}")
         metrics[2].metric("Latest close", f"₹{float(frame['close'].iloc[-1]):,.2f}")
         metrics[3].metric("Latest candle age", f"{age_seconds / 60:.1f} min")
+        if not is_live:
+            st.info(
+                "No fresh in-session one-minute feed detected. Showing the latest saved historical "
+                "candles for this selected contract; forecasts refer to the next candle after the "
+                "historical data endpoint, not to the current market."
+            )
 
         chart_frame = frame.tail(int(history_rows)).copy()
         chart = go.Figure(
@@ -157,17 +176,14 @@ def render_one_minute_live_workspace() -> None:
             height=420,
             margin=dict(l=10, r=10, t=20, b=10),
             xaxis_title="Time (Asia/Kolkata)",
-            yaxis_title="NIFTY",
+            yaxis_title=f"{contract_symbol} price (₹)",
             xaxis_rangeslider_visible=False,
         )
         st.plotly_chart(chart, use_container_width=True)
 
-        if age_seconds > 180:
-            st.warning(
-                f"Forecast withheld: latest captured candle is {age_seconds / 60:.1f} minutes old. "
-                "Check the Kotak SFeed recorder and connection."
-            )
-            return
+        if is_live and age_seconds > 180:
+            # Defensive consistency check; stale feeds are shown as historical above.
+            st.warning("The live feed is stale; historical mode is being used instead.")
         if len(frame) < 100:
             st.info(f"Need more history before forecasting reliably; currently have {len(frame)} candles.")
             return
@@ -206,4 +222,7 @@ def render_one_minute_live_workspace() -> None:
         )
         if direction["method"] == "MOMENTUM_FALLBACK":
             st.warning("Momentum fallback is active; this is not a trained classifier forecast.")
-        st.info("LIVE DATA FORECAST for the selected option contract only. Advisory/paper use; no broker orders are submitted.")
+        if is_live:
+            st.info("LIVE DATA FORECAST for the selected option contract. Advisory/paper use only; no broker orders are submitted.")
+        else:
+            st.info("HISTORICAL DATA FORECAST for the selected option contract. This is a backdated analysis, not a live-market signal; no broker orders are submitted.")
