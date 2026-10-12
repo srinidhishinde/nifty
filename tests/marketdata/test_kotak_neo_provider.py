@@ -365,3 +365,39 @@ def test_daily_store_loader_uses_only_captured_partitions(tmp_path):
     assert source == "KOTAK_CAPTURED"
     assert len(loaded) == 2
     assert set(loaded["data_source"]) == {"KOTAK_CAPTURED"}
+
+
+def test_quote_enrichment_batches_strictly_below_fifty_symbols():
+    class BatchRecordingNeo:
+        def __init__(self):
+            self.batch_sizes = []
+
+        def quotes(self, **kwargs):
+            self.batch_sizes.append(len(kwargs["instrument_tokens"]))
+            return []
+
+    client = BatchRecordingNeo()
+    provider = KotakNeoProvider(client)
+    contracts = [
+        OptionContract(
+            symbol=f"NIFTY26OCT{22000 + i}CE",
+            exchange="nse_fo",
+            underlying="NIFTY",
+            expiry="2026-10-15",
+            strike=float(22000 + i),
+            option_type="CE",
+            instrument_token=f"nse_fo|{10000 + i}",
+            ltp=100.0,
+            bid=None,
+            ask=None,
+            volume=1.0,
+            open_interest=1.0,
+            oi_change=0.0,
+        )
+        for i in range(81)
+    ]
+
+    provider._enrich_quotes(contracts)
+
+    assert client.batch_sizes == [40, 40, 1]
+    assert max(client.batch_sizes) < 50
