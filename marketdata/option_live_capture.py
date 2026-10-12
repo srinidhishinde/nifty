@@ -66,8 +66,7 @@ class OptionCandleBuilder:
                 del self._states[key]
         return rows
 
-    @staticmethod
-    def _row(state: dict[str, Any]) -> dict[str, Any]:
+    def _row(self, state: dict[str, Any]) -> dict[str, Any]:
         return {
             "timestamp": state["bucket"].to_pydatetime(),
             "instrument": state["instrument"],
