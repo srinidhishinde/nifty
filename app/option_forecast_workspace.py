@@ -123,6 +123,24 @@ def render_option_forecast_workspace(instrument: str) -> None:
         if chain_ts is not None:
             chain_local = chain_ts.tz_convert("Asia/Kolkata") if chain_ts.tzinfo else chain_ts.tz_localize("Asia/Kolkata")
             chain_age = max(0.0, (now - chain_local).total_seconds())
+        if market_open and connected and (chain.empty or chain_age > 90):
+            last_attempt = st.session_state.get("compact_chain_refresh_attempt")
+            attempt_age = (now - last_attempt).total_seconds() if isinstance(last_attempt, pd.Timestamp) else float("inf")
+            if attempt_age >= 60:
+                st.session_state["compact_chain_refresh_attempt"] = now
+                try:
+                    from marketdata.providers.kotak_neo import KotakNeoProvider
+                    exchange = "nse_fo" if instrument == "NIFTY" else "mcx_fo"
+                    refreshed = KotakNeoProvider(broker.client).get_option_chain(
+                        underlying=instrument, exchange=exchange, count=40,
+                        enrich_quotes=True,
+                    )
+                    if refreshed:
+                        store.save_option_chain_snapshot(instrument, refreshed, captured_at=now)
+                        chain, chain_ts = store.load_latest_option_chain_snapshot(instrument, before=now)
+                        chain_age = 0.0
+                except Exception as exc:
+                    st.warning(f"Live option-chain refresh failed; saved history will be used only as historical data. {exc}")
         live = bool(market_open and connected and not chain.empty and chain_age <= 90)
 
         historical_files: dict[tuple[str, float, str], list[tuple[pd.Timestamp, Path]]] = {}
