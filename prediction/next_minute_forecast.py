@@ -1,4 +1,4 @@
-"""Pre-candle forecast schedule for one-minute NIFTY options research.
+"""Pre-candle forecast schedule for NIFTY options at a configurable candle horizon.
 
 This is an advisory forecast generator, not an order execution engine. A
 forecast for the next minute is emitted using only candles completed before
@@ -42,13 +42,13 @@ def forecast_next_minute(
     range_method: str = "adaptive",
     timeframe_minutes: int = 1,
 ) -> NextCandleForecast:
-    """Forecast the next minute before it begins.
+    """Forecast the next candle before it begins; timeframe_minutes sets its horizon.
 
     Input columns: timestamp, open, high, low, close, volume. The final input
     row must be the latest fully completed candle. The target timestamp is
-    one minute after its timestamp. If a market is closed or a minute is
+    timeframe_minutes after its timestamp. If a market is closed or a bar is
     missing, the caller should align the target timestamp to the next actual
-    trading minute using the exchange calendar.
+    trading interval using the exchange calendar.
     """
     if timeframe_minutes not in {1, 3, 5, 15, 30, 60}:
         raise ValueError("timeframe_minutes must be one of 1, 3, 5, 15, 30, or 60")
