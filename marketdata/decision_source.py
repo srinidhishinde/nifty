@@ -356,7 +356,9 @@ def load_kotak_decision_snapshot(
                 _wait("Captured SFeed timestamps are invalid.", now),
             )
         captured_age_minutes = max(0.0, (now.tz_convert("UTC") - captured_ts.max()).total_seconds() / 60.0)
-        freshness_limit_minutes = max(15.0, (5 if timeframe == "5m" else 15) * 2.5)
+        # Raw SFeed storage is always 5-minute bars, even when the UI
+        # resamples them to 15m. Keep the same strict source-freshness limit.
+        freshness_limit_minutes = 15.0
         if captured_age_minutes > freshness_limit_minutes:
             message = (
                 f"Live {instrument_upper} SFeed is stale: last captured candle is "
