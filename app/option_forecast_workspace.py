@@ -1,6 +1,7 @@
 """Live-first option selector with explicit data freshness and safe historical fallback."""
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from marketdata.daily_store import DailyMarketStore, load_captured_candles
 from prediction.next_minute_forecast import forecast_next_minute
 
 
+logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
 HISTORY_ROOT = ROOT / "data" / "backtest" / "kotak"
 
@@ -63,31 +65,66 @@ def _five_minute_bars(one_minute: pd.DataFrame) -> pd.DataFrame:
 
 
 def _historical_comparison(frame: pd.DataFrame, minutes: int, symbol: str) -> pd.DataFrame:
-    """Strictly walk forward: forecast each historical candle using earlier bars only."""
+    """Strict walk-forward comparison; each target uses earlier candles only."""
+    logger.info(
+        "[WF] START symbol=%s interval=%sm rows=%d",
+        symbol, minutes, len(frame),
+    )
+    if frame.empty or not {"timestamp", "high", "low", "close"}.issubset(frame.columns):
+        logger.warning("[WF] SKIP invalid/empty frame columns=%s", list(frame.columns))
+        return pd.DataFrame()
+
     rows = []
-    # Keep the display small; still compute chronologically and never train on target bars.
+    failures = 0
     first = max(3, len(frame) - 80)
+    logger.info(
+        "[WF] TARGET_RANGE first_index=%d end_index=%d latest=%s",
+        first, len(frame), frame["timestamp"].iloc[-1],
+    )
     for target_idx in range(first, len(frame)):
         history = frame.iloc[:target_idx].copy()
         actual = frame.iloc[target_idx]
         try:
             pred = forecast_next_minute(
-                history, underlying=symbol, lookback=min(30, len(history)),
-                quantile=0.80, range_method="adaptive", timeframe_minutes=minutes,
+                history,
+                underlying=symbol,
+                lookback=min(30, len(history)),
+                quantile=0.80,
+                range_method="adaptive",
+                timeframe_minutes=minutes,
                 generated_at=history["timestamp"].iloc[-1],
             )
+            predicted_low = float(pred.predicted_low)
+            predicted_high = float(pred.predicted_high)
+            actual_low = float(actual["low"])
+            actual_high = float(actual["high"])
+            if not all(pd.notna(v) for v in (predicted_low, predicted_high, actual_low, actual_high)):
+                raise ValueError("Forecast or actual OHLC contains a non-finite value")
         except (ValueError, TypeError, KeyError, OverflowError):
+            failures += 1
+            logger.exception(
+                "[WF] FORECAST_FAILED index=%d target=%s history_rows=%d",
+                target_idx, actual.get("timestamp"), len(history),
+            )
             continue
+
         rows.append({
             "Candle time": pd.Timestamp(actual["timestamp"]).strftime("%Y-%m-%d %H:%M"),
-            "Predicted low": pred.predicted_low,
-            "Actual low": round(float(actual["low"]), 2),
-            "Low hit": float(actual["low"]) >= pred.predicted_low,
-            "Actual high": round(float(actual["high"]), 2),
-            "Predicted high": pred.predicted_high,
-            "High hit": float(actual["high"]) <= pred.predicted_high,
+            "Predicted low": predicted_low,
+            "Actual low": round(actual_low, 2),
+            "Low hit": actual_low >= predicted_low,
+            "Actual high": round(actual_high, 2),
+            "Predicted high": predicted_high,
+            "High hit": actual_high <= predicted_high,
         })
-    return pd.DataFrame(rows)
+
+    result = pd.DataFrame(rows)
+    logger.info(
+        "[WF] COMPLETE input_rows=%d output_rows=%d failures=%d latest_result=%s",
+        len(frame), len(result), failures,
+        result["Candle time"].iloc[-1] if not result.empty else "NONE",
+    )
+    return result
 
 
 @st.fragment(run_every="30s")
@@ -477,16 +514,19 @@ def render_option_forecast_workspace(instrument: str) -> None:
         b.metric("Next candle predicted high", f"₹{pred.predicted_high:,.2f}")
         c.metric("Forecast target", pd.Timestamp(pred.target_candle_time).strftime("%Y-%m-%d %H:%M"))
         st.caption("High/low are estimates, not guarantees. This range method is not a calibrated probability or a promise of trade accuracy.")
+        logger.info(
+            "[WF] UI_GATE live=%s interval=%sm frame_rows=%d latest_candle=%s candle_age_seconds=%.1f",
+            data_is_live, minutes, len(frame), last_start, candle_age,
+        )
         if not data_is_live:
             st.info("Market is closed or data is stale. The forecast is anchored to the latest saved candle and is historical-context only—not a current live quote.")
-            st.markdown("#### Actual vs predicted (walk-forward history)")
-            comparison = _historical_comparison(frame, minutes, symbol)
-            if comparison.empty:
-                st.info("Not enough earlier candles to calculate a walk-forward comparison.")
-            else:
-                cols = st.columns(2)
-                cols[0].metric("Low inside predicted range", f"{comparison['Low hit'].mean() * 100:.1f}%", f"{int(comparison['Low hit'].sum())}/{len(comparison)} candles")
-                cols[1].metric("High inside predicted range", f"{comparison['High hit'].mean() * 100:.1f}%", f"{int(comparison['High hit'].sum())}/{len(comparison)} candles")
-                st.dataframe(comparison.iloc[::-1], use_container_width=True, hide_index=True, height=360)
+        st.markdown("#### Actual vs predicted (walk-forward history)")
+        st.caption("This table scores completed historical candles using only earlier candles. It is historical validation, not a prediction of the still-forming candle.")
+        comparison = _historical_comparison(frame, minutes, symbol)
+        if comparison.empty:
+            st.info("Walk-forward comparison produced no scored candles. Check the application terminal for [WF] FORECAST_FAILED diagnostics.")
         else:
-            st.caption("Actual high/low for the target candle become known only after that candle closes; they are not displayed as if already observed.")
+            cols = st.columns(2)
+            cols[0].metric("Low inside predicted range", f"{comparison['Low hit'].mean() * 100:.1f}%", f"{int(comparison['Low hit'].sum())}/{len(comparison)} candles")
+            cols[1].metric("High inside predicted range", f"{comparison['High hit'].mean() * 100:.1f}%", f"{int(comparison['High hit'].sum())}/{len(comparison)} candles")
+            st.dataframe(comparison.iloc[::-1], use_container_width=True, hide_index=True, height=360)
