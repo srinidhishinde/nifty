@@ -628,6 +628,52 @@ class KotakNeoProvider(MarketDataProvider):
             ltp_change_pct=ltp_change_pct,
         )
 
+    def get_contract_quote(self, contract: OptionContract) -> dict:
+        """Fetch detailed quote/depth for exactly one selected option contract."""
+        token = str(contract.instrument_token or "").strip()
+        if not token:
+            raise ValueError("Selected option contract has no Kotak Neo instrument token.")
+        if "|" in token:
+            segment, instrument_token = token.split("|", 1)
+        else:
+            segment, instrument_token = self.normalize_exchange(contract.exchange), token
+
+        response = self.client.quotes(
+            instrument_tokens=[{
+                "instrument_token": instrument_token,
+                "exchange_segment": segment,
+            }],
+            quote_type="all",
+        )
+        if not isinstance(response, list):
+            data = self._response_data(response)
+            response = data.get("quotes") or data.get("data") or []
+        if not isinstance(response, list) or not response or not isinstance(response[0], dict):
+            error = self._response_error(response)
+            raise RuntimeError(error or "Kotak Neo returned no quote for the selected contract.")
+
+        row = next(
+            (
+                item for item in response
+                if str(item.get("exchange_token") or item.get("instrument_token") or "").split("|")[-1]
+                == instrument_token
+            ),
+            response[0],
+        )
+        depth = row.get("depth") or {}
+        buy = depth.get("buy") or depth.get("buyDepth") or []
+        sell = depth.get("sell") or depth.get("sellDepth") or []
+        bid = self._float(buy[0].get("price"), 0.0) if buy and isinstance(buy[0], dict) else 0.0
+        ask = self._float(sell[0].get("price"), 0.0) if sell and isinstance(sell[0], dict) else 0.0
+        return {
+            "ltp": self._quote_ltp(row, contract.ltp or 0.0),
+            "bid": bid or None,
+            "ask": ask or None,
+            "volume": self._float(row.get("last_volume") or row.get("volume"), contract.volume or 0.0),
+            "open_interest": self._float(row.get("open_int") or row.get("openInterest"), contract.open_interest or 0.0),
+            "timestamp": datetime.now(),
+        }
+
     def _enrich_quotes(self, contracts: list[OptionContract]) -> None:
         """Populate LTP/depth fields with headroom below Neo's 50-symbol limit.
 
