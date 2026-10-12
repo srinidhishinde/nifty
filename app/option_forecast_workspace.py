@@ -165,10 +165,16 @@ def render_option_forecast_workspace(instrument: str) -> None:
         # it with a current live refresh. The date selector defaults to the newest saved
         # session, so live refresh remains enabled for normal use.
         historical_date_selected = selected_snapshot_date is not None and selected_snapshot_date < now.date()
-        if market_open and connected and not historical_date_selected and (force_refresh or chain.empty or chain_age > 30):
+        # Fetch from Neo even when no local snapshot exists and the market is closed:
+        # the broker may still return its latest available chain. Such data remains
+        # historical outside market hours and is never labelled live.
+        should_fetch_broker_chain = connected and not historical_date_selected and (
+            force_refresh or chain.empty or (market_open and chain_age > 30)
+        )
+        if should_fetch_broker_chain:
             last_attempt = st.session_state.get("compact_chain_refresh_attempt")
             attempt_age = (now - last_attempt).total_seconds() if isinstance(last_attempt, pd.Timestamp) else float("inf")
-            if force_refresh or attempt_age >= 30:
+            if force_refresh or chain.empty or attempt_age >= 30:
                 st.session_state["compact_chain_refresh_attempt"] = now
                 try:
                     if provider is None:
@@ -190,7 +196,7 @@ def render_option_forecast_workspace(instrument: str) -> None:
                     else:
                         st.warning("Kotak Neo returned an empty option chain. The saved snapshot, if any, remains historical.")
                 except Exception as exc:
-                    st.warning(f"Live option-chain refresh failed; saved history will be used only as historical data. {exc}")
+                    st.warning(f"Kotak Neo option-chain fetch failed; any saved data remains historical. Check the broker session, expiry availability, and API response. {exc}")
         refresh_map = st.session_state.get("compact_live_refresh_at", {})
         last_live_refresh = refresh_map.get(instrument) if isinstance(refresh_map, dict) else None
         refresh_age = (now - last_live_refresh).total_seconds() if isinstance(last_live_refresh, pd.Timestamp) else float("inf")
@@ -317,7 +323,10 @@ def render_option_forecast_workspace(instrument: str) -> None:
                 chain = pd.DataFrame(history_records)
 
         if chain.empty:
-            st.warning("No option-chain snapshot or saved option-candle history is available for this instrument. Capture real Kotak data first.")
+            if connected:
+                st.warning("No saved snapshot exists and Kotak Neo did not return an option chain. The app tried the broker directly; inspect the fetch error above and confirm the Neo session and available expiry.")
+            else:
+                st.warning("No saved snapshot exists and Kotak Neo is disconnected. Connect Neo to request the latest available expiry; no prices will be fabricated.")
             return
         for col in ("symbol", "strike", "option_type"):
             if col not in chain:
