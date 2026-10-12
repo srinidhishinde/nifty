@@ -144,12 +144,28 @@ def render_option_forecast_workspace(instrument: str) -> None:
         live = bool(market_open and connected and not chain.empty and chain_age <= 90)
 
         historical_files: dict[tuple[str, float, str], list[tuple[pd.Timestamp, Path]]] = {}
+        invalid_history_filenames: list[str] = []
         if HISTORY_ROOT.exists():
             for path in HISTORY_ROOT.glob("*_1min.csv"):
                 match = re.match(r"^(?P<symbol>.+?)(?P<strike>\d+(?:\.\d+)?)(?P<side>CE|PE)_(?P<day>\d{4}-\d{2}-\d{2})_1min\.csv$", path.name, re.I)
-                if match and match.group("symbol").rstrip("_").upper().startswith(instrument.upper()):
-                    key = (match.group("symbol").rstrip("_"), float(match.group("strike")), match.group("side").upper())
-                    historical_files.setdefault(key, []).append((pd.Timestamp(match.group("day")), path))
+                if not match or not match.group("symbol").rstrip("_").upper().startswith(instrument.upper()):
+                    continue
+                # The filename regex checks date shape only; validate the actual
+                # calendar date before constructing a Timestamp so a malformed
+                # filename (for example, 2026-10-78) cannot crash the dashboard.
+                day = pd.to_datetime(match.group("day"), format="%Y-%m-%d", errors="coerce")
+                if pd.isna(day):
+                    invalid_history_filenames.append(path.name)
+                    continue
+                key = (match.group("symbol").rstrip("_"), float(match.group("strike")), match.group("side").upper())
+                historical_files.setdefault(key, []).append((pd.Timestamp(day), path))
+        if invalid_history_filenames:
+            examples = ", ".join(invalid_history_filenames[:3])
+            suffix = " ..." if len(invalid_history_filenames) > 3 else ""
+            st.warning(
+                f"Ignored {len(invalid_history_filenames)} saved candle file(s) with invalid dates in their filenames: "
+                f"{examples}{suffix}. Rename or recapture those files; their dates were not guessed."
+            )
 
         historical_mode = not live
         if historical_mode and historical_files:
