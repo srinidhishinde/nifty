@@ -1,4 +1,6 @@
 from datetime import date, datetime
+import logging
+import time
 from typing import Any, List
 
 from marketdata.models.market_data import Candle, OptionContract, Quote
@@ -20,6 +22,26 @@ class KotakNeoProvider(MarketDataProvider):
 
     def __init__(self, client):
         self.client = client
+
+    @staticmethod
+    def _api_call(operation: str, callback, **kwargs):
+        """Log market-data API latency and failures without logging credentials."""
+        started = time.monotonic()
+        try:
+            response = callback(**kwargs)
+        except Exception as exc:
+            elapsed_ms = (time.monotonic() - started) * 1000
+            logging.getLogger(__name__).exception(
+                "Kotak Neo API failed operation=%s elapsed_ms=%.0f exception_type=%s",
+                operation, elapsed_ms, type(exc).__name__,
+            )
+            raise
+        elapsed_ms = (time.monotonic() - started) * 1000
+        logging.getLogger(__name__).info(
+            "Kotak Neo API completed operation=%s elapsed_ms=%.0f response_type=%s",
+            operation, elapsed_ms, type(response).__name__,
+        )
+        return response
 
     @classmethod
     def normalize_exchange(cls, exchange: str) -> str:
@@ -182,7 +204,8 @@ class KotakNeoProvider(MarketDataProvider):
 
     def get_index_quote(self, index_name: str = "Nifty 50") -> Quote:
         """Fetch the current NIFTY index quote using Neo's index-name identifier."""
-        response = self.client.quotes(
+        response = self._api_call(
+            "quotes.index", self.client.quotes,
             instrument_tokens=[{
                 "instrument_token": index_name,
                 "exchange_segment": "nse_cm",
@@ -212,7 +235,8 @@ class KotakNeoProvider(MarketDataProvider):
     def _nearest_expiry(self, exchange: str, underlying: str) -> str:
         """Resolve the nearest available option expiry from Neo."""
         exchange_segment = self.normalize_exchange(exchange)
-        response = self.client.expiries(
+        response = self._api_call(
+            "expiries.option", self.client.expiries,
             exchange=exchange_segment,
             underlying=underlying.upper(),
             instrument_type="option",
@@ -439,7 +463,8 @@ class KotakNeoProvider(MarketDataProvider):
             if exchange_segment == "mcx_fo"
             else underlying.upper()
         )
-        response = self.client.option_chain(
+        response = self._api_call(
+            "option_chain", self.client.option_chain,
             exchange=exchange_segment,
             underlying=request_underlying,
             expiry=request_expiry,
@@ -637,7 +662,8 @@ class KotakNeoProvider(MarketDataProvider):
             if not tokens:
                 continue
 
-            response = self.client.quotes(
+            response = self._api_call(
+                "quotes.enrichment_batch", self.client.quotes,
                 instrument_tokens=tokens,
                 quote_type="all",
             )
@@ -759,7 +785,8 @@ class KotakNeoProvider(MarketDataProvider):
         token = str(contract.get("instrument_token") or "").strip()
         if not token:
             raise ValueError("Resolved MCX contract has no instrument token.")
-        response = self.client.quotes(
+        response = self._api_call(
+            "quotes.mcx", self.client.quotes,
             instrument_tokens=[{"instrument_token": token, "exchange_segment": "mcx_fo"}],
             quote_type="all",
         )
