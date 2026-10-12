@@ -344,3 +344,19 @@ def test_daily_store_loader_uses_only_captured_partitions(tmp_path):
     assert source == "KOTAK_CAPTURED"
     assert len(loaded) == 2
     assert set(loaded["data_source"]) == {"KOTAK_CAPTURED"}
+
+def test_index_quote_failure_logs_operation_and_elapsed_time(caplog):
+    import logging
+    import pytest
+
+    class TimeoutNeo(FakeNeo):
+        def quotes(self, **kwargs):
+            raise TimeoutError("simulated read timeout")
+
+    with caplog.at_level(logging.ERROR, logger="marketdata.providers.kotak_neo"):
+        with pytest.raises(TimeoutError, match="simulated read timeout"):
+            KotakNeoProvider(TimeoutNeo()).get_index_quote("Nifty 50")
+
+    assert "operation=quotes.index" in caplog.text
+    assert "exception_type=TimeoutError" in caplog.text
+    assert "elapsed_ms=" in caplog.text
