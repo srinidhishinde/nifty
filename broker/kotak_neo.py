@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from config.settings import settings
 
 
@@ -50,7 +52,6 @@ class KotakNeoBroker:
                 "NEO_CONSUMER_KEY is not configured"
             )
 
-        import httpx
         from neo_api_client import NeoAPI
 
         # Retry only connection establishment failures (including transient
