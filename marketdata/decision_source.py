@@ -124,9 +124,10 @@ def load_kotak_decision_snapshot(
     """Build production decision input from broker option-chain + captured Kotak SFeed candles.
 
     Both NIFTY and MCX use the same fail-closed architecture:
-      Kotak option chain + persisted Kotak SFeed 5m candles -> decision engine.
-    The Kotak historical endpoint is never used as a live decision fallback,
-    and neither Yahoo nor synthetic candles/contracts are substituted.
+      real broker option chain + historical warm-up where supported + fresh
+      persisted Kotak SFeed candles -> decision engine.
+    Historical bars warm up indicators only; they never satisfy the live-feed
+    freshness gate. Yahoo and synthetic candles/contracts are never substituted.
     """
     now = pd.Timestamp(now or pd.Timestamp.now(tz="Asia/Kolkata"))
     if now.tzinfo is None:
@@ -210,9 +211,8 @@ def load_kotak_decision_snapshot(
                 _wait("Market closed; current CE/PE trade decision is blocked.", now),
             )
 
-        # Live decision candles come only from the persisted Kotak SFeed
-        # recorder. This is the common path for NIFTY and MCX; no historical
-        # API, Yahoo data, or synthetic candles are allowed here.
+        # Fresh decision candles must come from persisted Kotak SFeed capture.
+        # MCX historical bars below are used only for indicator warm-up.
         from marketdata.daily_store import load_captured_candles
 
         end = now.date()
@@ -223,7 +223,34 @@ def load_kotak_decision_snapshot(
             end=end,
         )
         captured_frame = captured_frame.copy()
+        raw_captured_frame = captured_frame.copy()
         history_note = ""
+
+        # The recorder persists 5-minute bars. Build genuine completed
+        # 15-minute bars from those real 5-minute OHLCV rows when the user
+        # selects 15m; never label 5m rows as 15m data or include a partial bar.
+        if timeframe == "15m" and not captured_frame.empty:
+            local = captured_frame.copy()
+            local["timestamp"] = pd.to_datetime(
+                local["timestamp"], utc=True, errors="coerce"
+            ).dt.tz_convert("Asia/Kolkata")
+            local = local.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+            captured_frame = (
+                local[["open", "high", "low", "close", "volume"]]
+                .resample("15min", label="left", closed="left")
+                .agg({
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                })
+                .dropna(subset=["open", "high", "low", "close"])
+                .loc[lambda bars: (bars.index + pd.Timedelta(minutes=15)) <= now]
+                .reset_index()
+            )
+            captured_frame["timestamp"] = captured_frame["timestamp"].dt.tz_convert("UTC")
+            captured_frame["data_source"] = "KOTAK_CAPTURED"
 
         # MCX futures support broker historical candles, unlike the NIFTY
         # cash index. Use those real candles only as model warm-up context;
@@ -318,7 +345,7 @@ def load_kotak_decision_snapshot(
                 _wait(f"No captured live {instrument_upper} SFeed candles are available.", now),
             )
 
-        captured_ts = pd.to_datetime(captured_frame["timestamp"], utc=True, errors="coerce").dropna()
+        captured_ts = pd.to_datetime(raw_captured_frame["timestamp"], utc=True, errors="coerce").dropna()
         if captured_ts.empty:
             return DecisionSnapshot(
                 "KOTAK_NEO", "LIVE", "RED",
