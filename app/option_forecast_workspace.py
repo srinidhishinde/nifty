@@ -9,6 +9,12 @@ import streamlit as st
 
 from marketdata.daily_store import DailyMarketStore, load_captured_candles
 from prediction.next_minute_forecast import forecast_next_minute
+from prediction.forecast_audit import (
+    audit_summary,
+    record_forecast,
+    save_walk_forward_evaluation,
+    settle_pending_forecasts,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,6 +85,7 @@ def _historical_comparison(frame: pd.DataFrame, minutes: int, symbol: str) -> pd
         except (ValueError, TypeError, KeyError, OverflowError):
             continue
         rows.append({
+            "Input candle time": pd.Timestamp(history["timestamp"].iloc[-1]).strftime("%Y-%m-%d %H:%M"),
             "Candle time": pd.Timestamp(actual["timestamp"]).strftime("%Y-%m-%d %H:%M"),
             "Predicted low": pred.predicted_low,
             "Actual low": round(float(actual["low"]), 2),
@@ -464,6 +471,17 @@ def render_option_forecast_workspace(instrument: str) -> None:
         status = "LIVE DATA" if data_is_live else "HISTORICAL / MARKET CLOSED"
         st.write(f"**Data status:** {status} · **Source:** {source}")
         st.write(f"**Last actual candle:** {last_start.strftime('%Y-%m-%d %H:%M %Z')} · close ₹{float(frame['close'].iloc[-1]):,.2f}")
+        # Settle old live forecasts only from a fresh live feed; historical CSVs
+        # must not be mistaken for the outcomes of live forecasts.
+        if data_is_live:
+            try:
+                settle_pending_forecasts(
+                    frame, contract_symbol=symbol, timeframe_minutes=minutes,
+                    as_of=now,
+                )
+            except (OSError, ValueError, TypeError) as audit_error:
+                st.warning(f"Forecast audit settlement could not be saved: {audit_error}")
+
         try:
             pred = forecast_next_minute(
                 frame, underlying=symbol, lookback=min(30, len(frame)),
@@ -477,10 +495,42 @@ def render_option_forecast_workspace(instrument: str) -> None:
         b.metric("Next candle predicted high", f"₹{pred.predicted_high:,.2f}")
         c.metric("Forecast target", pd.Timestamp(pred.target_candle_time).strftime("%Y-%m-%d %H:%M"))
         st.caption("High/low are estimates, not guarantees. This range method is not a calibrated probability or a promise of trade accuracy.")
+        if data_is_live:
+            try:
+                record_forecast(
+                    instrument=instrument,
+                    contract_symbol=symbol,
+                    expiry=expiry,
+                    option_type=side,
+                    strike=float(strike),
+                    timeframe_minutes=minutes,
+                    data_source=source,
+                    issued_at=now,
+                    input_candle_time=frame["timestamp"].iloc[-1],
+                    target_candle_time=pred.target_candle_time,
+                    predicted_low=float(pred.predicted_low),
+                    predicted_high=float(pred.predicted_high),
+                )
+            except (OSError, ValueError, TypeError) as audit_error:
+                st.warning(f"Live forecast was displayed but could not be written to the audit log: {audit_error}")
         if not data_is_live:
             st.info("Market is closed or data is stale. The forecast is anchored to the latest saved candle and is historical-context only—not a current live quote.")
             st.markdown("#### Actual vs predicted (walk-forward history)")
             comparison = _historical_comparison(frame, minutes, symbol)
+            if not comparison.empty:
+                try:
+                    save_walk_forward_evaluation(
+                        comparison,
+                        instrument=instrument,
+                        contract_symbol=symbol,
+                        expiry=expiry,
+                        option_type=side,
+                        strike=float(strike),
+                        timeframe_minutes=minutes,
+                        data_source=source,
+                    )
+                except (OSError, ValueError, TypeError) as audit_error:
+                    st.warning(f"Historical forecast audit could not be saved: {audit_error}")
             if comparison.empty:
                 st.info("Not enough earlier candles to calculate a walk-forward comparison.")
             else:
@@ -488,5 +538,37 @@ def render_option_forecast_workspace(instrument: str) -> None:
                 cols[0].metric("Low inside predicted range", f"{comparison['Low hit'].mean() * 100:.1f}%", f"{int(comparison['Low hit'].sum())}/{len(comparison)} candles")
                 cols[1].metric("High inside predicted range", f"{comparison['High hit'].mean() * 100:.1f}%", f"{int(comparison['High hit'].sum())}/{len(comparison)} candles")
                 st.dataframe(comparison.iloc[::-1], use_container_width=True, hide_index=True, height=360)
+                saved_metrics = audit_summary(contract_symbol=symbol, timeframe_minutes=minutes)
+                st.caption(
+                    "Persistent audit log · "
+                    f"{saved_metrics['historical_count']} walk-forward samples · "
+                    f"{saved_metrics['live_count']} verified live samples · "
+                    f"{saved_metrics['pending_count']} pending live forecasts"
+                )
+                if saved_metrics["verified_count"]:
+                    metric_cols = st.columns(3)
+                    low_mae = saved_metrics["low_mae"]
+                    high_mae = saved_metrics["high_mae"]
+                    coverage = saved_metrics["range_coverage_pct"]
+                    metric_cols[0].metric("Logged low MAE", "—" if low_mae is None else f"₹{low_mae:,.2f}")
+                    metric_cols[1].metric("Logged high MAE", "—" if high_mae is None else f"₹{high_mae:,.2f}")
+                    metric_cols[2].metric("Full-range coverage", "—" if coverage is None else f"{coverage:.1f}%")
+                    st.caption("MAE measures predicted-versus-actual high/low boundary error. Range coverage is descriptive, not directional accuracy or profitability.")
         else:
             st.caption("Actual high/low for the target candle become known only after that candle closes; they are not displayed as if already observed.")
+            live_audit = audit_summary(contract_symbol=symbol, timeframe_minutes=minutes)
+            st.caption(
+                "Persistent forecast audit · "
+                f"{live_audit['historical_count']} walk-forward samples · "
+                f"{live_audit['live_count']} verified live samples · "
+                f"{live_audit['pending_count']} pending live forecasts"
+            )
+            if live_audit["verified_count"]:
+                audit_cols = st.columns(3)
+                low_mae = live_audit["low_mae"]
+                high_mae = live_audit["high_mae"]
+                coverage = live_audit["range_coverage_pct"]
+                audit_cols[0].metric("Logged low MAE", "—" if low_mae is None else f"₹{low_mae:,.2f}")
+                audit_cols[1].metric("Logged high MAE", "—" if high_mae is None else f"₹{high_mae:,.2f}")
+                audit_cols[2].metric("Full-range coverage", "—" if coverage is None else f"{coverage:.1f}%")
+                st.caption("MAE measures predicted-versus-actual high/low boundary error. Range coverage is descriptive, not directional accuracy or profitability.")
