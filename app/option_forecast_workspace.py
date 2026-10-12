@@ -143,6 +143,19 @@ def render_option_forecast_workspace(instrument: str) -> None:
                     st.warning(f"Live option-chain refresh failed; saved history will be used only as historical data. {exc}")
         live = bool(market_open and connected and not chain.empty and chain_age <= 90)
 
+        # Always show the provenance and timestamp of the option-chain data,
+        # including when the market is closed or Neo is temporarily disconnected.
+        if chain_ts is not None:
+            snapshot_local = chain_ts.tz_convert("Asia/Kolkata") if chain_ts.tzinfo else chain_ts.tz_localize("Asia/Kolkata")
+            snapshot_label = snapshot_local.strftime("%Y-%m-%d %H:%M:%S %Z")
+            age_minutes = max(0, int(chain_age // 60))
+            if live:
+                st.success(f"Kotak Neo option chain · Last updated: {snapshot_label} · refreshed/live status")
+            else:
+                st.info(f"Last Kotak Neo option-chain snapshot: {snapshot_label} · {age_minutes} minute(s) old · historical snapshot, not live quotes")
+        elif not chain.empty:
+            st.warning("Option-chain data is available, but its capture timestamp could not be determined; treat it as historical.")
+
         historical_files: dict[tuple[str, float, str], list[tuple[pd.Timestamp, Path]]] = {}
         invalid_history_filenames: list[str] = []
         if HISTORY_ROOT.exists():
@@ -235,9 +248,6 @@ def render_option_forecast_workspace(instrument: str) -> None:
             elif history_records:
                 chain = pd.DataFrame(history_records)
 
-        if historical_mode and chain_ts is not None:
-            snapshot_local = chain_ts.tz_convert("Asia/Kolkata") if chain_ts.tzinfo else chain_ts.tz_localize("Asia/Kolkata")
-            st.info(f"Using saved option-chain snapshot captured {snapshot_local.strftime('%Y-%m-%d %H:%M:%S %Z')}; quotes are historical, not live.")
         if chain.empty:
             st.warning("No option-chain snapshot or saved option-candle history is available for this instrument. Capture real Kotak data first.")
             return
@@ -255,7 +265,7 @@ def render_option_forecast_workspace(instrument: str) -> None:
         if not expiries:
             st.warning("No expiry/session label is available.")
             return
-        expiry = st.selectbox("Expiry / saved session", expiries, key="compact_option_expiry")
+        expiry = st.selectbox("Expiry date", expiries, key="compact_option_expiry")
         exp_chain = chain[chain["expiry"].astype(str) == expiry]
         sides = [s for s in ("CE", "PE") if s in set(exp_chain["option_type"])]
         if not sides:
@@ -271,7 +281,35 @@ def render_option_forecast_workspace(instrument: str) -> None:
             return
         contract = selected.iloc[0]
         symbol = str(contract["symbol"]).strip()
-        st.caption(f"Contract: {symbol} · {side} {strike:g} · {expiry}")
+        st.caption(f"Selected contract: {symbol} · {side} · strike {strike:g} · expiry/session {expiry}")
+
+        # Show quote fields from the same selected Kotak snapshot, if present.
+        # These values retain the snapshot timestamp above and are never implied
+        # to be current when the market is closed or the feed is stale.
+        quote_fields = [
+            ("LTP", "ltp", "₹"),
+            ("Bid", "bid", "₹"),
+            ("Ask", "ask", "₹"),
+            ("Volume", "volume", ""),
+            ("Open interest", "open_interest", ""),
+            ("OI change", "oi_change", ""),
+        ]
+        available_quotes = []
+        for label, column, prefix in quote_fields:
+            if column not in contract.index or pd.isna(contract.get(column)):
+                continue
+            try:
+                value = float(contract.get(column))
+            except (TypeError, ValueError):
+                continue
+            if value == 0 and label in {"LTP", "Bid", "Ask"}:
+                continue
+            display = f"{prefix}{value:,.2f}" if prefix else f"{value:,.0f}"
+            available_quotes.append((label, display))
+        if available_quotes:
+            quote_cols = st.columns(min(3, len(available_quotes)))
+            for index, (label, display) in enumerate(available_quotes):
+                quote_cols[index % len(quote_cols)].metric(label, display)
         try:
             if historical_mode and "history_path" in selected.columns:
                 path = contract["history_path"]
