@@ -169,6 +169,14 @@ def settle_pending_forecasts(
             actual_high = float(actual["high"])
             if not all(pd.notna(v) for v in (predicted_low, predicted_high, actual_low, actual_high)):
                 continue
+            # CSV reloads infer all-empty outcome columns as float64. Use object
+            # columns before assigning booleans/status strings to remain compatible
+            # with newer pandas versions that reject incompatible dtype assignment.
+            for column in (
+                "actual_low", "actual_high", "low_abs_error", "high_abs_error",
+                "low_bound_ok", "high_bound_ok", "range_covered", "status",
+            ):
+                audit[column] = audit[column].astype(object)
             for column, value in _result_fields(
                 predicted_low, predicted_high, actual_low, actual_high
             ).items():
@@ -268,7 +276,7 @@ def audit_summary(
         }
     low_errors = pd.to_numeric(verified["low_abs_error"], errors="coerce").dropna()
     high_errors = pd.to_numeric(verified["high_abs_error"], errors="coerce").dropna()
-    covered = verified["range_covered"].astype(str).str.lower().isin({"true", "1"})
+    covered = verified["range_covered"].astype(str).str.lower().isin({"true", "1", "1.0"})
     record_types = verified["record_type"].astype(str)
     return {
         "verified_count": len(verified),
