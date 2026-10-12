@@ -211,6 +211,7 @@ async def stream_kotak_sfeed(
     mcx_tokens: Iterable[str],
     seconds: int,
     on_tick: Callable[[LiveTick], None],
+    progress_callback: Callable[[dict[str, int]], None] | None = None,
 ) -> dict[str, int]:
     """Capture NIFTY index and MCX futures SFeed ticks for a bounded window."""
 
@@ -245,6 +246,13 @@ async def stream_kotak_sfeed(
 
         ws.on_raw = _on_raw
         ws.on_error = _on_error
+        async def _report_progress() -> None:
+            while True:
+                await asyncio.sleep(15)
+                if progress_callback is not None:
+                    progress_callback(dict(counts))
+
+        progress_task = asyncio.create_task(_report_progress())
         try:
             async with asyncio.timeout(seconds):
                 async for message in ws:
@@ -260,6 +268,11 @@ async def stream_kotak_sfeed(
         except TimeoutError:
             pass
         finally:
+            progress_task.cancel()
+            try:
+                await progress_task
+            except asyncio.CancelledError:
+                pass
             try:
                 await ws.unsubscribe_exchange()
             finally:
