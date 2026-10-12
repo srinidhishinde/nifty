@@ -1,4 +1,4 @@
-"""Compact option selector with 1m/5m high-low forecasts and closed-market validation."""
+"""Live-first option selector with explicit data freshness and safe historical fallback."""
 from __future__ import annotations
 
 import re
@@ -90,14 +90,15 @@ def _historical_comparison(frame: pd.DataFrame, minutes: int, symbol: str) -> pd
     return pd.DataFrame(rows)
 
 
-@st.fragment(run_every="15s")
+@st.fragment(run_every="30s")
 def render_option_forecast_workspace(instrument: str) -> None:
     with st.container(border=True):
         st.subheader("Option High / Low Forecast")
-        st.caption("Select a contract, then view the next 1-minute or 5-minute candle range. No order execution.")
+        st.caption("Live-first workspace · Kotak Neo option-chain refresh every 30 seconds while connected and the market is open. Saved data is clearly marked historical. Forecasting only; orders remain disabled.")
         interval_label = st.radio("Forecast interval", ["1 minute", "5 minutes"], horizontal=True, key="compact_option_interval")
         minutes = 1 if interval_label == "1 minute" else 5
         now = pd.Timestamp.now(tz="Asia/Kolkata")
+        force_refresh = st.button("Refresh market data now", key="compact_option_refresh_now", type="secondary")
         store = DailyMarketStore()
         chain = pd.DataFrame()
         chain_ts = None
@@ -123,10 +124,10 @@ def render_option_forecast_workspace(instrument: str) -> None:
         if chain_ts is not None:
             chain_local = chain_ts.tz_convert("Asia/Kolkata") if chain_ts.tzinfo else chain_ts.tz_localize("Asia/Kolkata")
             chain_age = max(0.0, (now - chain_local).total_seconds())
-        if market_open and connected and (chain.empty or chain_age > 90):
+        if market_open and connected and (force_refresh or chain.empty or chain_age > 30):
             last_attempt = st.session_state.get("compact_chain_refresh_attempt")
             attempt_age = (now - last_attempt).total_seconds() if isinstance(last_attempt, pd.Timestamp) else float("inf")
-            if attempt_age >= 60:
+            if force_refresh or attempt_age >= 30:
                 st.session_state["compact_chain_refresh_attempt"] = now
                 try:
                     from marketdata.providers.kotak_neo import KotakNeoProvider
@@ -139,9 +140,17 @@ def render_option_forecast_workspace(instrument: str) -> None:
                         store.save_option_chain_snapshot(instrument, refreshed, captured_at=now)
                         chain, chain_ts = store.load_latest_option_chain_snapshot(instrument, before=now)
                         chain_age = 0.0
+                        refresh_map = dict(st.session_state.get("compact_live_refresh_at", {}))
+                        refresh_map[instrument] = now
+                        st.session_state["compact_live_refresh_at"] = refresh_map
+                    else:
+                        st.warning("Kotak Neo returned an empty option chain. The saved snapshot, if any, remains historical.")
                 except Exception as exc:
                     st.warning(f"Live option-chain refresh failed; saved history will be used only as historical data. {exc}")
-        live = bool(market_open and connected and not chain.empty and chain_age <= 90)
+        refresh_map = st.session_state.get("compact_live_refresh_at", {})
+        last_live_refresh = refresh_map.get(instrument) if isinstance(refresh_map, dict) else None
+        refresh_age = (now - last_live_refresh).total_seconds() if isinstance(last_live_refresh, pd.Timestamp) else float("inf")
+        live = bool(market_open and connected and not chain.empty and chain_age <= 90 and refresh_age <= 90)
 
         # Always show the provenance and timestamp of the option-chain data,
         # including when the market is closed or Neo is temporarily disconnected.
@@ -150,9 +159,9 @@ def render_option_forecast_workspace(instrument: str) -> None:
             snapshot_label = snapshot_local.strftime("%Y-%m-%d %H:%M:%S %Z")
             age_minutes = max(0, int(chain_age // 60))
             if live:
-                st.success(f"Kotak Neo option chain · Last updated: {snapshot_label} · refreshed/live status")
+                st.success(f"LIVE · Kotak Neo option chain · Updated {snapshot_label} · refresh age {int(refresh_age)}s")
             else:
-                st.info(f"Last Kotak Neo option-chain snapshot: {snapshot_label} · {age_minutes} minute(s) old · historical snapshot, not live quotes")
+                st.info(f"HISTORICAL SNAPSHOT · Last saved {snapshot_label} · {age_minutes} minute(s) old · not a live quote")
         elif not chain.empty:
             st.warning("Option-chain data is available, but its capture timestamp could not be determined; treat it as historical.")
 
@@ -180,6 +189,10 @@ def render_option_forecast_workspace(instrument: str) -> None:
                 f"{examples}{suffix}. Rename or recapture those files; their dates were not guessed."
             )
 
+        if market_open and connected and not live:
+            st.warning("Market hours are active, but a successful fresh Kotak Neo refresh has not been confirmed in this session. Displayed snapshot data is not labelled live.")
+        elif market_open and not connected:
+            st.warning("Market is open, but Kotak Neo is disconnected. Connect to Neo to refresh live market data.")
         historical_mode = not live
         if historical_mode and historical_files:
             # Keep the real saved option-chain snapshot as the primary selector.
