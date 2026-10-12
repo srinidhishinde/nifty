@@ -284,7 +284,11 @@ def load_captured_candles(
         frame = frame.dropna(subset=list(required))
         if not frame.empty:
             if "timeframe" in frame.columns:
-                frame = frame[frame["timeframe"].astype(str).isin({f"{timeframe_minutes}min", str(timeframe_minutes)})].copy()
+                labels = frame["timeframe"].astype(str).str.strip()
+                allowed = labels.isin({f"{timeframe_minutes}min", str(timeframe_minutes)})
+                if timeframe_minutes == 1:
+                    allowed = allowed | frame["timeframe"].isna() | labels.eq("")
+                frame = frame[allowed].copy()
             elif timeframe_minutes != 1:
                 continue
             if not frame.empty:
