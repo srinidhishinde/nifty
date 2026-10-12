@@ -143,7 +143,7 @@ def render_fifteen_minute_live_workspace() -> None:
                 tolerance=0.01, timeframe_minutes=15,
             )
             range_forecast = forecast_next_minute(
-                frame, underlying=symbol, lookback=min(30, len(frame) - 1),
+                frame, underlying=symbol, lookback=min(30, len(frame)),
                 quantile=0.90, range_method="adaptive", timeframe_minutes=15,
             )
         except (ValueError, TypeError, KeyError, OverflowError) as exc:
