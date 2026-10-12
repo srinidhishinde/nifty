@@ -344,3 +344,65 @@ def test_daily_store_loader_uses_only_captured_partitions(tmp_path):
     assert source == "KOTAK_CAPTURED"
     assert len(loaded) == 2
     assert set(loaded["data_source"]) == {"KOTAK_CAPTURED"}
+
+
+def test_enrich_quotes_batches_contracts_without_omissions():
+    class RecordingNeo:
+        def __init__(self):
+            self.quote_batches = []
+
+        def quotes(self, **kwargs):
+            tokens = kwargs["instrument_tokens"]
+            self.quote_batches.append(tokens)
+            return [
+                {
+                    "exchange_token": token["instrument_token"],
+                    "ltp": "100",
+                    "last_volume": "10",
+                    "depth": {
+                        "buy": [{"price": "99.5"}],
+                        "sell": [{"price": "100.5"}],
+                    },
+                }
+                for token in tokens
+            ]
+
+    client = RecordingNeo()
+    provider = KotakNeoProvider(client)
+
+    contracts = [
+        OptionContract(
+            symbol=f"NIFTY26OCT{25000 + i * 50}CE",
+            exchange="nse_fo",
+            underlying="NIFTY",
+            expiry="2026-10-29",
+            strike=float(25000 + i * 50),
+            option_type="CE",
+            instrument_token=f"nse_fo|{10000 + i}",
+            ltp=0.0,
+            bid=None,
+            ask=None,
+            volume=0.0,
+            open_interest=0.0,
+            oi_change=0.0,
+        )
+        for i in range(120)
+    ]
+
+    provider._enrich_quotes(contracts)
+
+    assert [len(batch) for batch in client.quote_batches] == [49, 49, 22]
+    assert all(len(batch) <= 49 for batch in client.quote_batches)
+
+    requested = [
+        (token["exchange_segment"], token["instrument_token"])
+        for batch in client.quote_batches
+        for token in batch
+    ]
+    expected = [("nse_fo", str(10000 + i)) for i in range(120)]
+
+    assert requested == expected
+    assert len(set(requested)) == 120
+    assert all(contract.ltp == 100.0 for contract in contracts)
+    assert all(contract.bid == 99.5 for contract in contracts)
+    assert all(contract.ask == 100.5 for contract in contracts)
