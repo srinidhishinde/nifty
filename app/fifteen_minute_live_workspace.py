@@ -155,8 +155,8 @@ def render_fifteen_minute_live_workspace() -> None:
         required = ["timestamp", "open", "high", "low", "close", "volume"]
         if candles.empty or not set(required).issubset(candles.columns):
             st.warning(
-                f"No saved 15-minute candles exist for {symbol}. Start scripts/capture_option_15min.py "
-                "for this exact expiry/side/strike. The 1-minute file will not be reused as 15-minute data."
+                f"No usable 15-minute candles or complete historical 15-minute buckets exist for {symbol}. "
+                "Start scripts/capture_option_15min.py for this exact expiry/side/strike, or provide a saved 1-minute historical session."
             )
             return
 
