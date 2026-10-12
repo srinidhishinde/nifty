@@ -1,7 +1,7 @@
 """Capture real Kotak ticks for one selected NIFTY option and persist completed 15-minute candles.
 
 Example:
-  python scripts/capture_option_15min.py --totp <6-digit-code> --expiry 2026-10-13 --option-type CE --strike 22700 --seconds 1800
+  python scripts/capture_option_15min.py --totp <6-digit-code> --expiry 2026-10-13 --option-type CE --strike 22700 --seconds 3600
 
 Order submission is never attempted.
 """
@@ -32,7 +32,7 @@ def main() -> int:
     parser.add_argument("--expiry", required=True, help="Exact expiry from the live option-chain selector, YYYY-MM-DD.")
     parser.add_argument("--option-type", choices=["CE", "PE"], required=True)
     parser.add_argument("--strike", type=float, required=True)
-    parser.add_argument("--seconds", type=int, default=1800)
+    parser.add_argument("--seconds", type=int, default=3600)
     args = parser.parse_args()
     if not args.totp.isdigit() or len(args.totp) != 6:
         parser.error("--totp must be exactly six digits.")
@@ -100,7 +100,7 @@ def main() -> int:
             print("[FAIL] No valid ticks for the selected option. Live 15-minute forecasting is not verified.", flush=True)
             return 1
         if saved == 0:
-            print("[WARN] Ticks arrived but no completed 15-minute candle was saved yet. Run a longer capture spanning a 15-minute boundary (ideally at least 30 minutes).", flush=True)
+            print("[WARN] Ticks arrived but no completed 15-minute candle was saved yet. Run a longer capture spanning at least three completed 15-minute buckets (ideally 60 minutes).", flush=True)
             return 1
         print("[PASS] Selected-option 15-minute candle capture complete.", flush=True)
         return 0
