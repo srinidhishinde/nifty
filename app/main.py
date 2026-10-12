@@ -61,6 +61,7 @@ from alerts.whatsapp import WhatsAppAlertService
 from analytics.signal_journal import SignalJournal
 from app.one_minute_forecast_panel import render_one_minute_forecast_panel
 from app.one_minute_live_workspace import render_one_minute_live_workspace
+from app.fifteen_minute_live_workspace import render_fifteen_minute_live_workspace
 from prediction.live_direction_forecast import predict_live_direction
 from reliability.failure_guard import assess_health, append_incident
 
@@ -783,6 +784,12 @@ global_news_score = news_snapshot.sentiment
 # ============================================================
 
 render_one_minute_live_workspace()
+
+# ============================================================
+# Dedicated 15-minute-ahead live forecast workspace
+# ============================================================
+
+render_fifteen_minute_live_workspace()
 
 # ============================================================
 # Production decision source: Kotak Neo
