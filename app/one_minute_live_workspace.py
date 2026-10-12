@@ -103,6 +103,7 @@ def render_one_minute_live_workspace() -> None:
         live_chain_available = (
             not chain.empty
             and market_open
+            and broker_connected
             and chain_timestamp is not None
             and snapshot_age_seconds <= 90
         )
