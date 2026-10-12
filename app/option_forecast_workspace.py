@@ -187,7 +187,7 @@ def render_option_forecast_workspace(instrument: str) -> None:
                     refreshed = provider.get_option_chain(
                         underlying=instrument, exchange=exchange,
                         expiry=str(requested_expiry) if requested_expiry in broker_expiries else None,
-                        count=40, enrich_quotes=True,
+                        count=40, enrich_quotes=False,
                     )
                     if refreshed:
                         store.save_option_chain_snapshot(instrument, refreshed, captured_at=now)
@@ -390,6 +390,42 @@ def render_option_forecast_workspace(instrument: str) -> None:
         symbol = str(contract["symbol"]).strip()
         st.caption(f"Selected contract: {symbol} · {side} · strike {strike:g} · expiry/session {expiry}")
 
+        # Detailed quote requests are on-demand and limited to this selected contract.
+        if st.button("Refresh selected contract quote", key="compact_selected_quote_refresh"):
+            try:
+                if provider is None:
+                    from marketdata.providers.kotak_neo import KotakNeoProvider
+                    provider = KotakNeoProvider(broker.client) if connected and broker is not None else None
+                if provider is None:
+                    st.warning("Connect to Kotak Neo to fetch a fresh quote. The saved option-chain snapshot is unchanged.")
+                else:
+                    from marketdata.models.market_data import OptionContract
+                    selected_contract = OptionContract(
+                        symbol=str(contract.get("symbol", symbol)),
+                        exchange=exchange,
+                        underlying=instrument.upper(),
+                        expiry=str(contract.get("expiry", expiry)),
+                        strike=float(contract.get("strike", strike)),
+                        option_type=side,
+                        instrument_token=str(contract.get("instrument_token", "")),
+                        ltp=float(contract.get("ltp", 0) or 0),
+                        bid=None,
+                        ask=None,
+                        volume=float(contract.get("volume", 0) or 0),
+                        open_interest=float(contract.get("open_interest", 0) or 0),
+                        oi_change=float(contract.get("oi_change", 0) or 0),
+                        implied_volatility=float(contract.get("implied_volatility", 0) or 0),
+                    )
+                    selected_quote = provider.get_contract_quote(selected_contract)
+                    st.success(f"Selected contract quote fetched from Kotak Neo at {pd.Timestamp(selected_quote['timestamp']).strftime('%H:%M:%S')}.")
+                    quote_cols = st.columns(4)
+                    quote_cols[0].metric("Selected LTP", f"₹{selected_quote['ltp']:,.2f}")
+                    quote_cols[1].metric("Selected bid", f"₹{selected_quote['bid']:,.2f}" if selected_quote["bid"] else "—")
+                    quote_cols[2].metric("Selected ask", f"₹{selected_quote['ask']:,.2f}" if selected_quote["ask"] else "—")
+                    quote_cols[3].metric("Selected volume", f"{selected_quote['volume']:,.0f}")
+            except Exception as exc:
+                st.warning(f"Selected-contract quote request failed; showing the saved snapshot only (not a live quote): {exc}")
+
         # Show quote fields from the same selected Kotak snapshot, if present.
         # These values retain the snapshot timestamp above and are never implied
         # to be current when the market is closed or the feed is stale.
@@ -487,6 +523,6 @@ def render_option_forecast_workspace(instrument: str) -> None:
                 cols = st.columns(2)
                 cols[0].metric("Low inside predicted range", f"{comparison['Low hit'].mean() * 100:.1f}%", f"{int(comparison['Low hit'].sum())}/{len(comparison)} candles")
                 cols[1].metric("High inside predicted range", f"{comparison['High hit'].mean() * 100:.1f}%", f"{int(comparison['High hit'].sum())}/{len(comparison)} candles")
-                st.dataframe(comparison.iloc[::-1], use_container_width=True, hide_index=True, height=360)
+                st.dataframe(comparison.iloc[::-1], width="stretch", hide_index=True, height=360)
         else:
             st.caption("Actual high/low for the target candle become known only after that candle closes; they are not displayed as if already observed.")

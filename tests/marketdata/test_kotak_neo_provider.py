@@ -401,3 +401,47 @@ def test_quote_enrichment_batches_strictly_below_fifty_symbols():
 
     assert client.batch_sizes == [40, 40, 1]
     assert max(client.batch_sizes) < 50
+
+
+
+def test_selected_contract_quote_requests_only_one_symbol():
+    class SingleQuoteNeo(FakeNeo):
+        def __init__(self):
+            self.quote_calls = []
+
+        def quotes(self, **kwargs):
+            self.quote_calls.append(kwargs)
+            return [{
+                "exchange_token": "123",
+                "ltp": "121.0",
+                "last_volume": "1000",
+                "open_int": "2500",
+                "depth": {
+                    "buy": [{"price": "120.9"}],
+                    "sell": [{"price": "121.1"}],
+                },
+            }]
+
+    client = SingleQuoteNeo()
+    contract = OptionContract(
+        symbol="NIFTY26OCT25000CE",
+        exchange="NSE",
+        underlying="NIFTY",
+        expiry="2026-10-15",
+        strike=25000,
+        option_type="CE",
+        instrument_token="nse_fo|123",
+        ltp=120.5,
+    )
+
+    quote = KotakNeoProvider(client).get_contract_quote(contract)
+
+    assert len(client.quote_calls) == 1
+    assert len(client.quote_calls[0]["instrument_tokens"]) == 1
+    assert client.quote_calls[0]["instrument_tokens"][0] == {
+        "instrument_token": "123",
+        "exchange_segment": "nse_fo",
+    }
+    assert quote["ltp"] == 121.0
+    assert quote["bid"] == 120.9
+    assert quote["ask"] == 121.1
