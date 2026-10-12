@@ -1,6 +1,9 @@
 """Dedicated 15-minute-ahead option forecast workspace; advisory only."""
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -44,9 +47,31 @@ def render_fifteen_minute_live_workspace() -> None:
             max(0.0, (now - (chain_ts.tz_convert("Asia/Kolkata") if chain_ts.tzinfo else chain_ts.tz_localize("Asia/Kolkata"))).total_seconds())
             if chain_ts is not None else float("inf")
         )
+        historical_files_mode = False
         if chain.empty:
-            st.warning("No saved Kotak option-chain snapshot is available. Refresh the main dashboard while connected to Kotak.")
-            return
+            historical_root = Path(__file__).resolve().parents[1] / "data" / "backtest" / "kotak"
+            found: dict[tuple[str, float, str], list[tuple[pd.Timestamp, Path]]] = {}
+            if historical_root.exists():
+                for path in historical_root.glob("*_1min.csv"):
+                    match = re.match(r"^(?P<symbol>.+?)(?P<strike>\\d+(?:\\.\\d+)?)(?P<type>CE|PE)_(?P<day>\\d{4}-\\d{2}-\\d{2})_1min\\.csv$", path.name, re.I)
+                    if not match:
+                        continue
+                    key = (match.group("symbol").rstrip("_"), float(match.group("strike")), match.group("type").upper())
+                    found.setdefault(key, []).append((pd.Timestamp(match.group("day")), path))
+            if not found:
+                st.warning("No saved Kotak option-chain snapshot or backdated option-candle CSVs are available.")
+                return
+            rows = []
+            for (prefix, saved_strike, saved_side), paths in found.items():
+                latest_day, latest_path = max(paths, key=lambda item: item[0])
+                rows.append({
+                    "symbol": f"{prefix}_{saved_strike:g}{saved_side}",
+                    "strike": saved_strike, "option_type": saved_side,
+                    "expiry": f"Saved data through {latest_day.date()}",
+                    "history_path": latest_path,
+                })
+            chain = pd.DataFrame(rows)
+            historical_files_mode = True
         chain = chain.copy()
         if "option_type" not in chain or "strike" not in chain or "symbol" not in chain:
             st.warning("Saved option-chain snapshot lacks contract selection fields.")
@@ -84,12 +109,47 @@ def render_fifteen_minute_live_workspace() -> None:
         st.caption(f"Selected contract: {symbol} · {side} {strike:g} · expiry {expiry}")
 
         try:
-            start = now.date() - pd.Timedelta(days=120)
-            candles, source = load_captured_candles(
-                symbol, start=start, end=now.date(), timeframe_minutes=15
-            )
+            if historical_files_mode:
+                history_path = selected.iloc[0]["history_path"]
+                raw = pd.read_csv(history_path)
+                raw.columns = [str(column).strip().lower() for column in raw.columns]
+                aliases = {"datetime": "timestamp", "date": "timestamp", "time": "timestamp", "ltp": "close", "price": "close", "vol": "volume"}
+                raw = raw.rename(columns={k: v for k, v in aliases.items() if k in raw.columns and v not in raw.columns})
+                required_raw = {"timestamp", "open", "high", "low", "close"}
+                if not required_raw.issubset(raw.columns):
+                    raise ValueError(f"Historical file is missing columns: {sorted(required_raw - set(raw.columns))}")
+                if "volume" not in raw.columns:
+                    raw["volume"] = 0.0
+                raw["timestamp"] = pd.to_datetime(raw["timestamp"], errors="coerce")
+                if raw["timestamp"].dt.tz is None:
+                    raw["timestamp"] = raw["timestamp"].dt.tz_localize("Asia/Kolkata")
+                else:
+                    raw["timestamp"] = raw["timestamp"].dt.tz_convert("Asia/Kolkata")
+                for col in ("open", "high", "low", "close", "volume"):
+                    raw[col] = pd.to_numeric(raw[col], errors="coerce")
+                raw = raw.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp")
+                # Resample one session at a time and accept only complete 15x1m buckets.
+                grouped = raw.set_index("timestamp").groupby(raw["timestamp"].dt.date, group_keys=False)
+                parts = []
+                for _, session in grouped:
+                    session = session.drop(columns=[], errors="ignore")
+                    bars = session[["open", "high", "low", "close", "volume"]].resample(
+                        "15min", origin="start_day", offset="9h15min", label="left", closed="left"
+                    ).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+                    counts = session["close"].resample(
+                        "15min", origin="start_day", offset="9h15min", label="left", closed="left"
+                    ).count()
+                    bars = bars[counts == 15].dropna(subset=["open", "high", "low", "close"]).reset_index()
+                    parts.append(bars)
+                candles = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+                source = f"BACKDATED CSV · {history_path.name} · complete 15-minute bars resampled from 1-minute data"
+            else:
+                start = now.date() - pd.Timedelta(days=120)
+                candles, source = load_captured_candles(
+                    symbol, start=start, end=now.date(), timeframe_minutes=15
+                )
         except Exception as exc:
-            st.error(f"Could not load isolated 15-minute candles for {symbol}: {exc}")
+            st.error(f"Could not load 15-minute candles for {symbol}: {exc}")
             return
         required = ["timestamp", "open", "high", "low", "close", "volume"]
         if candles.empty or not set(required).issubset(candles.columns):
