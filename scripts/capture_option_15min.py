@@ -83,7 +83,7 @@ def main() -> int:
                 if row["instrument_token"] != token or row["exchange_segment"] != "nse_fo":
                     continue
                 frame = pd.DataFrame([row])
-                store.save_candles(symbol, frame, row["timestamp"].date())
+                store.save_candles(symbol, frame, row["timestamp"].date(), timeframe_minutes=15)
                 saved += 1
                 print(f"[CANDLE] {symbol} {row['timestamp']} O={row['open']:.2f} H={row['high']:.2f} L={row['low']:.2f} C={row['close']:.2f} ticks={row['tick_count']}", flush=True)
 
@@ -94,7 +94,7 @@ def main() -> int:
         ))
         persist(builder.flush_completed(datetime.now().astimezone()))
         print(f"[INFO] Contract={symbol} token={token} valid_ticks={counts['ticks']} invalid={counts['invalid']} saved_15m_candles={saved}", flush=True)
-        print(f"[INFO] Saved path: {store.root / symbol.upper()} / YYYY-MM-DD / {symbol.upper()}_ohlcv.csv", flush=True)
+        print(f"[INFO] Saved path: {store.root / symbol.upper()} / YYYY-MM-DD / {symbol.upper()}_15min_ohlcv.csv", flush=True)
         print("[INFO] Order submission: NOT ATTEMPTED", flush=True)
         if counts["ticks"] == 0:
             print("[FAIL] No valid ticks for the selected option. Live 15-minute forecasting is not verified.", flush=True)
