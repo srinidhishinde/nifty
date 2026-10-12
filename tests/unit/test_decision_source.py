@@ -39,7 +39,7 @@ def test_nifty_uses_captured_kotak_candles_not_historical_api(monkeypatch):
         def get_option_chain(self, **kwargs):
             return [Contract()]
 
-    ts = pd.date_range("2026-10-01 09:15", periods=80, freq="5min", tz="Asia/Kolkata")
+    ts = pd.date_range("2026-10-09 09:15", periods=45, freq="1min", tz="Asia/Kolkata")
     frame = pd.DataFrame({
         "timestamp": ts,
         "open": 25000.0,
