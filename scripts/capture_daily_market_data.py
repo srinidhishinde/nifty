@@ -110,6 +110,12 @@ def main() -> int:
                 tokens,
                 args.seconds,
                 on_tick,
+                progress_callback=lambda c: print(
+                    "[INFO] Live feed heartbeat: "
+                    f"NIFTY ticks={c['nifty']} MCX ticks={c['mcx']} "
+                    f"invalid_messages={c['invalid']} raw_messages={c['raw']}",
+                    flush=True,
+                ),
             )
         )
         counts.update(stream_counts)
@@ -126,13 +132,20 @@ def main() -> int:
             counts["candles"] += 1
 
         print(
-            "[PASS] Capture complete: "
+            "[INFO] Capture summary: "
             f"NIFTY ticks={counts['nifty']} MCX ticks={counts['mcx']} "
-            f"completed_5m_candles={counts['candles']}"
+            f"invalid_messages={counts.get('invalid', 0)} "
+            f"raw_messages={counts.get('raw', 0)} "
+            f"completed_5m_candles={counts['candles']}",
+            flush=True,
         )
         print(f"[INFO] Persistent source: {settings.market_data_root}/*/*/*_ohlcv.csv")
         print("[INFO] Source label: KOTAK_CAPTURED")
         print("[INFO] Order submission: NOT ATTEMPTED")
+        if want_mcx and counts.get("mcx", 0) == 0:
+            print("[FAIL] No valid MCX ticks received; live feed is not verified. Check SFeed subscription/session and retry during MCX market hours.")
+            return 1
+        print("[PASS] Capture complete: live tick stream received.")
         return 0
     except Exception as exc:
         print(f"[FAIL] Live capture: {exc}")
