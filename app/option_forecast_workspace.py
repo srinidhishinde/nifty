@@ -104,13 +104,16 @@ def render_option_forecast_workspace(instrument: str) -> None:
         chain_ts = None
         saved_dates = store.available_option_chain_snapshot_dates(instrument)
         date_labels = [day.isoformat() for day in saved_dates]
-        default_date = date_labels[0] if date_labels else "Latest available"
+        # Keep the live/latest view distinct from deliberately selected historical
+        # sessions. Otherwise a newest saved snapshot from yesterday would silently
+        # disable today's live refresh until a new snapshot had already been saved.
+        snapshot_date_options = ["Latest available"] + date_labels
         selected_date_label = st.selectbox(
             "Snapshot / trading date",
-            options=date_labels if date_labels else ["Latest available"],
+            options=snapshot_date_options,
             index=0,
             key="compact_option_snapshot_date",
-            help="Choose the date whose saved Kotak option-chain snapshot and quotes you want to inspect. The expiry is selected separately below.",
+            help="Use Latest available for the newest broker/saved data, or choose a saved trading date to backtrace that session. Expiry is selected separately below.",
         )
         selected_snapshot_date = pd.Timestamp(selected_date_label).date() if selected_date_label != "Latest available" else None
         try:
