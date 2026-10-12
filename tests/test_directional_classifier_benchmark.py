@@ -70,3 +70,34 @@ def test_flat_actual_candles_are_not_removed_from_accuracy_denominator(tmp_path)
     assert result["flat_actual_targets"] == rows - 2
     assert result["accuracy_pct"] == 0.0
     assert result["coverage_pct"] == 100.0
+
+
+
+def test_direction_features_are_causal_and_include_regime_features(tmp_path):
+    from scripts.benchmark_directional_classifier import _direction_features
+
+    path = tmp_path / "features.csv"
+    _session_csv(path, rows=150)
+    frame = load_session(path)
+    features = _direction_features(frame)
+
+    required = {
+        "ret_3", "ret_10", "return_acceleration", "atr_pct_14",
+        "range_to_atr", "close_location", "gap_pct",
+        "volatility_ratio_5_20", "volume_zscore_20", "rsi_14",
+        "session_time_sin", "session_time_cos",
+    }
+    assert required <= set(features.columns)
+    assert len(features) == len(frame)
+    assert features["rsi_14"].between(0, 100).all()
+    assert features["session_time_sin"].between(-1, 1).all()
+    assert features["session_time_cos"].between(-1, 1).all()
+
+    changed = frame.copy()
+    changed.loc[100:, ["open", "high", "low", "close", "volume"]] *= 1.5
+    changed_features = _direction_features(changed)
+    pd.testing.assert_frame_equal(
+        features.iloc[:100].reset_index(drop=True),
+        changed_features.iloc[:100].reset_index(drop=True),
+        check_dtype=False,
+    )

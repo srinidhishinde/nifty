@@ -1,4 +1,4 @@
-"""Pre-candle forecast schedule for one-minute NIFTY options research.
+"""Pre-candle forecast schedule for NIFTY options at a configurable candle horizon.
 
 This is an advisory forecast generator, not an order execution engine. A
 forecast for the next minute is emitted using only candles completed before
@@ -40,15 +40,18 @@ def forecast_next_minute(
     lookback: int = 30,
     quantile: float = 0.80,
     range_method: str = "adaptive",
+    timeframe_minutes: int = 1,
 ) -> NextCandleForecast:
-    """Forecast the next minute before it begins.
+    """Forecast the next candle before it begins; timeframe_minutes sets its horizon.
 
     Input columns: timestamp, open, high, low, close, volume. The final input
     row must be the latest fully completed candle. The target timestamp is
-    one minute after its timestamp. If a market is closed or a minute is
+    timeframe_minutes after its timestamp. If a market is closed or a bar is
     missing, the caller should align the target timestamp to the next actual
-    trading minute using the exchange calendar.
+    trading interval using the exchange calendar.
     """
+    if timeframe_minutes not in {1, 3, 5, 15, 30, 60}:
+        raise ValueError("timeframe_minutes must be one of 1, 3, 5, 15, 30, or 60")
     required = {"timestamp", "open", "high", "low", "close", "volume"}
     missing = sorted(required - set(completed_candles.columns))
     if missing:
@@ -121,7 +124,7 @@ def forecast_next_minute(
         confidence_label = "LOW_HISTORY"
 
     generated = pd.Timestamp(generated_at) if generated_at is not None else pd.Timestamp.now()
-    target_time = pd.Timestamp(last["timestamp"]) + pd.Timedelta(minutes=1)
+    target_time = pd.Timestamp(last["timestamp"]) + pd.Timedelta(minutes=timeframe_minutes)
     return NextCandleForecast(
         generated_at=generated.isoformat(),
         target_candle_time=target_time.isoformat(),
@@ -131,6 +134,6 @@ def forecast_next_minute(
         predicted_high=round(reference + up, 2),
         direction=direction,
         confidence_label=confidence_label,
-        method=f"rolling_{lookback}_{range_method}_extreme_q{int(quantile * 100)}",
+        method=f"rolling_{lookback}_{range_method}_extreme_q{int(quantile * 100)}_{timeframe_minutes}m",
         history_bars=len(history),
     )

@@ -24,7 +24,9 @@ class DailyMarketStore:
     def directory(self, instrument: str, session_date: date) -> Path:
         return self.root / instrument.upper() / session_date.isoformat()
 
-    def save_candles(self, instrument: str, frame: pd.DataFrame, session_date: date | None = None) -> Path:
+    def save_candles(self, instrument: str, frame: pd.DataFrame, session_date: date | None = None, *, timeframe_minutes: int = 1) -> Path:
+        if timeframe_minutes not in {1, 3, 5, 15, 30, 60}:
+            raise ValueError("timeframe_minutes must be one of 1, 3, 5, 15, 30, or 60.")
         if frame.empty:
             raise ValueError("Cannot persist an empty market-data frame.")
         required = {"timestamp", "open", "high", "low", "close", "volume"}
@@ -41,7 +43,8 @@ class DailyMarketStore:
         day = session_date or out["timestamp"].iloc[0].date()
         folder = self.directory(instrument, day)
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"{instrument.upper()}_ohlcv.csv"
+        suffix = "ohlcv.csv" if timeframe_minutes == 1 else f"{timeframe_minutes}min_ohlcv.csv"
+        path = folder / f"{instrument.upper()}_{suffix}"
         if path.exists():
             existing = pd.read_csv(path)
             if "timestamp" in existing.columns:
@@ -245,19 +248,24 @@ def load_captured_candles(
     start: date | None = None,
     end: date | None = None,
     root: str | Path | None = None,
+    *,
+    timeframe_minutes: int = 1,
 ) -> tuple[pd.DataFrame, str]:
     """Load only persisted broker-capture OHLCV partitions.
 
     This deliberately ignores Yahoo and synthetic datasets. A caller receives
     an explicit provenance label so UI/backtest code cannot silently mix sources.
     """
+    if timeframe_minutes not in {1, 3, 5, 15, 30, 60}:
+        raise ValueError("timeframe_minutes must be one of 1, 3, 5, 15, 30, or 60.")
     store = DailyMarketStore(root)
     base = store.root / instrument.upper()
     if not base.exists():
         return pd.DataFrame(), "KOTAK_CAPTURED"
 
     frames: list[pd.DataFrame] = []
-    for path in sorted(base.glob("*/" + f"{instrument.upper()}_ohlcv.csv")):
+    suffix = "ohlcv.csv" if timeframe_minutes == 1 else f"{timeframe_minutes}min_ohlcv.csv"
+    for path in sorted(base.glob("*/" + f"{instrument.upper()}_{suffix}")):
         try:
             day = date.fromisoformat(path.parent.name)
         except ValueError:
@@ -275,8 +283,17 @@ def load_captured_candles(
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
         frame = frame.dropna(subset=list(required))
         if not frame.empty:
-            frame["data_source"] = "KOTAK_CAPTURED"
-            frames.append(frame)
+            if "timeframe" in frame.columns:
+                labels = frame["timeframe"].astype(str).str.strip()
+                allowed = labels.isin({f"{timeframe_minutes}min", str(timeframe_minutes)})
+                if timeframe_minutes == 1:
+                    allowed = allowed | frame["timeframe"].isna() | labels.eq("")
+                frame = frame[allowed].copy()
+            elif timeframe_minutes != 1:
+                continue
+            if not frame.empty:
+                frame["data_source"] = "KOTAK_CAPTURED" if timeframe_minutes == 1 else f"KOTAK_CAPTURED_{timeframe_minutes}M"
+                frames.append(frame)
 
     if not frames:
         return pd.DataFrame(), "KOTAK_CAPTURED"

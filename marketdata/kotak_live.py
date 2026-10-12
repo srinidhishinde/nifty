@@ -211,6 +211,7 @@ async def stream_kotak_sfeed(
     mcx_tokens: Iterable[str],
     seconds: int,
     on_tick: Callable[[LiveTick], None],
+    progress_callback: Callable[[dict[str, int]], None] | None = None,
 ) -> dict[str, int]:
     """Capture NIFTY index and MCX futures SFeed ticks for a bounded window."""
 
@@ -225,14 +226,18 @@ async def stream_kotak_sfeed(
         raise ValueError("At least one MCX token is required.")
 
     counts = {"nifty": 0, "mcx": 0, "invalid": 0, "raw": 0, "market_status": 0, "decoded": 0, "errors": 0, "subscription_count": 0}
+    print("[INFO] Opening Kotak SFeed WebSocket...", flush=True)
     async with client.create_websocket() as ws:
+        print("[INFO] WebSocket opened; subscribing to requested instruments...", flush=True)
         # Kotak documents Nifty 50 as a valid scrip/LTP subscription. Using
         # the same Scrip feed as MCX gives the capture layer one normalized
         # message type and avoids depending on the separate index decoder.
         tokens = [nifty_token, *mcx]
         await ws.subscribe_scrips(tokens)
+        print("[INFO] Scrip subscription accepted; enabling exchange feed...", flush=True)
         await ws.subscribe_exchange()
         counts["subscription_count"] = int(getattr(ws, "subscription_count", 0) or 0)
+        print(f"[INFO] Exchange feed enabled; capture window={seconds}s. Heartbeat every 15s.", flush=True)
 
         def _on_raw(_raw: str | bytes) -> None:
             counts["raw"] += 1
@@ -245,6 +250,13 @@ async def stream_kotak_sfeed(
 
         ws.on_raw = _on_raw
         ws.on_error = _on_error
+        async def _report_progress() -> None:
+            while True:
+                await asyncio.sleep(15)
+                if progress_callback is not None:
+                    progress_callback(dict(counts))
+
+        progress_task = asyncio.create_task(_report_progress())
         try:
             async with asyncio.timeout(seconds):
                 async for message in ws:
@@ -260,6 +272,11 @@ async def stream_kotak_sfeed(
         except TimeoutError:
             pass
         finally:
+            progress_task.cancel()
+            try:
+                await progress_task
+            except asyncio.CancelledError:
+                pass
             try:
                 await ws.unsubscribe_exchange()
             finally:

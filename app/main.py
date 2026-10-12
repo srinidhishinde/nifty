@@ -60,6 +60,9 @@ from alerts.runtime_settings import WhatsAppSettingsStore
 from alerts.whatsapp import WhatsAppAlertService
 from analytics.signal_journal import SignalJournal
 from app.one_minute_forecast_panel import render_one_minute_forecast_panel
+from app.one_minute_live_workspace import render_one_minute_live_workspace
+from app.fifteen_minute_live_workspace import render_fifteen_minute_live_workspace
+from prediction.live_direction_forecast import predict_live_direction
 from reliability.failure_guard import assess_health, append_incident
 
 
@@ -635,11 +638,11 @@ environment = st.sidebar.selectbox(
     ],
 )
 
-if environment == "LIVE" and not settings.live_trading_allowed():
-    st.sidebar.warning(
-        "LIVE selected, but live order submission is LOCKED. "
-        "Set LIVE_TRADING_ENABLED=true, PAPER_TRADING=false and ALLOW_ORDER_SUBMISSION=true "
-        "after completing broker/risk/UAT validation. LIVE never bypasses data-quality or strategy gates."
+if environment == "LIVE":
+    st.sidebar.info(
+        "LIVE FORECASTING mode: live market-data ingestion and advisory forecasts may run when "
+        "fresh broker candles/quotes pass validation. LIVE ORDER EXECUTION IS DISABLED in this build; "
+        "forecasting does not grant order permission."
     )
 
 seed = st.sidebar.number_input(
@@ -777,6 +780,18 @@ news_snapshot = fetch_global_news()
 global_news_score = news_snapshot.sentiment
 
 # ============================================================
+# Dedicated one-minute live workspace
+# ============================================================
+
+render_one_minute_live_workspace()
+
+# ============================================================
+# Dedicated 15-minute-ahead live forecast workspace
+# ============================================================
+
+render_fifteen_minute_live_workspace()
+
+# ============================================================
 # Production decision source: Kotak Neo
 # ============================================================
 
@@ -842,7 +857,7 @@ prediction_quality = SimpleNamespace(
 
 dcols = st.columns(5)
 dcols[0].metric("Source", "KOTAK NEO")
-dcols[1].metric("Mode", snapshot.mode if snapshot else "LIVE")
+dcols[1].metric("Mode", snapshot.mode if snapshot else "UNAVAILABLE")
 dcols[2].metric("Quality", prediction_quality.status)
 dcols[3].metric("Rule", canonical_signal.direction)
 dcols[4].metric("Options", f"{snapshot.option_count} contracts" if snapshot else "0")
@@ -854,6 +869,44 @@ if snapshot:
     )
     if prediction_quality.reasons:
         st.caption("Data-quality notes: " + " | ".join(prediction_quality.reasons))
+
+# Historical context is display-only. It must never be assigned to prediction_frame
+# or passed into the live decision/CE-PE gate.
+if prediction_frame is None:
+    try:
+        from datetime import timedelta
+        from marketdata.daily_store import load_captured_candles
+
+        history_now = pd.Timestamp.now(tz="Asia/Kolkata")
+        historical_frame, historical_source = load_captured_candles(
+            instrument,
+            start=history_now.date() - timedelta(days=90),
+            end=history_now.date(),
+        )
+        if not historical_frame.empty:
+            historical_frame = historical_frame.copy()
+            historical_frame["timestamp"] = pd.to_datetime(
+                historical_frame["timestamp"], errors="coerce"
+            )
+            if historical_frame["timestamp"].dt.tz is None:
+                historical_frame["timestamp"] = historical_frame["timestamp"].dt.tz_localize("Asia/Kolkata")
+            else:
+                historical_frame["timestamp"] = historical_frame["timestamp"].dt.tz_convert("Asia/Kolkata")
+            historical_frame = historical_frame.dropna(subset=["timestamp"]).sort_values("timestamp")
+            st.info(
+                f"HISTORICAL CONTEXT ONLY · {instrument} · {len(historical_frame):,} saved real candles · "
+                f"{historical_frame['timestamp'].iloc[0]} → {historical_frame['timestamp'].iloc[-1]}. "
+                "These rows are not a live forecast and cannot unlock a trade decision."
+            )
+            with st.expander("Inspect saved historical candles", expanded=False):
+                st.dataframe(historical_frame.tail(100), width="stretch", hide_index=True)
+        else:
+            st.caption(
+                f"No saved real {instrument} OHLCV candle history is available for historical context. "
+                "Start/verify the broker recorder to persist it; no synthetic history is substituted."
+            )
+    except Exception as exc:
+        st.caption(f"Historical context unavailable: {exc}")
 
 if canonical_signal.valid:
     st.success("Kotak Neo data passed the canonical precision rule gate.")
@@ -914,6 +967,66 @@ with st.expander("Yahoo historical research / independent validation", expanded=
 # ============================================================
 # Decision Center
 # ============================================================
+
+# ------------------------------------------------------------
+# Live-data direction forecast — advisory only
+# ------------------------------------------------------------
+
+st.subheader("Live next-candle direction forecast")
+st.caption(
+    "Uses the latest real Kotak Neo captured candles for the selected 5m/15m timeframe. "
+    "This is a directional research forecast only; it does not submit orders or bypass risk gates."
+)
+
+if prediction_frame is None or snapshot is None or prediction_quality.status == "RED":
+    st.info("Live direction forecast is unavailable until real Kotak Neo candles pass the data-quality gate.")
+else:
+    try:
+        live_minutes = 5 if decision_timeframe == "5m" else 15
+        live_direction = predict_live_direction(
+            prediction_frame,
+            estimator="logistic",
+            min_train=80,
+            tolerance=0.01,
+            timeframe_minutes=live_minutes,
+        )
+        latest_candle_utc = pd.to_datetime(live_direction["latest_candle_time"], utc=True)
+        age_minutes = max(
+            0.0,
+            (pd.Timestamp.now(tz="UTC") - latest_candle_utc).total_seconds() / 60.0,
+        )
+        stale_after_minutes = live_minutes * 3 + 2
+        if age_minutes > stale_after_minutes:
+            st.warning(
+                f"Forecast withheld: latest captured candle is {age_minutes:.1f} minutes old "
+                f"(freshness limit {stale_after_minutes} minutes). Refresh/start the Kotak SFeed recorder."
+            )
+        else:
+            forecast_cols = st.columns(4)
+            forecast_cols[0].metric("Next-candle direction", live_direction["direction"])
+            forecast_cols[1].metric("Forecast method", live_direction["estimator"])
+            forecast_cols[2].metric("Training examples", f'{live_direction["training_rows"]:,}')
+            score = live_direction["raw_model_score"]
+            forecast_cols[3].metric(
+                "Raw model score",
+                f"{score * 100:.1f}%" if score is not None else "N/A",
+            )
+            st.write(
+                f'**Reference close:** {live_direction["reference_close"]:.2f} · '
+                f'**Latest candle:** {live_direction["latest_candle_time"]} · '
+                f'**Forecast target:** {live_direction["target_candle_time"]}'
+            )
+            if live_direction["method"] == "MOMENTUM_FALLBACK":
+                st.warning(
+                    "Momentum fallback used because the history did not satisfy classifier training requirements. "
+                    "This is not a trained-model forecast."
+                )
+            st.caption(
+                "Raw model score is not calibrated probability. The interim 50% benchmark was measured on two historical sessions; "
+                "it does not guarantee live accuracy. Forecast is advisory only and live order submission remains separately gated."
+            )
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        st.warning(f"Live direction forecast unavailable: {exc}")
 
 st.markdown("## Decision Center")
 st.caption(
@@ -1275,24 +1388,45 @@ if spot is None:
 # ============================================================
 # Cross-market trend radar
 # ============================================================
-def _research_trend_snapshot(name: str, seed_value: int) -> TrendSnapshot:
-    base = {"NIFTY": 25040.0, "CRUDE": 6500.0, "NATGAS": 300.0, "COPPER": 950.0}[name]
-    rng = np.random.default_rng(abs(hash((name, int(seed_value)))) % (2**32))
-    returns = rng.normal(0.0, base * 0.0008, 120)
-    close = base + np.cumsum(returns)
-    frame = pd.DataFrame({
-        "timestamp": pd.date_range(end=pd.Timestamp.now(), periods=120, freq="5min"),
-        "open": close,
-        "high": close + abs(rng.normal(0, base * 0.0003, 120)),
-        "low": close - abs(rng.normal(0, base * 0.0003, 120)),
-        "close": close,
-        "volume": rng.integers(1000, 10000, 120),
-    })
-    return calculate_trend(name, frame, is_live=False)
+def _saved_trend_snapshot(name: str) -> TrendSnapshot:
+    """Use real persisted OHLCV only; never generate random candles for the radar."""
+    from datetime import timedelta
+    from marketdata.daily_store import load_captured_candles
+
+    instrument = {
+        "NIFTY": "NIFTY",
+        "CRUDE": "CRUDEOIL",
+        "NATGAS": "NATURALGAS",
+        "COPPER": "COPPER",
+    }.get(name)
+    now = pd.Timestamp.now(tz="Asia/Kolkata")
+    if instrument is None:
+        return TrendSnapshot(name, "UNAVAILABLE", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, 0, False, "No saved real candle source is configured.")
+    try:
+        frame, source = load_captured_candles(
+            instrument,
+            start=now.date() - timedelta(days=90),
+            end=now.date(),
+        )
+        if frame.empty:
+            return TrendSnapshot(name, "UNAVAILABLE", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, 0, False, f"No saved real {instrument} OHLCV candles; synthetic data is disabled.")
+        frame = frame.copy()
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
+        if frame["timestamp"].dt.tz is None:
+            frame["timestamp"] = frame["timestamp"].dt.tz_localize("Asia/Kolkata")
+        else:
+            frame["timestamp"] = frame["timestamp"].dt.tz_convert("Asia/Kolkata")
+        frame = frame.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp")
+        if len(frame) < 50:
+            return TrendSnapshot(name, "HISTORICAL_INSUFFICIENT", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, len(frame), False, f"Only {len(frame)} saved real candles; need at least 50.")
+        snapshot = calculate_trend(name, frame, is_live=False)
+        return snapshot
+    except Exception as exc:
+        return TrendSnapshot(name, "UNAVAILABLE", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", now, 0, False, f"Saved candle load failed: {exc}")
 
 
 st.subheader("Market Radar")
-st.caption("Directional context for NIFTY, Crude Oil, Natural Gas and Copper. Research cards are explicitly marked when a live feed is unavailable.")
+st.caption("Directional context from persisted real OHLCV candles only. Saved-data cards are historical; if real candles are missing, the radar reports unavailable instead of generating synthetic prices.")
 radar_names = ["NIFTY", "CRUDE", "NATGAS", "COPPER"]
 radar_cols = st.columns(4)
 radar_snapshots: dict[str, TrendSnapshot] = {}
@@ -1302,7 +1436,7 @@ for name, col in zip(radar_names, radar_cols):
         # fabricate a live trend from the single index quote.
         snap = TrendSnapshot(name, "LIVE_QUOTE_ONLY", 0.0, 0.0, "UNKNOWN", "UNKNOWN", "UNKNOWN", pd.Timestamp.now(), 0, True, "Live quote available; completed-candle history is required for a genuine trend score.")
     else:
-        snap = _research_trend_snapshot(name, int(seed))
+        snap = _saved_trend_snapshot(name)
     radar_snapshots[name] = snap
     if snap.direction in {"STRONG_UP", "UP"}:
         cls = "radar-up"
@@ -1312,7 +1446,7 @@ for name, col in zip(radar_names, radar_cols):
         cls = "radar-range"
     else:
         cls = "radar-na"
-    source = "LIVE" if snap.is_live else "RESEARCH"
+    source = "LIVE QUOTE ONLY" if snap.is_live else ("HISTORICAL" if snap.data_bars > 0 else "UNAVAILABLE")
     col.markdown(f'<div class="market-radar"><div class="radar-title">{name}</div><span class="radar-pill {cls}">{snap.direction}</span><br><small>{source} · score {snap.score:.0f} · {snap.volatility}</small><br><small>{snap.reason}</small></div>', unsafe_allow_html=True)
 
 radar_context = aggregate_context(radar_snapshots)
@@ -2246,14 +2380,16 @@ _guard_cols = st.columns(4)
 _guard_cols[0].metric("System health", _guard_report.status)
 _guard_cols[1].metric("Health score", f"{_guard_report.score}/100")
 _guard_cols[2].metric("Checks passed", f"{_guard_report.checks_passed}/{_guard_report.checks_total}")
-_guard_cols[3].metric("Live order permission", "ALLOWED" if _guard_report.live_orders_allowed else "LOCKED")
-if not _guard_report.live_orders_allowed:
-    st.error("FAIL-CLOSED: live orders must remain locked. Resolve the findings below; this panel does not enable order execution.")
-elif _guard_report.status == "DEGRADED":
-    st.warning("Health checks have warnings. Review them before proceeding.")
-else:
-    st.success("All supplied health checks passed. This report alone is not broker order-path UAT.")
-with st.expander("Failure findings and prevention actions", expanded=not _guard_report.live_orders_allowed):
+_guard_cols[3].metric("Live order permission", "LOCKED · BUILD POLICY")
+st.error(
+    "LIVE ORDER EXECUTION IS DISABLED by build policy, regardless of health score or environment flags. "
+    "Forecasting can run independently when live market data is fresh and valid."
+)
+if _guard_report.status == "DEGRADED":
+    st.warning("System health checks have warnings. Review the findings below.")
+elif _guard_report.status == "HEALTHY":
+    st.success("Supplied data/health checks passed; this does not enable order execution.")
+with st.expander("Failure findings and prevention actions", expanded=True):
     if _guard_report.findings:
         for _finding in _guard_report.findings:
             (_guard_severity,) = st.columns(1)
