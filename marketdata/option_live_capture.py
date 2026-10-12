@@ -1,4 +1,4 @@
-"""Read-only Kotak SFeed capture for a selected NSE option contract at 1-minute resolution."""
+"""Read-only Kotak SFeed capture and OHLC candle aggregation for a selected NSE option."""
 from __future__ import annotations
 
 import asyncio
@@ -13,16 +13,20 @@ from marketdata.kotak_live import LiveTick, normalize_sfeed_message
 IST = ZoneInfo("Asia/Kolkata")
 
 
-class OneMinuteCandleBuilder:
-    """Aggregate broker ticks into completed one-minute candles."""
+class OptionCandleBuilder:
+    """Aggregate broker ticks into completed candles at the configured minute interval."""
 
-    def __init__(self) -> None:
+    def __init__(self, interval_minutes: int = 15) -> None:
+        if interval_minutes not in {1, 3, 5, 15, 30}:
+            raise ValueError("interval_minutes must be one of 1, 3, 5, 15, or 30.")
+        self.interval_minutes = interval_minutes
+        self._frequency = f"{interval_minutes}min"
         self._states: dict[str, dict[str, Any]] = {}
         self._last_cumulative_volume: dict[str, float] = {}
 
     def update(self, tick: LiveTick) -> list[dict[str, Any]]:
         key = f"{tick.exchange_segment}|{tick.instrument_token}"
-        bucket = pd.Timestamp(tick.timestamp).floor("1min")
+        bucket = pd.Timestamp(tick.timestamp).floor(self._frequency)
         volume_delta = 0.0
         if tick.volume is not None:
             current = max(float(tick.volume), 0.0)
@@ -54,7 +58,7 @@ class OneMinuteCandleBuilder:
         return completed
 
     def flush_completed(self, now: datetime) -> list[dict[str, Any]]:
-        current_bucket = pd.Timestamp(now).floor("1min")
+        current_bucket = pd.Timestamp(now).floor(self._frequency)
         rows = []
         for key, state in list(self._states.items()):
             if state["bucket"] < current_bucket:
@@ -72,7 +76,8 @@ class OneMinuteCandleBuilder:
             "open": state["open"], "high": state["high"], "low": state["low"],
             "close": state["close"], "volume": state["volume"],
             "open_interest": state["open_interest"], "tick_count": state["tick_count"],
-            "data_source": "KOTAK_OPTION_SFEED_1M",
+            "timeframe": f"{self.interval_minutes}min",
+            "data_source": f"KOTAK_OPTION_SFEED_{self.interval_minutes}M",
         }
 
 
@@ -133,3 +138,17 @@ async def stream_option_sfeed(
             finally:
                 await ws.unsubscribe_scrips(subscription)
     return counts
+
+
+class OneMinuteCandleBuilder(OptionCandleBuilder):
+    """Backward-compatible one-minute builder."""
+
+    def __init__(self) -> None:
+        super().__init__(interval_minutes=1)
+
+
+class FifteenMinuteCandleBuilder(OptionCandleBuilder):
+    """Build completed 15-minute candles from selected-option live ticks."""
+
+    def __init__(self) -> None:
+        super().__init__(interval_minutes=15)
