@@ -556,3 +556,19 @@ def render_option_forecast_workspace(instrument: str) -> None:
                     st.caption("MAE measures predicted-versus-actual high/low boundary error. Range coverage is descriptive, not directional accuracy or profitability.")
         else:
             st.caption("Actual high/low for the target candle become known only after that candle closes; they are not displayed as if already observed.")
+            live_audit = audit_summary(contract_symbol=symbol, timeframe_minutes=minutes)
+            st.caption(
+                "Persistent forecast audit · "
+                f"{live_audit['historical_count']} walk-forward samples · "
+                f"{live_audit['live_count']} verified live samples · "
+                f"{live_audit['pending_count']} pending live forecasts"
+            )
+            if live_audit["verified_count"]:
+                audit_cols = st.columns(3)
+                low_mae = live_audit["low_mae"]
+                high_mae = live_audit["high_mae"]
+                coverage = live_audit["range_coverage_pct"]
+                audit_cols[0].metric("Logged low MAE", "—" if low_mae is None else f"₹{low_mae:,.2f}")
+                audit_cols[1].metric("Logged high MAE", "—" if high_mae is None else f"₹{high_mae:,.2f}")
+                audit_cols[2].metric("Full-range coverage", "—" if coverage is None else f"{coverage:.1f}%")
+                st.caption("MAE measures predicted-versus-actual high/low boundary error. Range coverage is descriptive, not directional accuracy or profitability.")
