@@ -1,7 +1,7 @@
 """Capture real Kotak ticks for one selected NIFTY option and persist completed 15-minute candles.
 
 Example:
-  python scripts/capture_option_15min.py --totp <6-digit-code> --expiry 2026-10-13 --option-type CE --strike 22700 --seconds 300
+  python scripts/capture_option_15min.py --totp <6-digit-code> --expiry 2026-10-13 --option-type CE --strike 22700 --seconds 1800
 
 Order submission is never attempted.
 """
@@ -74,7 +74,7 @@ def main() -> int:
         print(f"[PASS] Selected contract: {symbol} token={token} expiry={contract.expiry} side={contract.option_type} strike={contract.strike}", flush=True)
 
         store = DailyMarketStore()
-        builder = OneMinuteCandleBuilder()
+        builder = FifteenMinuteCandleBuilder()
         saved = 0
 
         def persist(rows: list[dict]) -> None:
@@ -100,12 +100,12 @@ def main() -> int:
             print("[FAIL] No valid ticks for the selected option. Live 1-minute forecasting is not verified.", flush=True)
             return 1
         if saved == 0:
-            print("[WARN] Ticks arrived but no completed 1-minute candle was saved yet. Run a longer capture spanning a 15-minute boundary (ideally at least 30 minutes).", flush=True)
+            print("[WARN] Ticks arrived but no completed 15-minute candle was saved yet. Run a longer capture spanning a 15-minute boundary (ideally at least 30 minutes).", flush=True)
             return 1
         print("[PASS] Selected-option 15-minute candle capture complete.", flush=True)
         return 0
     except Exception as exc:
-        print(f"[FAIL] Option 1-minute capture: {exc}", flush=True)
+        print(f"[FAIL] Option 15-minute capture: {exc}", flush=True)
         return 1
     finally:
         broker.logout()
