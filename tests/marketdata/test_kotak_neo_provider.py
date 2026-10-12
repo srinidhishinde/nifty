@@ -445,3 +445,21 @@ def test_selected_contract_quote_requests_only_one_symbol():
     assert quote["ltp"] == 121.0
     assert quote["bid"] == 120.9
     assert quote["ask"] == 121.1
+
+
+
+def test_index_quote_timeout_logs_operation_and_elapsed_time(caplog):
+    import logging
+    import pytest
+
+    class TimeoutNeo(FakeNeo):
+        def quotes(self, **kwargs):
+            raise TimeoutError("simulated read timeout")
+
+    with caplog.at_level(logging.ERROR, logger="marketdata.providers.kotak_neo"):
+        with pytest.raises(TimeoutError):
+            KotakNeoProvider(TimeoutNeo()).get_index_quote("Nifty 50")
+
+    assert "operation=quotes.index" in caplog.text
+    assert "exception_type=TimeoutError" in caplog.text
+    assert "elapsed_ms=" in caplog.text
