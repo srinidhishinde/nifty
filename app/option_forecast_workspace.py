@@ -270,6 +270,11 @@ def render_option_forecast_workspace(instrument: str) -> None:
                             and str(row.get("option_type", "")).upper() == side_value
                             for _, day, path in entries
                         ]
+                    if selected_snapshot_date is not None:
+                        candidates = [
+                            item for item in candidates
+                            if (item[1] if len(item) == 3 else item[0]).date() <= selected_snapshot_date
+                        ]
                     if candidates:
                         if len(candidates[0]) == 3:
                             _, day, path = max(candidates, key=lambda item: item[1])
@@ -290,7 +295,13 @@ def render_option_forecast_workspace(instrument: str) -> None:
             for (prefix, strike_value, side_value), paths in historical_files.items():
                 if (round(strike_value, 6), side_value) in existing_keys:
                     continue
-                latest_day, latest_path = max(paths, key=lambda item: item[0])
+                eligible_paths = [
+                    item for item in paths
+                    if selected_snapshot_date is None or item[0].date() <= selected_snapshot_date
+                ]
+                if not eligible_paths:
+                    continue
+                latest_day, latest_path = max(eligible_paths, key=lambda item: item[0])
                 history_records.append({
                     "symbol": f"{prefix}_{strike_value:g}{side_value}",
                     "strike": strike_value,
