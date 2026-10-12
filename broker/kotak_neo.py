@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from config.settings import settings
 
 
@@ -66,9 +68,22 @@ class KotakNeoBroker:
         #
         # See Kotak's current migration documentation.
 
+        # Retry only transient connection-establishment failures (including
+        # DNS resolution failures). HTTP errors and read/write timeouts are not
+        # retried here. Keep the SDK's normal HTTP/2 and pool limits.
+        limits = httpx.Limits(
+            max_connections=20,
+            max_keepalive_connections=10,
+        )
+        transport = httpx.HTTPTransport(
+            retries=2,
+            http2=True,
+            limits=limits,
+        )
         self.client = NeoAPI(
             consumer_key=settings.neo_consumer_key,
             environment="prod",
+            transport=transport,
         )
 
         return self.client
