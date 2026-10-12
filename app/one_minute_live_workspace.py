@@ -35,13 +35,77 @@ def render_one_minute_live_workspace() -> None:
 
         now = pd.Timestamp.now(tz="Asia/Kolkata")
         st.markdown("#### Select an option contract")
+        store = DailyMarketStore()
         try:
-            chain, chain_timestamp = DailyMarketStore().load_latest_option_chain_snapshot(
+            chain, chain_timestamp = store.load_latest_option_chain_snapshot(
                 "NIFTY", before=now
             )
         except Exception as exc:
             st.error(f"Could not load the latest real Kotak option chain: {exc}")
             return
+
+        # The saved snapshot is a cache, not a live feed. During market hours,
+        # refresh it from the authenticated broker session when missing/stale.
+        # Throttle attempts to avoid hammering the broker during fragment reruns.
+        market_open = (
+            now.weekday() < 5
+            and (now.hour, now.minute) >= (9, 15)
+            and (now.hour, now.minute) < (15, 30)
+        )
+        snapshot_age_seconds = (
+            max(0.0, (now - chain_timestamp.tz_convert("Asia/Kolkata")).total_seconds())
+            if chain_timestamp is not None and chain_timestamp.tzinfo is not None
+            else max(0.0, (now - chain_timestamp.tz_localize("Asia/Kolkata")).total_seconds())
+            if chain_timestamp is not None
+            else float("inf")
+        )
+        broker = st.session_state.get("neo_broker")
+        broker_connected = False
+        if broker is not None:
+            try:
+                broker_connected = bool(broker.connection_status().connected)
+            except Exception:
+                broker_connected = False
+
+        last_attempt = st.session_state.get("one_minute_chain_refresh_attempt")
+        attempt_age = (
+            (now - last_attempt).total_seconds()
+            if isinstance(last_attempt, pd.Timestamp)
+            else float("inf")
+        )
+        should_refresh_chain = (
+            market_open
+            and broker_connected
+            and (chain.empty or snapshot_age_seconds > 90)
+            and attempt_age >= 60
+        )
+        if should_refresh_chain:
+            st.session_state["one_minute_chain_refresh_attempt"] = now
+            try:
+                from marketdata.providers.kotak_neo import KotakNeoProvider
+
+                provider = KotakNeoProvider(broker.client)
+                contracts = provider.get_option_chain(
+                    underlying="NIFTY",
+                    exchange="NSE_FO",
+                    count=40,
+                    enrich_quotes=False,
+                )
+                if contracts:
+                    store.save_option_chain_snapshot("NIFTY", contracts, captured_at=now)
+                    chain, chain_timestamp = store.load_latest_option_chain_snapshot(
+                        "NIFTY", before=now
+                    )
+                    snapshot_age_seconds = 0.0
+            except Exception as exc:
+                st.warning(f"Live Kotak option-chain refresh failed; cached data will not be labelled live: {exc}")
+
+        live_chain_available = (
+            not chain.empty
+            and market_open
+            and chain_timestamp is not None
+            and snapshot_age_seconds <= 90
+        )
 
         historical_files: dict[tuple[str, float, str], list[tuple[pd.Timestamp, Path]]] = {}
         historical_root = Path(__file__).resolve().parents[1] / "data" / "backtest" / "kotak"
@@ -57,7 +121,7 @@ def render_one_minute_live_workspace() -> None:
                 except (TypeError, ValueError):
                     continue
 
-        using_historical_files = chain.empty
+        using_historical_files = not live_chain_available
         if using_historical_files:
             if not historical_files:
                 st.warning(
