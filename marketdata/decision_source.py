@@ -386,7 +386,7 @@ def load_kotak_decision_snapshot(
             reason = " | ".join(quality.reasons) or "insufficient completed captured candles"
             return DecisionSnapshot(
                 "KOTAK_NEO", "LIVE", "RED",
-                f"Real Kotak captured data-quality gate blocked the decision: {reason}",
+                f"Real Kotak captured data-quality gate blocked the decision ({source}): {reason}",
                 now, frame, contracts, quality.status, tuple(quality.reasons),
                 pcr_oi, pcr_volume, len(contracts),
                 _wait(
