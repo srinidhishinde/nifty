@@ -139,16 +139,34 @@ class DailyMarketStore:
 
     @staticmethod
     def _normalise_option_strike(instrument: str, row: dict) -> float | None:
-        """Validate/recover strikes; never scale an ambiguous value silently."""
+        """Validate broker strikes without mistaking expiry digits for the strike."""
         import re
+
         raw = row.get("strike", row.get("Strike"))
         try:
             strike = float(raw)
         except (TypeError, ValueError):
             strike = 0.0
+
         symbol = str(row.get("symbol") or "").upper()
-        match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", symbol)
+        name = str(instrument or "").strip().upper()
+
+        # Kotak index-option symbols encode expiry before the strike, e.g.
+        # NIFTY26O1320500CE = NIFTY + 26O13 expiry + 20500 strike + CE.
+        # The generic suffix regex incorrectly read the entire digit run after
+        # the month code (1320500) as the strike and discarded valid snapshots.
+        match = None
+        if name == "NIFTY":
+            match = re.search(r"^NIFTY\d{2}[A-Z]\d{2}(\d+(?:\.\d+)?)(CE|PE)$", symbol)
+        if match is None:
+            match = re.search(r"(\d+(?:\.\d+)?)(CE|PE)$", symbol)
         symbol_strike = float(match.group(1)) if match else 0.0
+
+        # Prefer a correctly parsed contract-symbol strike. If the symbol parser
+        # yields an impossible NIFTY value, retain the independently supplied
+        # broker strike and let the normal validator check it.
+        if name == "NIFTY" and symbol_strike > 100_000:
+            symbol_strike = 0.0
         try:
             return validate_option_strike(
                 instrument,
