@@ -306,7 +306,8 @@ def render_option_forecast_workspace(instrument: str) -> None:
         if not expiries:
             st.warning("No expiry/session label is available from Kotak Neo or saved data.")
             return
-        expiry = st.selectbox("Expiry date", expiries, key="compact_option_expiry")
+        selector_cols = st.columns(3)
+        expiry = selector_cols[0].selectbox("Expiry date", expiries, key="compact_option_expiry")
         exp_chain = chain[chain["expiry"].astype(str) == expiry]
         if exp_chain.empty and market_open and connected and expiry in broker_expiries:
             try:
@@ -333,10 +334,10 @@ def render_option_forecast_workspace(instrument: str) -> None:
         if not sides:
             st.warning("No CE/PE contracts for the selected expiry.")
             return
-        side = st.selectbox("Option type", sides, key="compact_option_side")
+        side = selector_cols[1].selectbox("Option type", sides, key="compact_option_side")
         side_chain = exp_chain[exp_chain["option_type"] == side]
         strikes = sorted(float(v) for v in side_chain["strike"].dropna().unique())
-        strike = st.selectbox("Strike", strikes, key="compact_option_strike")
+        strike = selector_cols[2].selectbox("Strike", strikes, key="compact_option_strike")
         selected = side_chain[side_chain["strike"] == strike]
         if selected.empty:
             st.warning("Selected option contract is unavailable.")
