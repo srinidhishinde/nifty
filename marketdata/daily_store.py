@@ -158,10 +158,26 @@ class DailyMarketStore:
         except (TypeError, ValueError):
             return None
 
+    def available_option_chain_snapshot_dates(self, instrument: str) -> list[date]:
+        """List real saved option-chain trading dates, newest first."""
+        base = self.root / instrument.upper()
+        if not base.exists():
+            return []
+        days: set[date] = set()
+        patterns = [f"{instrument.upper()}_option_chain_latest.csv", f"{instrument.upper()}_option_chain.csv"]
+        for pattern in patterns:
+            for path in base.glob("*/" + pattern):
+                try:
+                    days.add(date.fromisoformat(path.parent.name))
+                except ValueError:
+                    continue
+        return sorted(days, reverse=True)
+
     def load_latest_option_chain_snapshot(
         self,
         instrument: str,
         before: pd.Timestamp | None = None,
+        session_date: date | None = None,
     ) -> tuple[pd.DataFrame, pd.Timestamp | None]:
         """Return the newest real option-chain snapshot available before *before*.
 
@@ -183,6 +199,8 @@ class DailyMarketStore:
         newest: tuple[pd.Timestamp, Path, pd.DataFrame] | None = None
 
         for path in candidates:
+            if session_date is not None and path.parent.name != session_date.isoformat():
+                continue
             try:
                 frame = pd.read_csv(path)
                 if frame.empty:
