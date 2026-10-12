@@ -129,10 +129,11 @@ def render_fifteen_minute_live_workspace() -> None:
                     raw[col] = pd.to_numeric(raw[col], errors="coerce")
                 raw = raw.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp")
                 # Resample one session at a time and accept only complete 15x1m buckets.
-                grouped = raw.set_index("timestamp").groupby(raw["timestamp"].dt.date, group_keys=False)
+                raw = raw.drop_duplicates("timestamp", keep="last")
+                indexed = raw.set_index("timestamp")
+                grouped = indexed.groupby(indexed.index.date, group_keys=False)
                 parts = []
                 for _, session in grouped:
-                    session = session.drop(columns=[], errors="ignore")
                     bars = session[["open", "high", "low", "close", "volume"]].resample(
                         "15min", origin="start_day", offset="9h15min", label="left", closed="left"
                     ).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
