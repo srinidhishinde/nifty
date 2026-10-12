@@ -102,8 +102,21 @@ def render_option_forecast_workspace(instrument: str) -> None:
         store = DailyMarketStore()
         chain = pd.DataFrame()
         chain_ts = None
+        saved_dates = store.available_option_chain_snapshot_dates(instrument)
+        date_labels = [day.isoformat() for day in saved_dates]
+        default_date = date_labels[0] if date_labels else "Latest available"
+        selected_date_label = st.selectbox(
+            "Snapshot / trading date",
+            options=date_labels if date_labels else ["Latest available"],
+            index=0,
+            key="compact_option_snapshot_date",
+            help="Choose the date whose saved Kotak option-chain snapshot and quotes you want to inspect. The expiry is selected separately below.",
+        )
+        selected_snapshot_date = pd.Timestamp(selected_date_label).date() if selected_date_label != "Latest available" else None
         try:
-            chain, chain_ts = store.load_latest_option_chain_snapshot(instrument, before=now)
+            chain, chain_ts = store.load_latest_option_chain_snapshot(
+                instrument, before=now, session_date=selected_snapshot_date
+            )
         except Exception:
             pass
 
@@ -148,7 +161,11 @@ def render_option_forecast_workspace(instrument: str) -> None:
         if chain_ts is not None:
             chain_local = chain_ts.tz_convert("Asia/Kolkata") if chain_ts.tzinfo else chain_ts.tz_localize("Asia/Kolkata")
             chain_age = max(0.0, (now - chain_local).total_seconds())
-        if market_open and connected and (force_refresh or chain.empty or chain_age > 30):
+        # A historical snapshot date is an explicit backtrace request: never overwrite
+        # it with a current live refresh. The date selector defaults to the newest saved
+        # session, so live refresh remains enabled for normal use.
+        historical_date_selected = selected_snapshot_date is not None and selected_snapshot_date < now.date()
+        if market_open and connected and not historical_date_selected and (force_refresh or chain.empty or chain_age > 30):
             last_attempt = st.session_state.get("compact_chain_refresh_attempt")
             attempt_age = (now - last_attempt).total_seconds() if isinstance(last_attempt, pd.Timestamp) else float("inf")
             if force_refresh or attempt_age >= 30:
@@ -328,7 +345,11 @@ def render_option_forecast_workspace(instrument: str) -> None:
             except Exception as exc:
                 st.warning(f"Could not load selected expiry {expiry} from Kotak Neo: {exc}")
         if exp_chain.empty:
-            st.info("This expiry is not present in the saved snapshot. Connect to Kotak Neo during market hours to load it; historical data is not fabricated.")
+            st.info(
+                f"Expiry {expiry} is not present in the saved option-chain snapshot for {selected_date_label}. "
+                "Choose another Snapshot / trading date to backtrace a prior session, or connect to Kotak Neo during market hours. "
+                "Historical data is never fabricated."
+            )
             return
         sides = [s for s in ("CE", "PE") if s in set(exp_chain["option_type"])]
         if not sides:
