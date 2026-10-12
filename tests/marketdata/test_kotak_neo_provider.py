@@ -59,6 +59,27 @@ class FakeNeo:
         ]
 
 
+def test_option_chain_caps_sdk_count_to_avoid_internal_quote_limit():
+    class CountRecordingNeo(FakeNeo):
+        def __init__(self):
+            self.option_calls = []
+
+        def option_chain(self, **kwargs):
+            self.option_calls.append(kwargs)
+            return super().option_chain(**kwargs)
+
+    client = CountRecordingNeo()
+    chain = KotakNeoProvider(client).get_option_chain(
+        underlying="NIFTY",
+        exchange="NSE",
+        count=40,
+        enrich_quotes=False,
+    )
+
+    assert len(chain) == 2
+    assert client.option_calls[0]["count"] == 20
+
+
 def test_kotak_option_chain_normalizes_current_response():
     chain = KotakNeoProvider(FakeNeo()).get_option_chain(
         underlying="NIFTY",
