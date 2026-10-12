@@ -90,6 +90,23 @@ def _historical_comparison(frame: pd.DataFrame, minutes: int, symbol: str) -> pd
     return pd.DataFrame(rows)
 
 
+def _should_fetch_selected_expiry(
+    *,
+    expiry_chain_empty: bool,
+    connected: bool,
+    historical_date_selected: bool,
+    expiry: str,
+    broker_expiries: list[str],
+) -> bool:
+    """Allow a broker expiry fallback except for explicit prior-session backtraces."""
+    return bool(
+        expiry_chain_empty
+        and connected
+        and not historical_date_selected
+        and expiry in broker_expiries
+    )
+
+
 @st.fragment(run_every="30s")
 def render_option_forecast_workspace(instrument: str) -> None:
     with st.container(border=True):
@@ -349,7 +366,13 @@ def render_option_forecast_workspace(instrument: str) -> None:
         selector_cols = st.columns(3)
         expiry = selector_cols[0].selectbox("Expiry date", expiries, key="compact_option_expiry")
         exp_chain = chain[chain["expiry"].astype(str) == expiry]
-        if exp_chain.empty and market_open and connected and expiry in broker_expiries:
+        if _should_fetch_selected_expiry(
+            expiry_chain_empty=exp_chain.empty,
+            connected=connected,
+            historical_date_selected=historical_date_selected,
+            expiry=expiry,
+            broker_expiries=broker_expiries,
+        ):
             try:
                 if provider is None:
                     from marketdata.providers.kotak_neo import KotakNeoProvider
@@ -370,7 +393,7 @@ def render_option_forecast_workspace(instrument: str) -> None:
         if exp_chain.empty:
             st.info(
                 f"Expiry {expiry} is not present in the saved option-chain snapshot for {selected_date_label}. "
-                "Choose another Snapshot / trading date to backtrace a prior session, or connect to Kotak Neo during market hours. "
+                "Choose another Snapshot / trading date to backtrace a prior session, or verify the Neo connection and available expiries. "
                 "Historical data is never fabricated."
             )
             return
