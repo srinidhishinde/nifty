@@ -9,6 +9,12 @@ from strategy.market_specs import validate_option_strike
 class KotakNeoProvider(MarketDataProvider):
     """Adapter for the current Kotak Neo Python SDK market-data APIs."""
 
+    # The Neo SDK may request CE and PE quotes internally from option_chain().
+    # A count of 40 can therefore create a single quotes request with ~80
+    # symbols, exceeding the broker's hard 50-symbol limit before our own
+    # quote batching code can run. Keep this SDK-level request within bounds.
+    MAX_SAFE_OPTION_CHAIN_COUNT = 20
+
     EXCHANGE_ALIASES = {
         "NSE": "nse_fo",
         "NSE_FO": "nse_fo",
@@ -439,12 +445,18 @@ class KotakNeoProvider(MarketDataProvider):
             if exchange_segment == "mcx_fo"
             else underlying.upper()
         )
+        # Kotak's SDK can issue one internal quotes request for both CE and
+        # PE contracts. Since that internal request cannot be chunked here,
+        # cap the SDK count so it stays under Neo's 50-symbol quote limit.
+        # The API requires counts in multiples of 10, so 20 is the largest
+        # conservative supported value (approximately 40 option symbols).
+        sdk_count = min(count, self.MAX_SAFE_OPTION_CHAIN_COUNT)
         response = self.client.option_chain(
             exchange=exchange_segment,
             underlying=request_underlying,
             expiry=request_expiry,
             instrument_type="option",
-            count=count,
+            count=sdk_count,
         )
         error = self._response_error(response)
         if error:
