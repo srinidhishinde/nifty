@@ -292,7 +292,7 @@ def load_captured_candles(
             elif timeframe_minutes != 1:
                 continue
             if not frame.empty:
-                frame["data_source"] = f"KOTAK_CAPTURED_{timeframe_minutes}M"
+                frame["data_source"] = "KOTAK_CAPTURED" if timeframe_minutes == 1 else f"KOTAK_CAPTURED_{timeframe_minutes}M"
                 frames.append(frame)
 
     if not frames:
