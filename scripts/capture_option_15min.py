@@ -97,7 +97,7 @@ def main() -> int:
         print(f"[INFO] Saved path: {store.root / symbol.upper()} / YYYY-MM-DD / {symbol.upper()}_ohlcv.csv", flush=True)
         print("[INFO] Order submission: NOT ATTEMPTED", flush=True)
         if counts["ticks"] == 0:
-            print("[FAIL] No valid ticks for the selected option. Live 1-minute forecasting is not verified.", flush=True)
+            print("[FAIL] No valid ticks for the selected option. Live 15-minute forecasting is not verified.", flush=True)
             return 1
         if saved == 0:
             print("[WARN] Ticks arrived but no completed 15-minute candle was saved yet. Run a longer capture spanning a 15-minute boundary (ideally at least 30 minutes).", flush=True)
