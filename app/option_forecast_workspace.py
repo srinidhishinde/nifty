@@ -120,6 +120,30 @@ def render_option_forecast_workspace(instrument: str) -> None:
                 connected = bool(broker.connection_status().connected)
             except Exception:
                 pass
+        exchange = "nse_fo" if instrument == "NIFTY" else "mcx_fo"
+        provider = None
+        broker_expiries: list[str] = []
+        if connected:
+            try:
+                from marketdata.providers.kotak_neo import KotakNeoProvider
+                provider = KotakNeoProvider(broker.client)
+                expiry_underlying = (
+                    provider.resolve_option_underlying(instrument, exchange)
+                    if exchange == "mcx_fo" else instrument.upper()
+                )
+                expiry_response = broker.client.expiries(
+                    exchange=exchange, underlying=expiry_underlying, instrument_type="option"
+                )
+                if isinstance(expiry_response, dict):
+                    expiry_payload = expiry_response.get("data")
+                    if not isinstance(expiry_payload, dict):
+                        expiry_payload = expiry_response
+                    expiry_values = expiry_response.get("expiries") or expiry_payload.get("expiries") or []
+                    if isinstance(expiry_values, list):
+                        broker_expiries = sorted({str(value).strip() for value in expiry_values if str(value).strip()})
+            except Exception:
+                # Saved expiry labels remain usable when the broker expiry endpoint is unavailable.
+                provider = provider or None
         chain_age = float("inf")
         if chain_ts is not None:
             chain_local = chain_ts.tz_convert("Asia/Kolkata") if chain_ts.tzinfo else chain_ts.tz_localize("Asia/Kolkata")
@@ -130,11 +154,14 @@ def render_option_forecast_workspace(instrument: str) -> None:
             if force_refresh or attempt_age >= 30:
                 st.session_state["compact_chain_refresh_attempt"] = now
                 try:
-                    from marketdata.providers.kotak_neo import KotakNeoProvider
-                    exchange = "nse_fo" if instrument == "NIFTY" else "mcx_fo"
-                    refreshed = KotakNeoProvider(broker.client).get_option_chain(
-                        underlying=instrument, exchange=exchange, count=40,
-                        enrich_quotes=True,
+                    if provider is None:
+                        from marketdata.providers.kotak_neo import KotakNeoProvider
+                        provider = KotakNeoProvider(broker.client)
+                    requested_expiry = st.session_state.get("compact_option_expiry")
+                    refreshed = provider.get_option_chain(
+                        underlying=instrument, exchange=exchange,
+                        expiry=str(requested_expiry) if requested_expiry in broker_expiries else None,
+                        count=40, enrich_quotes=True,
                     )
                     if refreshed:
                         store.save_option_chain_snapshot(instrument, refreshed, captured_at=now)
@@ -274,12 +301,34 @@ def render_option_forecast_workspace(instrument: str) -> None:
         chain = chain.dropna(subset=["strike"])
         if "expiry" not in chain:
             chain["expiry"] = ""
-        expiries = sorted(str(v) for v in chain["expiry"].dropna().unique() if str(v).strip())
+        snapshot_expiries = [str(v) for v in chain["expiry"].dropna().unique() if str(v).strip()]
+        expiries = sorted(set(snapshot_expiries) | set(broker_expiries))
         if not expiries:
-            st.warning("No expiry/session label is available.")
+            st.warning("No expiry/session label is available from Kotak Neo or saved data.")
             return
         expiry = st.selectbox("Expiry date", expiries, key="compact_option_expiry")
         exp_chain = chain[chain["expiry"].astype(str) == expiry]
+        if exp_chain.empty and market_open and connected and expiry in broker_expiries:
+            try:
+                if provider is None:
+                    from marketdata.providers.kotak_neo import KotakNeoProvider
+                    provider = KotakNeoProvider(broker.client)
+                selected_chain = provider.get_option_chain(
+                    underlying=instrument, exchange=exchange, expiry=expiry,
+                    count=40, enrich_quotes=True,
+                )
+                if selected_chain:
+                    store.save_option_chain_snapshot(instrument, selected_chain, captured_at=now)
+                    refresh_map = dict(st.session_state.get("compact_live_refresh_at", {}))
+                    refresh_map[instrument] = now
+                    st.session_state["compact_live_refresh_at"] = refresh_map
+                    st.rerun()
+                st.warning(f"Kotak Neo returned no contracts for expiry {expiry}.")
+            except Exception as exc:
+                st.warning(f"Could not load selected expiry {expiry} from Kotak Neo: {exc}")
+        if exp_chain.empty:
+            st.info("This expiry is not present in the saved snapshot. Connect to Kotak Neo during market hours to load it; historical data is not fabricated.")
+            return
         sides = [s for s in ("CE", "PE") if s in set(exp_chain["option_type"])]
         if not sides:
             st.warning("No CE/PE contracts for the selected expiry.")
