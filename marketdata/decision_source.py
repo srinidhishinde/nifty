@@ -166,6 +166,16 @@ def load_kotak_decision_snapshot(
                 count=option_count,
                 enrich_quotes=False,
             )
+            # Keep a durable, timestamped real broker snapshot for later
+            # inspection/recovery. This cache is never treated as a live feed.
+            if contracts:
+                try:
+                    from marketdata.daily_store import DailyMarketStore
+                    DailyMarketStore().save_option_chain_snapshot(
+                        instrument_upper, contracts, captured_at=now
+                    )
+                except (OSError, ValueError):
+                    pass
         else:
             contracts, cached_captured_at = _cached_option_contracts(instrument_upper, now)
         pcr_oi, pcr_volume = _option_features(contracts)
@@ -207,29 +217,130 @@ def load_kotak_decision_snapshot(
 
         end = now.date()
         start = end - timedelta(days=max(3, int(history_days)))
-        frame, source = load_captured_candles(
+        captured_frame, source = load_captured_candles(
             instrument_upper,
             start=start,
             end=end,
         )
+        captured_frame = captured_frame.copy()
+        history_note = ""
+
+        # MCX futures support broker historical candles, unlike the NIFTY
+        # cash index. Use those real candles only as model warm-up context;
+        # live decisions still require a fresh SFeed candle from this session.
+        # This avoids the old 60-row deadlock when a user has just enabled
+        # CRUDEOIL capture, without relabelling historical bars as live.
+        if instrument_upper != "NIFTY":
+            try:
+                history_symbol, history_exchange, history_neosymbol = _history_request(
+                    provider, instrument_upper, timeframe, start, end
+                )
+                historical_candles = provider.get_historical_candles(
+                    symbol=history_symbol,
+                    exchange=history_exchange,
+                    timeframe=timeframe,
+                    start=start,
+                    end=end,
+                    neosymbol=history_neosymbol,
+                )
+                historical_frame = pd.DataFrame([
+                    {
+                        "timestamp": candle.timestamp,
+                        "open": candle.open,
+                        "high": candle.high,
+                        "low": candle.low,
+                        "close": candle.close,
+                        "volume": candle.volume,
+                        "data_source": "KOTAK_HISTORICAL",
+                    }
+                    for candle in historical_candles
+                ])
+                if not historical_frame.empty:
+                    if not captured_frame.empty:
+                        captured_frame["data_source"] = "KOTAK_CAPTURED"
+                    frame = pd.concat(
+                        [historical_frame, captured_frame],
+                        ignore_index=True,
+                        sort=False,
+                    )
+                    frame["_source_priority"] = frame["data_source"].map(
+                        {"KOTAK_HISTORICAL": 0, "KOTAK_CAPTURED": 1}
+                    ).fillna(0)
+                    frame["timestamp"] = pd.to_datetime(
+                        frame["timestamp"], utc=True, errors="coerce"
+                    )
+                    frame = (
+                        frame.dropna(subset=["timestamp"])
+                        .sort_values(["timestamp", "_source_priority"])
+                        .drop_duplicates("timestamp", keep="last")
+                        .drop(columns=["_source_priority"])
+                        .reset_index(drop=True)
+                    )
+                    source = "KOTAK_HISTORICAL + KOTAK_CAPTURED"
+                else:
+                    frame = captured_frame
+                    history_note = "Kotak historical endpoint returned no warm-up candles."
+            except Exception as history_error:
+                frame = captured_frame
+                history_note = f"Historical warm-up unavailable ({history_error}); using captured SFeed bars only."
+        else:
+            frame = captured_frame
 
         if frame.empty:
+            detail = (
+                f"Real {instrument_upper} {timeframe} candle history is unavailable. "
+                "Start the Kotak SFeed recorder; no synthetic/Yahoo fallback is permitted."
+            )
+            if history_note:
+                detail += " " + history_note
             return DecisionSnapshot(
                 "KOTAK_NEO", "LIVE", "RED",
-                (
-                    f"Real {instrument_upper} {timeframe} candle history is unavailable. "
-                    "Start the Kotak SFeed recorder; no synthetic/Yahoo fallback is permitted."
-                ),
+                detail,
                 now, None, contracts, "RED",
                 (
                     f"{instrument_upper} captured SFeed candle history unavailable",
-                    "Run the real Kotak SFeed capture before enabling this decision path.",
+                    "MCX historical bars may warm up the model, but cannot replace a live SFeed candle.",
                 ),
                 pcr_oi, pcr_volume, len(contracts),
-                _wait(
-                    f"Real {instrument_upper} {timeframe} candle history is unavailable.",
-                    now,
-                ),
+                _wait(detail, now),
+            )
+
+        # Freshness is checked against the capture file specifically, not the
+        # newest historical warm-up candle. A stale saved file must never
+        # masquerade as a live CRUDEOIL forecast.
+        if captured_frame.empty:
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                f"No captured live {instrument_upper} SFeed candles are available; historical data is warm-up only.",
+                now, frame, contracts, "RED",
+                (f"{instrument_upper} live SFeed capture missing", history_note or "Start scripts/capture_daily_market_data.py for the live feed."),
+                pcr_oi, pcr_volume, len(contracts),
+                _wait(f"No captured live {instrument_upper} SFeed candles are available.", now),
+            )
+
+        captured_ts = pd.to_datetime(captured_frame["timestamp"], utc=True, errors="coerce").dropna()
+        if captured_ts.empty:
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED",
+                f"Captured {instrument_upper} candles have no valid timestamps.",
+                now, frame, contracts, "RED",
+                ("Captured SFeed timestamps are invalid",),
+                pcr_oi, pcr_volume, len(contracts),
+                _wait("Captured SFeed timestamps are invalid.", now),
+            )
+        captured_age_minutes = max(0.0, (now.tz_convert("UTC") - captured_ts.max()).total_seconds() / 60.0)
+        freshness_limit_minutes = max(15.0, (5 if timeframe == "5m" else 15) * 2.5)
+        if captured_age_minutes > freshness_limit_minutes:
+            message = (
+                f"Live {instrument_upper} SFeed is stale: last captured candle is "
+                f"{captured_age_minutes:.1f} minutes old (limit {freshness_limit_minutes:.0f} min)."
+            )
+            return DecisionSnapshot(
+                "KOTAK_NEO", "LIVE", "RED", message,
+                now, frame, contracts, "RED",
+                (message, "Restart/verify the Kotak SFeed capture before using a live forecast."),
+                pcr_oi, pcr_volume, len(contracts),
+                _wait(message, now),
             )
 
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dt.tz_convert("Asia/Kolkata")
