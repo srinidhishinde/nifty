@@ -47,31 +47,35 @@ def render_fifteen_minute_live_workspace() -> None:
             max(0.0, (now - (chain_ts.tz_convert("Asia/Kolkata") if chain_ts.tzinfo else chain_ts.tz_localize("Asia/Kolkata"))).total_seconds())
             if chain_ts is not None else float("inf")
         )
+        live_chain_available = bool(
+            not chain.empty and market_open and broker_connected and chain_age <= 90
+        )
         historical_files_mode = False
-        if chain.empty:
+        if not live_chain_available:
             historical_root = Path(__file__).resolve().parents[1] / "data" / "backtest" / "kotak"
             found: dict[tuple[str, float, str], list[tuple[pd.Timestamp, Path]]] = {}
             if historical_root.exists():
                 for path in historical_root.glob("*_1min.csv"):
-                    match = re.match(r"^(?P<symbol>.+?)(?P<strike>\\d+(?:\\.\\d+)?)(?P<type>CE|PE)_(?P<day>\\d{4}-\\d{2}-\\d{2})_1min\\.csv$", path.name, re.I)
+                    match = re.match(r"^(?P<symbol>.+?)(?P<strike>\d+(?:\.\d+)?)(?P<type>CE|PE)_(?P<day>\d{4}-\d{2}-\d{2})_1min\.csv$", path.name, re.I)
                     if not match:
                         continue
                     key = (match.group("symbol").rstrip("_"), float(match.group("strike")), match.group("type").upper())
                     found.setdefault(key, []).append((pd.Timestamp(match.group("day")), path))
-            if not found:
-                st.warning("No saved Kotak option-chain snapshot or backdated option-candle CSVs are available.")
+            if found:
+                rows = []
+                for (prefix, saved_strike, saved_side), paths in found.items():
+                    latest_day, latest_path = max(paths, key=lambda item: item[0])
+                    rows.append({
+                        "symbol": f"{prefix}_{saved_strike:g}{saved_side}",
+                        "strike": saved_strike, "option_type": saved_side,
+                        "expiry": f"Saved data through {latest_day.date()}",
+                        "history_path": latest_path,
+                    })
+                chain = pd.DataFrame(rows)
+                historical_files_mode = True
+            elif chain.empty:
+                st.warning("No fresh option-chain snapshot or backdated option-candle CSVs are available.")
                 return
-            rows = []
-            for (prefix, saved_strike, saved_side), paths in found.items():
-                latest_day, latest_path = max(paths, key=lambda item: item[0])
-                rows.append({
-                    "symbol": f"{prefix}_{saved_strike:g}{saved_side}",
-                    "strike": saved_strike, "option_type": saved_side,
-                    "expiry": f"Saved data through {latest_day.date()}",
-                    "history_path": latest_path,
-                })
-            chain = pd.DataFrame(rows)
-            historical_files_mode = True
         chain = chain.copy()
         if "option_type" not in chain or "strike" not in chain or "symbol" not in chain:
             st.warning("Saved option-chain snapshot lacks contract selection fields.")
