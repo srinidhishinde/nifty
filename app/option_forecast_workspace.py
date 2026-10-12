@@ -169,13 +169,75 @@ def render_option_forecast_workspace(instrument: str) -> None:
 
         historical_mode = not live
         if historical_mode and historical_files:
-            records = []
+            # Keep the real saved option-chain snapshot as the primary selector.
+            # Attach the best matching saved candle file to each snapshot contract,
+            # then add file-only contracts so users can still inspect captured history
+            # when the snapshot did not include that strike.
+            history_by_strike_side: dict[tuple[float, str], list[tuple[str, pd.Timestamp, Path]]] = {}
+            history_by_symbol: dict[str, list[tuple[pd.Timestamp, Path]]] = {}
             for (prefix, strike_value, side_value), paths in historical_files.items():
+                history_by_strike_side.setdefault((strike_value, side_value), []).extend(
+                    (prefix, day, path) for day, path in paths
+                )
+                history_by_symbol.setdefault(f"{prefix}_{strike_value:g}{side_value}".upper(), []).extend(paths)
+
+            snapshot_chain = chain.copy() if not chain.empty else pd.DataFrame()
+            if not snapshot_chain.empty:
+                snapshot_chain["strike"] = pd.to_numeric(snapshot_chain.get("strike"), errors="coerce")
+                snapshot_chain["option_type"] = snapshot_chain["option_type"].astype(str).str.upper().str.strip()
+                if "expiry" not in snapshot_chain:
+                    snapshot_chain["expiry"] = ""
+                attached_paths = []
+                for _, row in snapshot_chain.iterrows():
+                    symbol_key = str(row.get("symbol", "")).strip().upper()
+                    exact = history_by_symbol.get(symbol_key, [])
+                    candidates = exact
+                    if not candidates:
+                        candidates = [
+                            (day, path)
+                            for (strike_value, side_value), entries in history_by_strike_side.items()
+                            if pd.notna(row.get("strike")) and abs(float(row["strike"]) - strike_value) < 1e-6
+                            and str(row.get("option_type", "")).upper() == side_value
+                            for _, day, path in entries
+                        ]
+                    if candidates:
+                        if len(candidates[0]) == 3:
+                            _, day, path = max(candidates, key=lambda item: item[1])
+                        else:
+                            day, path = max(candidates, key=lambda item: item[0])
+                        attached_paths.append(path)
+                    else:
+                        attached_paths.append(None)
+                snapshot_chain["history_path"] = attached_paths
+
+            existing_keys = set()
+            if not snapshot_chain.empty:
+                existing_keys = {
+                    (round(float(row["strike"]), 6), str(row["option_type"]).upper())
+                    for _, row in snapshot_chain.dropna(subset=["strike"]).iterrows()
+                }
+            history_records = []
+            for (prefix, strike_value, side_value), paths in historical_files.items():
+                if (round(strike_value, 6), side_value) in existing_keys:
+                    continue
                 latest_day, latest_path = max(paths, key=lambda item: item[0])
-                records.append({"symbol": f"{prefix}_{strike_value:g}{side_value}", "strike": strike_value,
-                                "option_type": side_value, "expiry": f"Saved through {latest_day.date()}",
-                                "history_path": latest_path})
-            chain = pd.DataFrame(records)
+                history_records.append({
+                    "symbol": f"{prefix}_{strike_value:g}{side_value}",
+                    "strike": strike_value,
+                    "option_type": side_value,
+                    "expiry": f"Saved through {latest_day.date()}",
+                    "history_path": latest_path,
+                })
+            if not snapshot_chain.empty and history_records:
+                chain = pd.concat([snapshot_chain, pd.DataFrame(history_records)], ignore_index=True, sort=False)
+            elif not snapshot_chain.empty:
+                chain = snapshot_chain
+            elif history_records:
+                chain = pd.DataFrame(history_records)
+
+        if historical_mode and chain_ts is not None:
+            snapshot_local = chain_ts.tz_convert("Asia/Kolkata") if chain_ts.tzinfo else chain_ts.tz_localize("Asia/Kolkata")
+            st.info(f"Using saved option-chain snapshot captured {snapshot_local.strftime('%Y-%m-%d %H:%M:%S %Z')}; quotes are historical, not live.")
         if chain.empty:
             st.warning("No option-chain snapshot or saved option-candle history is available for this instrument. Capture real Kotak data first.")
             return
