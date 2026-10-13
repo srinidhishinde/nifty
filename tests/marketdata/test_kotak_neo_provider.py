@@ -344,3 +344,54 @@ def test_daily_store_loader_uses_only_captured_partitions(tmp_path):
     assert source == "KOTAK_CAPTURED"
     assert len(loaded) == 2
     assert set(loaded["data_source"]) == {"KOTAK_CAPTURED"}
+
+def test_index_quote_failure_logs_operation_and_elapsed_time(caplog):
+    import logging
+    import pytest
+
+    class TimeoutNeo(FakeNeo):
+        def quotes(self, **kwargs):
+            raise TimeoutError("simulated read timeout")
+
+    with caplog.at_level(logging.ERROR, logger="marketdata.providers.kotak_neo"):
+        with pytest.raises(TimeoutError, match="simulated read timeout"):
+            KotakNeoProvider(TimeoutNeo()).get_index_quote("Nifty 50")
+
+    assert "operation=quotes.index" in caplog.text
+    assert "exception_type=TimeoutError" in caplog.text
+    assert "elapsed_ms=" in caplog.text
+
+
+def test_quote_enrichment_splits_requests_below_50_symbols():
+    class BatchRecordingNeo:
+        def __init__(self):
+            self.batch_sizes = []
+
+        def quotes(self, **kwargs):
+            self.batch_sizes.append(len(kwargs["instrument_tokens"]))
+            return []
+
+    contracts = [
+        OptionContract(
+            symbol=f"NIFTY26OCT{20000 + i * 50}CE",
+            exchange="nse_fo",
+            underlying="NIFTY",
+            expiry="2026-10-15",
+            strike=float(20000 + i * 50),
+            option_type="CE",
+            instrument_token=f"nse_fo|{100000 + i}",
+            ltp=100.0,
+            bid=None,
+            ask=None,
+            volume=0.0,
+            open_interest=0.0,
+            oi_change=0.0,
+        )
+        for i in range(51)
+    ]
+    client = BatchRecordingNeo()
+
+    KotakNeoProvider(client)._enrich_quotes(contracts)
+
+    assert client.batch_sizes == [49, 2]
+    assert max(client.batch_sizes) <= 49

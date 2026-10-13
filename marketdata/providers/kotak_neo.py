@@ -1,4 +1,6 @@
 from datetime import date, datetime
+import logging
+import time
 from typing import Any, List
 
 from marketdata.models.market_data import Candle, OptionContract, Quote
@@ -20,6 +22,26 @@ class KotakNeoProvider(MarketDataProvider):
 
     def __init__(self, client):
         self.client = client
+
+    @staticmethod
+    def _api_call(operation: str, callback, **kwargs):
+        """Log market-data API latency and failures without logging credentials."""
+        started = time.monotonic()
+        try:
+            response = callback(**kwargs)
+        except Exception as exc:
+            elapsed_ms = (time.monotonic() - started) * 1000
+            logging.getLogger(__name__).exception(
+                "Kotak Neo API failed operation=%s elapsed_ms=%.0f exception_type=%s",
+                operation, elapsed_ms, type(exc).__name__,
+            )
+            raise
+        elapsed_ms = (time.monotonic() - started) * 1000
+        logging.getLogger(__name__).info(
+            "Kotak Neo API completed operation=%s elapsed_ms=%.0f response_type=%s",
+            operation, elapsed_ms, type(response).__name__,
+        )
+        return response
 
     @classmethod
     def normalize_exchange(cls, exchange: str) -> str:
@@ -182,7 +204,8 @@ class KotakNeoProvider(MarketDataProvider):
 
     def get_index_quote(self, index_name: str = "Nifty 50") -> Quote:
         """Fetch the current NIFTY index quote using Neo's index-name identifier."""
-        response = self.client.quotes(
+        response = self._api_call(
+            "quotes.index", self.client.quotes,
             instrument_tokens=[{
                 "instrument_token": index_name,
                 "exchange_segment": "nse_cm",
@@ -212,7 +235,8 @@ class KotakNeoProvider(MarketDataProvider):
     def _nearest_expiry(self, exchange: str, underlying: str) -> str:
         """Resolve the nearest available option expiry from Neo."""
         exchange_segment = self.normalize_exchange(exchange)
-        response = self.client.expiries(
+        response = self._api_call(
+            "expiries.option", self.client.expiries,
             exchange=exchange_segment,
             underlying=underlying.upper(),
             instrument_type="option",
@@ -439,7 +463,8 @@ class KotakNeoProvider(MarketDataProvider):
             if exchange_segment == "mcx_fo"
             else underlying.upper()
         )
-        response = self.client.option_chain(
+        response = self._api_call(
+            "option_chain", self.client.option_chain,
             exchange=exchange_segment,
             underlying=request_underlying,
             expiry=request_expiry,
@@ -491,9 +516,9 @@ class KotakNeoProvider(MarketDataProvider):
                 contracts.append(contract)
 
         # The option-chain endpoint already returns broker LTP/volume/OI and
-        # option analytics. Quote enrichment is opt-in because Neo limits a
-        # quotes request to 50 symbols and some SDK/backend combinations have
-        # produced oversized quote requests despite provider-side batching.
+        # option analytics. Quote enrichment is opt-in; production has returned
+        # HTTP 400 for a request containing exactly 50 symbols, so enrichment
+        # batches conservatively stay below that count.
         # Depth enrichment remains available explicitly through enrich_quotes=True.
         if enrich_quotes and contracts:
             self._enrich_quotes(contracts)
@@ -617,8 +642,10 @@ class KotakNeoProvider(MarketDataProvider):
         )
 
     def _enrich_quotes(self, contracts: list[OptionContract]) -> None:
-        """Populate LTP/depth fields without exceeding Neo's 50-symbol limit."""
-        quote_batch_size = 50
+        """Populate LTP/depth fields using conservative sub-50-symbol batches."""
+        # The broker has returned HTTP 400 for requests containing exactly 50
+        # symbols in production. Keep each request below that boundary.
+        quote_batch_size = 49
         for start in range(0, len(contracts), quote_batch_size):
             batch = contracts[start:start + quote_batch_size]
             tokens = []
@@ -637,7 +664,8 @@ class KotakNeoProvider(MarketDataProvider):
             if not tokens:
                 continue
 
-            response = self.client.quotes(
+            response = self._api_call(
+                "quotes.enrichment_batch", self.client.quotes,
                 instrument_tokens=tokens,
                 quote_type="all",
             )
@@ -759,7 +787,8 @@ class KotakNeoProvider(MarketDataProvider):
         token = str(contract.get("instrument_token") or "").strip()
         if not token:
             raise ValueError("Resolved MCX contract has no instrument token.")
-        response = self.client.quotes(
+        response = self._api_call(
+            "quotes.mcx", self.client.quotes,
             instrument_tokens=[{"instrument_token": token, "exchange_segment": "mcx_fo"}],
             quote_type="all",
         )
