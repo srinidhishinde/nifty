@@ -1,3 +1,4 @@
+from marketdata.models.market_data import OptionContract
 from marketdata.providers.kotak_neo import KotakNeoProvider
 
 
@@ -80,3 +81,39 @@ def test_option_chain_success_payload_without_stat_is_accepted():
 def test_exchange_alias_is_normalized():
     assert KotakNeoProvider.normalize_exchange("NSE") == "nse_fo"
     assert KotakNeoProvider.normalize_exchange("MCX") == "mcx_fo"
+
+
+
+def test_quote_enrichment_splits_requests_below_50_symbols():
+    class BatchRecordingNeo:
+        def __init__(self):
+            self.batch_sizes = []
+
+        def quotes(self, **kwargs):
+            self.batch_sizes.append(len(kwargs["instrument_tokens"]))
+            return []
+
+    contracts = [
+        OptionContract(
+            symbol=f"NIFTY26OCT{20000 + i * 50}CE",
+            exchange="nse_fo",
+            underlying="NIFTY",
+            expiry="2026-10-15",
+            strike=float(20000 + i * 50),
+            option_type="CE",
+            instrument_token=f"nse_fo|{100000 + i}",
+            ltp=100.0,
+            bid=None,
+            ask=None,
+            volume=0.0,
+            open_interest=0.0,
+            oi_change=0.0,
+        )
+        for i in range(81)
+    ]
+    client = BatchRecordingNeo()
+
+    KotakNeoProvider(client)._enrich_quotes(contracts)
+
+    assert client.batch_sizes == [40, 40, 1]
+    assert max(client.batch_sizes) < 50
