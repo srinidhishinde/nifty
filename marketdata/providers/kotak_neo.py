@@ -516,9 +516,9 @@ class KotakNeoProvider(MarketDataProvider):
                 contracts.append(contract)
 
         # The option-chain endpoint already returns broker LTP/volume/OI and
-        # option analytics. Quote enrichment is opt-in because Neo limits a
-        # quotes request to 50 symbols and some SDK/backend combinations have
-        # produced oversized quote requests despite provider-side batching.
+        # option analytics. Quote enrichment is opt-in; production has returned
+        # HTTP 400 for a request containing exactly 50 symbols, so enrichment
+        # batches conservatively stay below that count.
         # Depth enrichment remains available explicitly through enrich_quotes=True.
         if enrich_quotes and contracts:
             self._enrich_quotes(contracts)
