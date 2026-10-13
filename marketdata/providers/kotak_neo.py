@@ -190,9 +190,11 @@ class KotakNeoProvider(MarketDataProvider):
         )
 
     def _enrich_quotes(self, contracts: list[OptionContract]) -> None:
-        """Populate LTP/depth fields in batches of <=50, per Neo API limits."""
-        for start in range(0, len(contracts), 50):
-            batch = contracts[start:start + 50]
+        """Populate LTP/depth fields using conservative sub-50-symbol batches."""
+        # Production has returned HTTP 400 at exactly 50 symbols; stay below it.
+        quote_batch_size = 40
+        for start in range(0, len(contracts), quote_batch_size):
+            batch = contracts[start:start + quote_batch_size]
             tokens = []
             for contract in batch:
                 token = contract.instrument_token or ""
