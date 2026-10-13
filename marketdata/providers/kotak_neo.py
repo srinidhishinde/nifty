@@ -642,10 +642,11 @@ class KotakNeoProvider(MarketDataProvider):
         )
 
     def _enrich_quotes(self, contracts: list[OptionContract]) -> None:
-        """Populate LTP/depth fields using conservative sub-50-symbol batches."""
+        """Populate LTP/depth fields using conservative sub-50-symbol batches.
         # The broker has returned HTTP 400 for requests containing exactly 50
         # symbols in production. Keep each request below that boundary.
-        quote_batch_size = 49
+        # Production has returned HTTP 400 at exactly 50 symbols; stay below it.
+        quote_batch_size = 40
         for start in range(0, len(contracts), quote_batch_size):
             batch = contracts[start:start + quote_batch_size]
             tokens = []
