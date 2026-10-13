@@ -387,11 +387,11 @@ def test_quote_enrichment_splits_requests_below_50_symbols():
             open_interest=0.0,
             oi_change=0.0,
         )
-        for i in range(51)
+        for i in range(81)
     ]
     client = BatchRecordingNeo()
 
     KotakNeoProvider(client)._enrich_quotes(contracts)
 
-    assert client.batch_sizes == [49, 2]
-    assert max(client.batch_sizes) <= 49
+    assert client.batch_sizes == [40, 40, 1]
+    assert max(client.batch_sizes) < 50
