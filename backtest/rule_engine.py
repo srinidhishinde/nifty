@@ -175,10 +175,22 @@ class RuleBacktestEngine:
 
             direction = "BUY" if buys else "SELL"
             entry = float(row["close"])
-            stop = entry * (1 - self.config.stop_loss_pct) if direction == "BUY" else entry * (1 + self.config.stop_loss_pct)
-            target = entry * (1 + self.config.target_roi_pct) if direction == "BUY" else entry * (1 - self.config.target_roi_pct)
-            atr = float(row.get("ATR", 0.0) or 0.0)
-            risk_distance = max(abs(entry - stop), atr * self.config.atr_risk_multiplier)
+            atr_value = row.get("ATR", 0.0)
+            atr = float(atr_value) if pd.notna(atr_value) else 0.0
+
+            # Keep backtest risk levels consistent with generate_signal().
+            # Use the same StrategyConfig fields; avoid separate, undefined
+            # target_roi_pct / atr_risk_multiplier settings.
+            risk_distance = max(
+                entry * self.config.stop_loss_pct,
+                atr * self.config.atr_stop_multiple,
+            )
+            reward_distance = max(
+                entry * self.config.min_target_pct,
+                atr * self.config.target_atr_multiple,
+            )
+            stop = entry - risk_distance if direction == "BUY" else entry + risk_distance
+            target = entry + reward_distance if direction == "BUY" else entry - reward_distance
             if risk_distance <= 0:
                 continue
 
