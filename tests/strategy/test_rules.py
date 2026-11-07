@@ -30,18 +30,14 @@ def test_ema_cross_requires_actual_cross():
 
 def test_risk_levels_match_pseudocode_defaults():
     frame = pd.DataFrame({
+        "open": [99.5, 100.5],
+        "high": [100.5, 101.5],
+        "low": [99.5, 100.5],
         "close": [100.0, 101.0],
-        "MACD": [0.0, 0.0],
-        "MACD_SIGNAL": [0.0, 0.0],
-        "EMA20": [100.0, 100.0],
-        "EMA50": [100.0, 100.0],
-        "VOLUME_MA20": [900.0, 900.0],
         "volume": [1000.0, 2000.0],
-        "RSI": [25.0, 20.0],
-        "VWAP": [100.0, 101.0],
-        "ATR": [1.0, 1.0],
     })
     signal = generate_signal(frame, StrategyConfig())
     assert signal.direction == "BUY"
-    assert signal.stop_loss == 99.48
-    assert signal.target == 141.4
+    # With only two candles ATR is not warmed up, so percentage defaults apply.
+    assert signal.stop_loss == 98.98
+    assert signal.target == 103.02
