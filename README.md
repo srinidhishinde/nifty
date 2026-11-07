@@ -3,7 +3,6 @@
 NIFTY + MCX research, backtesting and paper-trading platform.
 
 ## Instruments
-
 - NIFTY
 - CRUDEOIL
 - NATURALGAS
@@ -12,46 +11,86 @@ NIFTY + MCX research, backtesting and paper-trading platform.
 - GOLD
 
 ## Timeframes
-
 - 5m
 - 15m
 
 ## Safety
-
-Live trading is disabled by default.
+Live trading is disabled by default. The Market Analysis page is signal/context only and does not place orders.
 
 ## Setup
 
-Create virtual environment:
+### Windows
+1. Run `py -3.11 -m venv .venv`
+2. Activate: `.\.venv\Scripts\Activate.ps1`
+3. Run `python -m pip install --upgrade pip`
+4. Run `python -m pip install -r requirements.txt`
+5. Copy `.env.example` to `.env`
+6. Run `python scripts/run_uat.py`
+7. Run `python -m streamlit run app/main.py`
 
-python -m venv .venv
+Or double-click `run_windows.bat` from the repository root. It creates the local environment, installs dependencies, runs UAT and launches Streamlit.
 
-Activate:
+### macOS / Linux
+1. Run `python3 -m venv .venv`
+2. Activate: `source .venv/bin/activate`
+3. Run `python -m pip install --upgrade pip`
+4. Run `python -m pip install -r requirements.txt`
+5. Copy `.env.example` to `.env`
+6. Run `python scripts/run_uat.py`
+7. Run `python -m streamlit run app/main.py`
 
-.venv\Scripts\activate
+Or run `chmod +x run_linux_mac.sh && ./run_linux_mac.sh`.
 
-Install:
+Keep the project root as the current directory when launching Streamlit so imports such as `config`, `strategy`, `backtest` and `marketdata` resolve correctly.
 
-pip install -r requirements.txt
+## Market Analysis page
 
-Copy environment:
+After launching the Streamlit app, select **Market Analysis** from the left sidebar. The page provides tabs for:
 
-copy .env.example .env
+- **Overview:** combines independent evidence groups and returns a directional bias only when at least two inputs agree; otherwise it returns WAIT.
+- **Price Action:** checks recent OHLC structure.
+- **Option Positioning:** pairs option premium change with OI change. OI alone is not treated as proof of buyer/writer intent.
+- **NIFTY 50 Breadth:** compares advancing and declining constituents; optional `above_vwap` column adds participation context.
+- **Validation Notes:** practical safeguards against overfitting.
 
-Run tests:
+### Market Analysis CSV formats
 
-python scripts/run_uat.py
+1. **NIFTY candles:** CSV with `open, high, low, close`; `timestamp` and `volume` are recommended.
+2. **Option chain:** CSV with `option_type` (CE/PE), `ltp_change`, `oi_change`; optional `strike`, `ltp`, `volume`.
+3. **NIFTY 50 breadth:** CSV with `symbol`, `change_pct`; optional `above_vwap` (true/false).
 
-Run UI:
+The page analyses uploaded data only. It does not fabricate live market data, provide guaranteed predictions, or execute trades. Do not interpret a directional bias as an entry instruction; require a completed entry trigger, defined invalidation and acceptable risk/reward.
 
-streamlit run app/main.py
+## Historical validation in the existing UI
+
+Open the Streamlit app and use **Historical Rule Backtest**:
+
+1. Upload a CSV with required columns: `timestamp, open, high, low, close, volume`.
+2. Keep earlier candles in the file before the dates you want to score. These provide indicator warm-up for EMA(50), RSI, MACD, VWAP and ATR.
+3. Select the historical date range to score.
+4. Click **Run Historical Backtest**.
+5. Review closed trades, win rate, wins/losses, net P&L, profit factor, average trade, maximum drawdown, BUY vs SELL win rate, equity/P&L curve and individual rule performance.
+
+The win rate is the percentage of closed simulated trades that were profitable. It is not ML prediction accuracy and is not a guarantee of future returns.
+
+The UI backtest is an OHLCV/rule-engine validation. It is not a historical option-chain replay unless timestamped historical option-contract data is supplied and processed by a dedicated replay engine. A single option-chain snapshot cannot support a 3-minute option-premium backtest.
+
+## Recommended validation
+
+Do not judge the strategy from synthetic demo data. Use real historical data and compare:
+- in-sample period
+- separate, untouched out-of-sample period
+- multiple market regimes
+- multiple dates/years where available
+- brokerage, taxes, spread and slippage
+
+Compare expectancy, profit factor, drawdown and stability—not win rate alone. Avoid repeatedly tuning thresholds on the same data.
 
 ## Important
 
 This repository starts in PAPER mode.
 
 Do not enable live trading until:
-
 1. Data validation passes
 2. Backtesting passes
 3. Walk-forward testing passes
@@ -59,87 +98,4 @@ Do not enable live trading until:
 5. Paper trading has been monitored
 6. Broker integration has been independently tested
 
-
-## Historical validation in the UI
-
-Open the Streamlit app and use **Historical Rule Backtest**:
-
-1. Upload a CSV with these required columns:
-   `timestamp, open, high, low, close, volume`
-2. Keep earlier candles in the file before the dates you want to score. These provide indicator warm-up for EMA(50), RSI, MACD, VWAP and ATR.
-3. Select the historical date range to score.
-4. Click **Run Historical Backtest**.
-5. Review:
-   - Closed trades
-   - Win rate (historical trade accuracy)
-   - Wins / losses
-   - Net P&L and return
-   - Profit factor
-   - Average trade
-   - Maximum drawdown
-   - BUY vs SELL win rate
-   - Equity/P&L curve
-   - Individual rule performance
-   - Full historical trade list
-
-**Important:** the win rate is the percentage of closed simulated trades that were profitable. It is not ML prediction accuracy and is not a guarantee of future returns.
-
-For rules that require market-context fields, include these optional CSV columns when available:
-
-- `sentiment` or `news_sentiment`
-- `bid`
-- `ask`
-- `spread`
-
-Without those fields, the corresponding sentiment/order-book rules cannot be evaluated from the historical file.
-
-### Recommended validation
-
-Do not judge the strategy from synthetic demo data. Use real historical data and compare:
-
-- in-sample period
-- separate out-of-sample period
-- multiple market regimes
-- multiple years/dates where available
-
-The UI backtest is an OHLCV/rule-engine validation. It is not a historical option-chain replay unless the repository is extended with historical option-contract data.
-
-## Windows setup
-
-From PowerShell:
-
-```powershell
-cd C:\Users\srini\Downloads\ai_derivatives_terminal\nifty
-
-deactivate 2>$null
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-
-python -c "import sys; print(sys.executable); print(sys.version)"
-
-python scripts/run_uat.py
-
-python -m streamlit run app/main.py
-```
-
-Keep the project root as the current directory when launching Streamlit so imports such as `config`, `strategy`, `backtest` and `marketdata` resolve correctly.
-
-
-### Option-chain snapshot CSV
-
-The application also accepts the wide CE/PE option-chain export format containing fields such as:
-
-- Calls/Puts OI and change in OI
-- Calls/Puts volume
-- Calls/Puts IV
-- Calls/Puts delta, theta and vega
-- Calls/Puts built-up
-- Calls/Puts LTP change percentage
-- Strike
-
-This is analyzed as an **option-chain snapshot**, not converted into OHLCV candles. A snapshot does not contain candle open/high/low/close history, timestamps, or bid/ask spread history, so it cannot legitimately be used as the historical seven-rule candle backtest.
-
-Rules 1–5 and 7 need candle/context history; Rule 6 needs bid/ask and spread history. The UI therefore keeps snapshot analysis separate from historical backtesting rather than inventing missing data.
+Kotak Neo live integration depends on valid account access, supported market-data APIs and current broker SDK behaviour. A successful dashboard launch does not prove that the broker feed is connected or validated.
