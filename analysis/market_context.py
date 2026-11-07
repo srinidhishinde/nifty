@@ -64,14 +64,18 @@ def analyze_option_positioning(chain: pd.DataFrame) -> tuple[Evidence, pd.DataFr
     if data.empty:
         return Evidence("Option positioning", 0, "No valid CE/PE rows.")
     def classify(row: pd.Series) -> str:
-        price_up, oi_up = row["ltp_change"] > 0, row["oi_change"] > 0
-        if price_up and oi_up:
+        price_change = row["ltp_change"]
+        oi_change = row["oi_change"]
+        # A flat/unchanged premium cannot distinguish writing from buildup.
+        if price_change == 0 or oi_change == 0:
+            return "Mixed / unchanged"
+        if price_change > 0 and oi_change > 0:
             return "Long build-up"
-        if not price_up and oi_up:
+        if price_change < 0 and oi_change > 0:
             return "Possible writing"
-        if price_up and not oi_up:
+        if price_change > 0 and oi_change < 0:
             return "Short covering"
-        if not price_up and not oi_up:
+        if price_change < 0 and oi_change < 0:
             return "Long unwinding"
         return "Mixed / unchanged"
     data["position_read"] = data.apply(classify, axis=1)
