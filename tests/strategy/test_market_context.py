@@ -13,8 +13,9 @@ def test_oi_alone_is_not_used_as_directional_signal():
         {"option_type": "CE", "ltp_change": 0, "oi_change": 1000},
         {"option_type": "PE", "ltp_change": 0, "oi_change": 2000},
     ])
-    evidence, _ = analyze_option_positioning(chain)
+    evidence, classified = analyze_option_positioning(chain)
     assert evidence.direction == 0
+    assert set(classified["position_read"]) == {"Mixed / unchanged"}
 
 
 def test_breadth_counts_advancers_and_decliners():
